@@ -1,5 +1,5 @@
-const storageKey = "largs-colts-2016s-coach-test-2";
-const appVersion = "3.5";
+const storageKey = "largs-colts-2016s-coach-test-3";
+const appVersion = "3.6";
 const crestPath = "assets/LargsColtsCrest.png";
 
 const teams = [
@@ -772,8 +772,9 @@ function coachLoginView() {
       </label>
       <div class="auth-actions">
         <button class="primary-button" type="submit">Sign in</button>
-        <button class="secondary-button" type="button" data-action="demo-coach">Use coach demo</button>
+        <button class="secondary-button" type="button" data-action="demo-coach">Use guided coach demo</button>
       </div>
+      <p class="demo-build-note">Build ${appVersion} includes the coach walkthrough pop-ups.</p>
     </form>
   `;
 }
