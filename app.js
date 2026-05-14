@@ -1,5 +1,5 @@
-const storageKey = "largs-colts-2016s-coach-test-1";
-const appVersion = "3.4";
+const storageKey = "largs-colts-2016s-coach-test-2";
+const appVersion = "3.5";
 const crestPath = "assets/LargsColtsCrest.png";
 
 const teams = [
@@ -137,11 +137,17 @@ const defaultState = {
     parentName: "",
     coachName: "",
     selectedPlayerId: "p1",
+    demoMode: false,
   },
   route: "home",
   authRole: "parent",
   scheduleFilter: "all",
   selectedEventId: "e1",
+  coachGuide: {
+    active: false,
+    step: 0,
+    completed: false,
+  },
   players: defaultPlayers,
   inactivePlayers: leavers.map((name, index) => ({
     id: `left-${index + 1}`,
@@ -248,6 +254,83 @@ const defaultState = {
   ],
 };
 
+const coachGuideSteps = [
+  {
+    route: "home",
+    target: "dashboard-next",
+    title: "Coach demo start",
+    body: "This walkthrough is only shown in coach demo mode. The dashboard starts with the next event: Blue home match, Saturday 16 May, kick-off 09:30, report 09:00 at Bowencraig.",
+  },
+  {
+    route: "home",
+    target: "coach-tools",
+    title: "Quick coach actions",
+    body: "These four buttons are the main coach shortcuts: add a fixture or training session, send a message, verify parents, and take attendance.",
+  },
+  {
+    route: "schedule",
+    target: "schedule-toolbar",
+    title: "Fixtures and training",
+    body: "Use the team filters to show All, Orange, Blue or Yellow. The add button lets a coach add either a fixture or training session.",
+  },
+  {
+    route: "schedule",
+    target: "event-list",
+    title: "Weekend matches",
+    body: "The coach can see the Blue home match and the Yellow away match, including kick-off time, report time, venue, map buttons and the Remove button for test fixtures.",
+  },
+  {
+    route: "schedule",
+    target: "away-support",
+    title: "Away destinations",
+    body: "When adding a fixture, choose Away destination if the pitch is not Bowencraig, Inverclyde Sports Centre 3G or Barrfields Park. The app then asks for the venue name and address so maps still work.",
+  },
+  {
+    route: "availability",
+    target: "availability-summary",
+    eventId: "e1",
+    title: "Availability responses",
+    body: "Availability shows who has replied for the selected fixture or training session. Coaches can switch events from the dropdown and quickly see available, unavailable and no reply totals.",
+  },
+  {
+    route: "attendance",
+    target: "attendance-grid",
+    eventId: "t1",
+    title: "Attendance",
+    body: "This is where a coach marks players present or absent. The cards also show each player’s running attendance percentage.",
+  },
+  {
+    route: "squads",
+    target: "team-board",
+    title: "Teams and squads",
+    body: "The team board lists Orange, Blue and Yellow. Coaches can add a player, edit parent contact placeholders, or move a player between team colours.",
+  },
+  {
+    route: "messages",
+    target: "messages-panel",
+    title: "Coach messages",
+    body: "Messages can go to all parents or a selected colour group. In the real rollout this area links naturally to push notifications.",
+  },
+  {
+    route: "coaches",
+    target: "coach-contacts",
+    title: "Coach contacts",
+    body: "This page shows Carl, Faroque, Ed, Martin and Gordy with tap-to-call and tap-to-text links so parents know who to contact.",
+  },
+  {
+    route: "access",
+    target: "access-queue",
+    title: "Parent verification",
+    body: "This is the safeguarding gate. A parent requests access to a child, a coach approves it, and the app generates a temporary password for the parent to change.",
+  },
+  {
+    route: "install",
+    target: "install-panel",
+    title: "Phone testing",
+    body: "This page gives the test link and package download. On iPhone use Safari and Add to Home Screen; on Android use Chrome and Install app.",
+  },
+];
+
 let state = loadState();
 
 function loadState() {
@@ -280,6 +363,13 @@ function normalizeState(saved) {
   }
   merged.scheduleFilter = merged.scheduleFilter || "all";
   merged.parentAccounts = merged.parentAccounts?.length ? merged.parentAccounts : defaultState.parentAccounts;
+  merged.coachGuide = {
+    ...defaultState.coachGuide,
+    ...(saved.coachGuide || {}),
+  };
+  if (merged.coachGuide.step >= coachGuideSteps.length) {
+    merged.coachGuide.step = coachGuideSteps.length - 1;
+  }
 
   merged.events.forEach((event) => {
     event.venueId = event.venueId || venueIdFromName(event.venue);
@@ -512,7 +602,92 @@ function toast(message) {
   toast.timer = setTimeout(() => node.classList.remove("show"), 2600);
 }
 
+function isCoachDemo() {
+  return state.session.loggedIn && state.session.role === "coach" && state.session.demoMode;
+}
+
+function currentCoachGuideStep() {
+  return coachGuideSteps[state.coachGuide?.step || 0] || coachGuideSteps[0];
+}
+
+function applyCoachGuideStep() {
+  if (!isCoachDemo() || !state.coachGuide?.active) return;
+  const step = currentCoachGuideStep();
+  state.route = step.route;
+  if (step.eventId) state.selectedEventId = step.eventId;
+  if (step.route === "schedule") state.scheduleFilter = "all";
+}
+
+function updateCoachGuide(direction) {
+  if (!isCoachDemo()) return;
+  const nextStep = (state.coachGuide.step || 0) + direction;
+  if (nextStep >= coachGuideSteps.length) {
+    state.coachGuide.active = false;
+    state.coachGuide.completed = true;
+    saveState();
+    render();
+    toast("Coach walkthrough complete");
+    return;
+  }
+  state.coachGuide.step = Math.max(0, nextStep);
+  applyCoachGuideStep();
+  saveState();
+  render();
+}
+
+function stopCoachGuide() {
+  state.coachGuide.active = false;
+  state.coachGuide.completed = true;
+  saveState();
+  render();
+}
+
+function restartCoachGuide() {
+  state.coachGuide = { active: true, step: 0, completed: false };
+  applyCoachGuideStep();
+  saveState();
+  render();
+}
+
+function coachGuideButton() {
+  if (!isCoachDemo()) return "";
+  return `<button class="secondary-button guide-start-button" type="button" data-action="coach-guide-restart">${state.coachGuide.active ? "Restart walkthrough" : "Start walkthrough"}</button>`;
+}
+
+function coachGuideView() {
+  if (!isCoachDemo() || !state.coachGuide?.active) return "";
+  const step = currentCoachGuideStep();
+  const stepNumber = (state.coachGuide.step || 0) + 1;
+  const lastStep = stepNumber === coachGuideSteps.length;
+  return `
+    <section class="coach-guide-card" role="dialog" aria-live="polite" aria-label="Coach walkthrough">
+      <div class="coach-guide-progress">
+        <span>Coach walkthrough</span>
+        <strong>${stepNumber}/${coachGuideSteps.length}</strong>
+      </div>
+      <h2>${escapeHtml(step.title)}</h2>
+      <p>${escapeHtml(step.body)}</p>
+      <div class="coach-guide-actions">
+        <button class="secondary-button" type="button" data-action="coach-guide-back" ${stepNumber === 1 ? "disabled" : ""}>Back</button>
+        <button class="primary-button" type="button" data-action="coach-guide-next">${lastStep ? "Finish" : "Next"}</button>
+        <button class="tiny-button" type="button" data-action="coach-guide-stop">Skip</button>
+      </div>
+    </section>
+  `;
+}
+
+function highlightCoachGuideTarget() {
+  document.querySelectorAll(".coach-guide-highlight").forEach((node) => node.classList.remove("coach-guide-highlight"));
+  if (!isCoachDemo() || !state.coachGuide?.active) return;
+  const target = currentCoachGuideStep().target;
+  const node = target ? document.querySelector(`[data-tour="${target}"]`) : null;
+  if (!node) return;
+  node.classList.add("coach-guide-highlight");
+  node.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+}
+
 function render() {
+  applyCoachGuideStep();
   const app = $("#app");
   if (!state.session.loggedIn) {
     app.innerHTML = authView();
@@ -520,6 +695,7 @@ function render() {
     app.innerHTML = shellView();
   }
   bindFormDefaults();
+  highlightCoachGuideTarget();
 }
 
 function authView() {
@@ -630,6 +806,7 @@ function shellView() {
           </div>
           <div class="topbar-actions">
             ${state.session.role === "parent" && approvedPlayers().length ? childSelector(child) : ""}
+            ${coachGuideButton()}
             <button class="notification-button" type="button" data-route-target="messages" aria-label="Messages">
               <span>${state.messages.length}</span>
             </button>
@@ -647,6 +824,7 @@ function shellView() {
       </nav>
     </div>
     ${modalView()}
+    ${coachGuideView()}
   `;
 }
 
@@ -667,7 +845,7 @@ function navRoutes(pendingOnly = false) {
 
 function navItem(item, route, compact = false) {
   return `
-    <button class="nav-link ${route === item.id ? "active" : ""}" type="button" data-route-target="${item.id}">
+    <button class="nav-link ${route === item.id ? "active" : ""}" type="button" data-route-target="${item.id}" data-tour="nav-${item.id}">
       <span class="nav-mark">${item.label.slice(0, 1)}</span>
       <span>${compact ? item.label.replace("Availability", "Avail.") : item.label}</span>
     </button>
@@ -733,7 +911,7 @@ function homeView() {
   const counts = availabilityCounts(next.id);
 
   return `
-    <section class="hero-panel">
+    <section class="hero-panel" data-tour="dashboard-next">
       <div class="hero-text">
         <img src="${crestPath}" alt="">
         <div>
@@ -764,7 +942,7 @@ function homeView() {
 
 function linkedChildCard(child) {
   return `
-    <article class="panel">
+    <article class="panel" data-tour="coach-tools">
       <div class="panel-title">
         <div>
           <p class="eyebrow">Linked child</p>
@@ -821,7 +999,7 @@ function scheduleView() {
     .sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
 
   return `
-    <section class="toolbar">
+    <section class="toolbar" data-tour="schedule-toolbar">
       <div class="segmented light">
         ${["all", ...teams.map((team) => team.id)].map((id) => `
           <button type="button" class="${state.scheduleFilter === id ? "active" : ""}" data-action="set-schedule-filter" data-team-id="${id}">
@@ -831,7 +1009,8 @@ function scheduleView() {
       </div>
       ${state.session.role === "coach" ? '<button class="primary-button" type="button" data-modal="event">Add fixture/training</button>' : ""}
     </section>
-    <div class="event-list">
+    ${isCoachDemo() ? '<aside class="coach-demo-hint" data-tour="away-support">Away destination adds venue name and address fields, so map buttons still work for places like Bellfield Estate.</aside>' : ""}
+    <div class="event-list" data-tour="event-list">
       ${visibleEvents.map(eventCard).join("")}
     </div>
   `;
@@ -884,7 +1063,7 @@ function availabilityView() {
   const childInEvent = child && players.some((player) => player.id === child.id);
 
   return `
-    <section class="toolbar">
+    <section class="toolbar" data-tour="availability-summary">
       <label class="field compact-field">
         <span>Event</span>
         <select data-action="select-event">
@@ -900,7 +1079,7 @@ function availabilityView() {
 
     <section class="content-grid ${state.session.role === "coach" ? "" : "two-col"}">
       ${state.session.role === "parent" ? parentAvailabilityCard(event, child, childInEvent) : ""}
-      <article class="panel">
+      <article class="panel" data-tour="availability-responses">
         <div class="panel-title">
           <div>
             <p class="eyebrow">Responses</p>
@@ -975,7 +1154,7 @@ function attendanceView() {
   const players = state.session.role === "coach" ? getPlayersForEvent(event) : [currentPlayer()].filter(Boolean);
 
   return `
-    <section class="toolbar">
+    <section class="toolbar" data-tour="attendance-session">
       <label class="field compact-field">
         <span>Session</span>
         <select data-action="select-event">
@@ -983,7 +1162,7 @@ function attendanceView() {
         </select>
       </label>
     </section>
-    <div class="attendance-grid">
+    <div class="attendance-grid" data-tour="attendance-grid">
       ${players.map((player) => attendanceCard(event, player)).join("")}
     </div>
   `;
@@ -1023,10 +1202,10 @@ function attendanceCard(event, player) {
 
 function squadsView() {
   return `
-    <section class="toolbar">
+    <section class="toolbar" data-tour="squad-actions">
       ${state.session.role === "coach" ? '<button class="primary-button" type="button" data-modal="player">Add player</button>' : ""}
     </section>
-    <div class="team-board">
+    <div class="team-board" data-tour="team-board">
       ${teams.map(teamColumn).join("")}
       <article class="team-column">
         <div class="panel-title">
@@ -1077,11 +1256,11 @@ function messagesView() {
   });
 
   return `
-    <section class="toolbar">
+    <section class="toolbar" data-tour="message-actions">
       <div></div>
       ${state.session.role === "coach" ? '<button class="primary-button" type="button" data-modal="message">New message</button>' : ""}
     </section>
-    <div class="message-list">
+    <div class="message-list" data-tour="messages-panel">
       ${visible.map((message) => `
         <article class="message-card">
           <div class="panel-title">
@@ -1107,7 +1286,7 @@ function coachesView() {
             <h3>Coaches</h3>
           </div>
         </div>
-        <div class="coach-grid">
+        <div class="coach-grid" data-tour="coach-contacts">
           ${coaches.map(coachCard).join("")}
         </div>
       </article>
@@ -1260,7 +1439,7 @@ function coachAccessView() {
   const requests = state.accessRequests;
   return `
     <section class="content-grid two-col">
-      <article class="panel">
+      <article class="panel" data-tour="access-queue">
         <div class="panel-title">
           <div>
             <p class="eyebrow">Parent verification</p>
@@ -1325,7 +1504,7 @@ function installView() {
   const appUrl = `${window.location.origin}${window.location.pathname}`;
   return `
     <section class="content-grid two-col">
-      <article class="panel install-panel">
+      <article class="panel install-panel" data-tour="install-panel">
         <div class="panel-title">
           <div>
             <p class="eyebrow">Mobile test link</p>
@@ -1519,7 +1698,7 @@ document.addEventListener("click", (event) => {
   }
 
   if (action === "demo-parent") {
-    state.session = { loggedIn: true, role: "parent", parentName: placeholderParent, coachName: "", selectedPlayerId: "p1" };
+    state.session = { loggedIn: true, role: "parent", parentName: placeholderParent, coachName: "", selectedPlayerId: "p1", demoMode: false };
     state.route = "home";
     saveState();
     render();
@@ -1527,8 +1706,9 @@ document.addEventListener("click", (event) => {
   }
 
   if (action === "demo-coach") {
-    state.session = { loggedIn: true, role: "coach", parentName: "", coachName: "Coach", selectedPlayerId: "" };
-    state.route = "home";
+    state.session = { loggedIn: true, role: "coach", parentName: "", coachName: "Coach", selectedPlayerId: "", demoMode: true };
+    state.coachGuide = { active: true, step: 0, completed: false };
+    applyCoachGuideStep();
     saveState();
     render();
     return;
@@ -1539,6 +1719,26 @@ document.addEventListener("click", (event) => {
     state.route = "home";
     saveState();
     render();
+    return;
+  }
+
+  if (action === "coach-guide-next") {
+    updateCoachGuide(1);
+    return;
+  }
+
+  if (action === "coach-guide-back") {
+    updateCoachGuide(-1);
+    return;
+  }
+
+  if (action === "coach-guide-stop") {
+    stopCoachGuide();
+    return;
+  }
+
+  if (action === "coach-guide-restart") {
+    restartCoachGuide();
     return;
   }
 
@@ -1658,7 +1858,7 @@ function handleParentLogin(data) {
   );
 
   if (!existingLink) {
-    state.session = { loggedIn: true, role: "parent", parentName, coachName: "", selectedPlayerId: playerId };
+    state.session = { loggedIn: true, role: "parent", parentName, coachName: "", selectedPlayerId: playerId, demoMode: false };
     ensureRequest(parentName, playerId, relation);
     state.route = "access";
     toast("Access request sent to coaches");
@@ -1670,7 +1870,7 @@ function handleParentLogin(data) {
       return;
     }
     if (passcode === account.temporaryPassword) account.mustChangePassword = true;
-    state.session = { loggedIn: true, role: "parent", parentName, coachName: "", selectedPlayerId: playerId };
+    state.session = { loggedIn: true, role: "parent", parentName, coachName: "", selectedPlayerId: playerId, demoMode: false };
     state.route = "home";
     toast("Signed in");
   }
@@ -1688,6 +1888,7 @@ function handleCoachLogin(data) {
     parentName: "",
     coachName: data.get("coachName").trim(),
     selectedPlayerId: "",
+    demoMode: false,
   };
   state.route = "home";
   toast("Coach signed in");

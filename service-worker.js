@@ -1,4 +1,4 @@
-const cacheName = "largs-colts-coach-test-1";
+const cacheName = "largs-colts-coach-test-2";
 const appShell = [
   "./",
   "index.html",

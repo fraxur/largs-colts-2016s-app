@@ -59,7 +59,28 @@ http://127.0.0.1:4173/
 ```
 
 4. Use the parent demo button to see the parent side.
-5. Use the coach demo button, or coach passcode `coach2016`, to see the coach side.
+5. Use the coach demo button to see the coach side with the guided walkthrough.
+6. Use coach passcode `coach2016` for the clean coach view without the walkthrough.
+
+## Coach Guided Walkthrough
+
+The guided walkthrough appears only when `Use coach demo` is selected.
+
+It walks coaches through:
+
+- Dashboard and next match
+- Quick coach actions
+- Fixtures and training
+- Away venue typing
+- Availability
+- Attendance
+- Teams and squads
+- Messages
+- Coach contacts
+- Parent verification
+- Phone testing/install
+
+Use `Next`, `Back`, `Skip` or `Restart walkthrough` while reviewing the app.
 
 ## Coach Test: Create A Fixture
 
