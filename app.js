@@ -1,5 +1,4 @@
-const storageKey = "largs-colts-2016s-coach-test-5";
-const appVersion = "3.8";
+const appVersion = "4.0-live";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -18,12 +17,16 @@ const firebaseRuntime = {
   user: null,
 };
 const clubId = "largs-colts-2016s";
+let liveTeams = [];
+let liveUnsubscribers = [];
+let eventDataUnsubscribers = [];
 
 const teams = [
   { id: "orange", name: "Orange", colour: "#f97316" },
   { id: "blue", name: "Blue", colour: "#2563eb" },
   { id: "yellow", name: "Yellow", colour: "#eab308" },
 ];
+liveTeams = teams;
 
 const coaches = [
   { id: "carl", name: "Carl", teamId: "all", role: "Coach", phone: "07999696043", email: "" },
@@ -61,105 +64,17 @@ const leavers = ["Caleb", "Robyn", "Alexander", "Harry Smith"];
 const placeholderParent = "Parent Placeholder";
 const placeholderPhone = "07000 000000";
 
-const defaultPlayers = [
-  player("p1", "Arthur Atkinson", "orange"),
-  player("p2", "Harry Riley", "orange"),
-  player("p3", "Jacob Hussain", "orange"),
-  player("p4", "Harris Beckwith", "orange"),
-  player("p5", "Jack Rossiter", "orange"),
-  player("p6", "Jack Craig", "orange"),
-  player("p7", "Murphy Auld", "orange"),
-  player("p8", "Oscar McGarvey", "orange"),
-  player("p9", "Fraser Clark", "orange"),
-  player("p10", "Grace Blacklock", "blue"),
-  player("p11", "Muir Balmforth", "blue"),
-  player("p12", "Leo Lazzerini", "blue"),
-  player("p13", "Kammy Cassidy", "blue"),
-  player("p14", "Brooklyn Fraser", "blue"),
-  player("p15", "Logan Fraser", "blue"),
-  player("p16", "Luke Dowds", "blue"),
-  player("p17", "Teddy Holland", "blue"),
-  player("p18", "Gianluca Greenwood", "blue"),
-  player("p19", "Luke McCready", "yellow"),
-  player("p20", "Ethan Maguire", "yellow"),
-  player("p21", "Brice Fergusson", "yellow"),
-  player("p22", "Luke McGowan", "yellow"),
-  player("p23", "Ethan Hughes", "yellow"),
-  player("p24", "Harris Jardine", "yellow"),
-  player("p25", "Lucas Reilly", "yellow"),
-  player("p26", "Jacob McShane", "yellow"),
-];
-
-function player(id, name, teamId) {
-  return {
-    id,
-    name,
-    teamId,
-    role: "Player",
-    parentName: placeholderParent,
-    parentPhone: placeholderPhone,
-    status: "active",
-  };
-}
-
-const defaultEvents = [
-  {
-    ...fixture("e1", "blue", "Opposition TBC", "2026-05-16T09:30", "10:45", "Bowencraig (Home pitch)", "bowencraig", "09:00", "Home kit", "Home match. Report for 9:00am."),
-    title: "Blue home match",
-  },
-  {
-    ...fixture("e2", "yellow", "Bellfield", "2026-05-16T10:00", "11:15", "Bellfield Estate", "away-custom", "09:30", "Away kit", "Grass pitch. Please report for 9:30am."),
-    title: "Yellow away to Bellfield",
-    address: "Bellfield Estate, Kilmarnock KA1 3XG",
-  },
-  training("t1", "all", "Training", "2026-05-19T18:00", "Bowencraig (Home pitch)", "bowencraig"),
-  training("t2", "all", "Training", "2026-05-20T18:00", "Bowencraig (Home pitch)", "bowencraig"),
-  training("t3", "all", "Training", "2026-05-26T18:00", "Bowencraig (Home pitch)", "bowencraig"),
-  training("t4", "all", "Training", "2026-05-27T18:00", "Bowencraig (Home pitch)", "bowencraig"),
-];
-
-function fixture(id, teamId, opponent, datetime, finishTime, venue, venueId, meetTime, kit, notes) {
-  return {
-    id,
-    type: "Fixture",
-    teamId,
-    title: `${teamName(teamId)} vs ${opponent}`,
-    opponent,
-    datetime,
-    finishTime,
-    venue,
-    venueId,
-    meetTime,
-    kit,
-    notes,
-  };
-}
-
-function training(id, teamId, title, datetime, venue, venueId) {
-  return {
-    id,
-    type: "Training",
-    teamId,
-    title,
-    opponent: "",
-    datetime,
-    finishTime: "19:30",
-    venue,
-    venueId,
-    meetTime: "",
-    kit: "",
-    notes: "18:00-19:30. All teams. Bring boots, water and shin pads.",
-  };
-}
-
 const defaultState = {
+  loading: true,
+  error: "",
   session: {
     loggedIn: false,
-    role: "parent",
+    role: "",
+    userId: "",
+    email: "",
     parentName: "",
     coachName: "",
     selectedPlayerId: "p1",
-    demoMode: false,
   },
   route: "home",
   authRole: "parent",
@@ -170,7 +85,8 @@ const defaultState = {
     step: 0,
     completed: false,
   },
-  players: defaultPlayers,
+  teams,
+  players: [],
   inactivePlayers: leavers.map((name, index) => ({
     id: `left-${index + 1}`,
     name,
@@ -178,111 +94,21 @@ const defaultState = {
     role: "Left club",
     status: "left",
   })),
-  parentLinks: [
-    {
-      id: "link-placeholder-arthur",
-      parentName: placeholderParent,
-      playerId: "p1",
-      relation: "Parent",
-      status: "approved",
-      consent: true,
-      createdAt: "2026-05-01",
-    },
-  ],
-  parentAccounts: [
-    {
-      parentName: placeholderParent,
-      phone: placeholderPhone,
-      password: "parent2016",
-      temporaryPassword: "",
-      mustChangePassword: false,
-      status: "active",
-      updatedAt: "2026-05-01",
-    },
-  ],
-  accessRequests: [
-    {
-      id: "req-sarah-finlay",
-      parentName: placeholderParent,
-      playerId: "p13",
-      relation: "Parent",
-      status: "pending",
-      temporaryPassword: "",
-      expiresAt: "",
-      createdAt: "2026-05-13",
-    },
-  ],
-  events: defaultEvents,
-  availability: {
-    e1: {
-      p10: { status: "available", note: "" },
-      p13: { status: "unknown", note: "" },
-      p16: { status: "available", note: "" },
-      p18: { status: "unknown", note: "" },
-    },
-    e2: {
-      p19: { status: "available", note: "" },
-      p22: { status: "available", note: "" },
-      p26: { status: "unknown", note: "" },
-    },
-    t1: {},
-    t2: {},
-  },
-  attendance: {
-    t1: {
-      p1: "present",
-      p2: "present",
-      p3: "present",
-      p4: "present",
-      p5: "present",
-      p6: "present",
-      p7: "present",
-      p8: "absent",
-      p9: "present",
-      p10: "present",
-      p11: "present",
-      p12: "present",
-      p13: "absent",
-      p14: "present",
-      p15: "present",
-      p16: "present",
-      p17: "present",
-      p18: "unknown",
-      p19: "present",
-      p20: "present",
-      p21: "present",
-      p22: "present",
-      p23: "absent",
-      p24: "present",
-      p25: "present",
-      p26: "unknown",
-    },
-  },
-  parentAlerts: [],
-  messages: [
-    {
-      id: "m1",
-      title: "Weekend fixtures confirmed",
-      body: "Please check your child's team fixture and mark availability by Thursday evening.",
-      teamId: "all",
-      createdAt: "Today",
-    },
-    {
-      id: "m2",
-      title: "New app test build",
-      body: "Parents can now test login, verification, fixtures, availability and team messages in one place.",
-      teamId: "all",
-      createdAt: "Today",
-    },
-  ],
+  parentLinks: [],
+  accessRequests: [],
+  events: [],
+  availability: {},
+  attendance: {},
+  notifications: [],
+  messages: [],
 };
 
 const coachGuideSteps = [
   {
     route: "home",
     target: "dashboard-next",
-    title: "Coach demo start",
-    body: "This walkthrough is only shown in coach demo mode. The dashboard starts with the next event: Blue home match, Saturday 16 May, kick-off 09:30, report 09:00 at Bowencraig.",
+    title: "Coach walkthrough start",
+    body: "The dashboard starts with the next event and gives coaches quick access to fixtures, availability, attendance and parent verification.",
   },
   {
     route: "home",
@@ -344,7 +170,7 @@ const coachGuideSteps = [
     route: "access",
     target: "access-queue",
     title: "Parent verification",
-    body: "This is the safeguarding gate. A parent requests access to a child, a coach approves it, and the app generates a temporary password for the parent to change.",
+    body: "This is the safeguarding gate. A parent requests access to a child, a coach checks the request and approves the child link.",
   },
   {
     route: "install",
@@ -357,12 +183,18 @@ const coachGuideSteps = [
 let state = loadState();
 
 function loadState() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(storageKey));
-    return saved ? normalizeState(saved) : structuredClone(defaultState);
-  } catch {
-    return structuredClone(defaultState);
-  }
+  return normalizeState({
+    ...structuredClone(defaultState),
+    players: [],
+    events: [],
+    availability: {},
+    attendance: {},
+    parentLinks: [],
+    accessRequests: [],
+    notifications: [],
+    messages: [],
+    session: { ...defaultState.session },
+  });
 }
 
 function normalizeState(saved) {
@@ -372,21 +204,18 @@ function normalizeState(saved) {
     session: { ...defaultState.session, ...(saved.session || {}) },
   };
 
-  const names = new Set((merged.players || []).map((player) => player.name));
-  defaultPlayers.forEach((player) => {
-    if (!names.has(player.name)) merged.players.push(player);
-  });
-  merged.players = merged.players.filter((player) => !leavers.includes(player.name));
-
   merged.inactivePlayers = defaultState.inactivePlayers;
-  merged.events = merged.events?.length ? merged.events : defaultEvents;
-  merged.selectedEventId = merged.selectedEventId || merged.events[0].id;
+  merged.players = (merged.players || []).filter((player) => !leavers.includes(player.name));
+  merged.teams = merged.teams?.length ? merged.teams : teams;
+  liveTeams = merged.teams;
+  merged.events = merged.events || [];
+  merged.messages = merged.messages || [];
+  merged.notifications = merged.notifications || [];
+  merged.selectedEventId = merged.selectedEventId || merged.events[0]?.id || "";
   if (!merged.events.some((event) => event.id === merged.selectedEventId)) {
     merged.selectedEventId = merged.events[0]?.id || "";
   }
   merged.scheduleFilter = merged.scheduleFilter || "all";
-  merged.parentAccounts = merged.parentAccounts?.length ? merged.parentAccounts : defaultState.parentAccounts;
-  merged.parentAlerts = merged.parentAlerts || [];
   merged.coachGuide = {
     ...defaultState.coachGuide,
     ...(saved.coachGuide || {}),
@@ -414,9 +243,7 @@ function normalizeState(saved) {
   return merged;
 }
 
-function saveState() {
-  localStorage.setItem(storageKey, JSON.stringify(state));
-}
+function saveState() {}
 
 function $(selector, root = document) {
   return root.querySelector(selector);
@@ -443,20 +270,24 @@ function activePlayers() {
   return state.players.filter((player) => player.status === "active");
 }
 
-function approvedLinks(parentName = state.session.parentName) {
-  return state.parentLinks.filter(
-    (link) => sameName(link.parentName, parentName) && link.status === "approved",
-  );
+function approvedLinks() {
+  return state.parentLinks.filter((link) => {
+    if (link.status !== "approved") return false;
+    if (state.session.role === "coach") return true;
+    return link.parentUid === state.session.userId;
+  });
 }
 
-function pendingRequests(parentName = state.session.parentName) {
-  return state.accessRequests.filter(
-    (request) => sameName(request.parentName, parentName) && request.status === "pending",
-  );
+function pendingRequests() {
+  return state.accessRequests.filter((request) => {
+    if (request.status !== "pending") return false;
+    if (state.session.role === "coach") return true;
+    return request.parentUid === state.session.userId;
+  });
 }
 
-function approvedPlayers(parentName = state.session.parentName) {
-  const ids = new Set(approvedLinks(parentName).map((link) => link.playerId));
+function approvedPlayers() {
+  const ids = new Set(approvedLinks().map((link) => link.playerId));
   return activePlayers().filter((player) => ids.has(player.id));
 }
 
@@ -466,7 +297,7 @@ function sameName(a, b) {
 
 function teamById(teamId) {
   if (teamId === "all") return { id: "all", name: "All teams", colour: "#850008" };
-  return teams.find((team) => team.id === teamId) || teams[0];
+  return (liveTeams.length ? liveTeams : teams).find((team) => team.id === teamId) || teams[0];
 }
 
 function teamName(teamId) {
@@ -546,44 +377,6 @@ function mapsAppleUrl(address) {
   return `https://maps.apple.com/?q=${encodeURIComponent(address)}`;
 }
 
-function generateTemporaryPassword() {
-  const letters = "ABCDEFGHJKLMNPQRSTUVWXYZ";
-  const numbers = "23456789";
-  const pick = (pool, count) => Array.from({ length: count }, () => pool[Math.floor(Math.random() * pool.length)]).join("");
-  return `LC-${pick(letters, 3)}${pick(numbers, 3)}`;
-}
-
-function temporaryPasswordExpiry() {
-  const date = new Date();
-  date.setDate(date.getDate() + 2);
-  return date.toISOString().slice(0, 10);
-}
-
-function parentAccount(parentName) {
-  return state.parentAccounts.find((account) => sameName(account.parentName, parentName));
-}
-
-function upsertParentAccount(parentName, phone = placeholderPhone, temporaryPassword = "") {
-  let account = parentAccount(parentName);
-  if (!account) {
-    account = {
-      parentName,
-      phone,
-      password: "",
-      temporaryPassword,
-      mustChangePassword: Boolean(temporaryPassword),
-      status: "active",
-      updatedAt: "Today",
-    };
-    state.parentAccounts.push(account);
-  } else if (temporaryPassword) {
-    account.temporaryPassword = temporaryPassword;
-    account.mustChangePassword = true;
-    account.updatedAt = "Today";
-  }
-  return account;
-}
-
 function getPlayersForEvent(event, players = activePlayers()) {
   if (event.teamId === "all") return players;
   return players.filter((player) => player.teamId === event.teamId);
@@ -597,6 +390,13 @@ function formatDate(value) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+function displayDate(value) {
+  if (!value) return "Just now";
+  if (typeof value === "string") return value;
+  if (typeof value.toDate === "function") return formatDate(value.toDate().toISOString());
+  return String(value);
 }
 
 function dateTile(value) {
@@ -668,8 +468,39 @@ function toast(message) {
   toast.timer = setTimeout(() => node.classList.remove("show"), 2600);
 }
 
-function isCoachDemo() {
-  return state.session.loggedIn && state.session.role === "coach" && state.session.demoMode;
+function setBusy(message = "Loading...") {
+  state.loading = true;
+  state.error = "";
+  render();
+  if (message) toast(message);
+}
+
+function showError(message) {
+  state.loading = false;
+  state.error = message;
+  render();
+  toast(message);
+}
+
+function authErrorMessage(error) {
+  return {
+    "auth/invalid-credential": "Those Firebase login details were not recognised.",
+    "auth/user-not-found": "No account was found for that email address.",
+    "auth/wrong-password": "That password is not correct.",
+    "auth/email-already-in-use": "That email is already registered. Please sign in with the existing password.",
+    "auth/weak-password": "Please choose a password with at least six characters.",
+    "auth/requires-recent-login": "Please sign out and back in before changing the password.",
+  }[error?.code] || "Firebase could not complete that action. Please check the account and try again.";
+}
+
+function requireCoach() {
+  if (state.session.role === "coach") return true;
+  toast("Coach access required");
+  return false;
+}
+
+function isCoachGuide() {
+  return state.session.loggedIn && state.session.role === "coach" && state.coachGuide?.active;
 }
 
 function currentCoachGuideStep() {
@@ -677,7 +508,7 @@ function currentCoachGuideStep() {
 }
 
 function applyCoachGuideStep() {
-  if (!isCoachDemo() || !state.coachGuide?.active) return;
+  if (!isCoachGuide()) return;
   const step = currentCoachGuideStep();
   state.route = step.route;
   if (step.eventId) state.selectedEventId = step.eventId;
@@ -685,7 +516,7 @@ function applyCoachGuideStep() {
 }
 
 function updateCoachGuide(direction) {
-  if (!isCoachDemo()) return;
+  if (!isCoachGuide()) return;
   const nextStep = (state.coachGuide.step || 0) + direction;
   if (nextStep >= coachGuideSteps.length) {
     state.coachGuide.active = false;
@@ -716,12 +547,12 @@ function restartCoachGuide() {
 }
 
 function coachGuideButton() {
-  if (!isCoachDemo()) return "";
+  if (!isCoachGuide()) return "";
   return `<button class="secondary-button guide-start-button" type="button" data-action="coach-guide-restart">${state.coachGuide.active ? "Restart walkthrough" : "Start walkthrough"}</button>`;
 }
 
 function coachGuideView() {
-  if (!isCoachDemo() || !state.coachGuide?.active) return "";
+  if (!isCoachGuide()) return "";
   const step = currentCoachGuideStep();
   const stepNumber = (state.coachGuide.step || 0) + 1;
   const lastStep = stepNumber === coachGuideSteps.length;
@@ -744,7 +575,7 @@ function coachGuideView() {
 
 function highlightCoachGuideTarget() {
   document.querySelectorAll(".coach-guide-highlight").forEach((node) => node.classList.remove("coach-guide-highlight"));
-  if (!isCoachDemo() || !state.coachGuide?.active) return;
+  if (!isCoachGuide()) return;
   const target = currentCoachGuideStep().target;
   const node = target ? document.querySelector(`[data-tour="${target}"]`) : null;
   if (!node) return;
@@ -755,6 +586,10 @@ function highlightCoachGuideTarget() {
 function render() {
   applyCoachGuideStep();
   const app = $("#app");
+  if (state.loading) {
+    app.innerHTML = loadingView();
+    return;
+  }
   if (!state.session.loggedIn) {
     app.innerHTML = authView();
   } else {
@@ -762,6 +597,28 @@ function render() {
   }
   bindFormDefaults();
   highlightCoachGuideTarget();
+}
+
+function loadingView() {
+  return `
+    <main class="auth-page">
+      <section class="auth-card loading-card">
+        <div class="auth-brand">
+          <img src="${crestPath}" alt="Largs Colts F.C. crest">
+          <div>
+            <p class="eyebrow">Loading secure app</p>
+            <h1>Largs Colts 2016s</h1>
+            <p>Checking Firebase sign-in and loading the latest club data.</p>
+          </div>
+        </div>
+        <div class="loading-bar" aria-hidden="true"><span></span></div>
+      </section>
+    </main>
+  `;
+}
+
+function errorBanner() {
+  return state.error ? `<section class="pending-banner error-banner"><strong>Action needed</strong><span>${escapeHtml(state.error)}</span></section>` : "";
 }
 
 function authView() {
@@ -783,6 +640,7 @@ function authView() {
         </div>
 
         ${state.authRole === "parent" ? parentLoginView() : coachLoginView()}
+        ${errorBanner()}
       </section>
     </main>
   `;
@@ -792,14 +650,20 @@ function parentLoginView() {
   return `
     <form class="auth-form" data-form="parent-login">
       <label>
-        <span>Parent name</span>
-        <input name="parentName" autocomplete="name" required placeholder="Parent Placeholder">
+        <span>Email</span>
+        <input name="email" type="email" autocomplete="email" required placeholder="parent@example.com">
       </label>
       <label>
-        <span>Child</span>
-        <select name="playerId">
-          ${activePlayers().map((player) => `<option value="${player.id}">${escapeHtml(player.name)} - ${teamName(player.teamId)}</option>`).join("")}
-        </select>
+        <span>Password</span>
+        <input name="passcode" type="password" autocomplete="current-password" minlength="6" required placeholder="Your private password">
+      </label>
+      <label>
+        <span>Parent name</span>
+        <input name="parentName" autocomplete="name" required placeholder="Your name">
+      </label>
+      <label>
+        <span>Child name for access request</span>
+        <input name="childName" autocomplete="off" placeholder="Only needed until approved">
       </label>
       <label>
         <span>Relationship</span>
@@ -809,21 +673,12 @@ function parentLoginView() {
           <option>Carer</option>
         </select>
       </label>
-      <label>
-        <span>Email for live app</span>
-        <input name="email" type="email" autocomplete="email" placeholder="parent@example.com">
-      </label>
-      <label>
-        <span>Passcode</span>
-        <input name="passcode" type="password" autocomplete="current-password" placeholder="parent2016 or temporary password" required>
-      </label>
       <label class="check-row">
         <input name="consent" type="checkbox" required>
         <span>I confirm I am allowed to request access for this child and consent to Largs Colts 2016s storing child profile, availability, attendance and app notification data for team management. Temporary support contact: ${escapeHtml(supportEmail)}.</span>
       </label>
       <div class="auth-actions">
-        <button class="primary-button" type="submit">Continue</button>
-        <button class="secondary-button" type="button" data-action="demo-parent">Use parent demo</button>
+        <button class="primary-button" type="submit">Sign in or request access</button>
       </div>
     </form>
   `;
@@ -833,22 +688,17 @@ function coachLoginView() {
   return `
     <form class="auth-form" data-form="coach-login">
       <label>
-        <span>Coach name</span>
-        <input name="coachName" autocomplete="name" required placeholder="Coach">
+        <span>Email</span>
+        <input name="email" type="email" autocomplete="email" required placeholder="coach@example.com">
       </label>
       <label>
-        <span>Email for live app</span>
-        <input name="email" type="email" autocomplete="email" placeholder="coach@example.com">
-      </label>
-      <label>
-        <span>Coach passcode</span>
-        <input name="passcode" type="password" autocomplete="current-password" placeholder="coach2016" required>
+        <span>Password</span>
+        <input name="passcode" type="password" autocomplete="current-password" required placeholder="Coach account password">
       </label>
       <div class="auth-actions">
         <button class="primary-button" type="submit">Sign in</button>
-        <button class="secondary-button" type="button" data-action="demo-coach">Use guided coach demo</button>
       </div>
-      <p class="demo-build-note">Build ${appVersion} includes the coach walkthrough pop-ups.</p>
+      <p class="live-build-note">Build ${appVersion} uses live Firebase Auth, Firestore and push notifications.</p>
     </form>
   `;
 }
@@ -888,6 +738,7 @@ function shellView() {
           </div>
         </header>
 
+        ${errorBanner()}
         ${pendingOnly ? pendingBanner() : ""}
         <section class="page-frame">
           ${pageView(route)}
@@ -904,7 +755,7 @@ function shellView() {
 }
 
 function navRoutes(pendingOnly = false) {
-  const base = [
+  const coachRoutes = [
     { id: "home", label: "Home" },
     { id: "schedule", label: "Schedule" },
     { id: "availability", label: "Availability" },
@@ -915,6 +766,8 @@ function navRoutes(pendingOnly = false) {
     { id: "access", label: "Access" },
     { id: "install", label: "Install" },
   ];
+  const parentRoutes = coachRoutes.filter((item) => item.id !== "squads");
+  const base = state.session.role === "coach" ? coachRoutes : parentRoutes;
   return pendingOnly ? base.filter((item) => ["access", "install"].includes(item.id)) : base;
 }
 
@@ -965,6 +818,7 @@ function pendingBanner() {
 function pageView(route) {
   const pendingOnly = state.session.role === "parent" && !approvedPlayers().length;
   if (pendingOnly && route !== "install") return accessView();
+  if (state.session.role !== "coach" && route === "squads") return homeView();
   return {
     home: homeView,
     schedule: scheduleView,
@@ -983,7 +837,24 @@ function homeView() {
     .filter((event) => new Date(event.datetime) >= startOfToday())
     .sort((a, b) => new Date(a.datetime) - new Date(b.datetime))[0] || state.events[0];
   const child = currentPlayer();
+  if (!next) {
+    return `
+      <section class="hero-panel" data-tour="dashboard-next">
+        <div class="hero-text">
+          <img src="${crestPath}" alt="">
+          <div>
+            <p class="eyebrow">Live app ready</p>
+            <h2>No fixtures or training loaded yet</h2>
+            <p>Seed Firestore or ask a coach to add the first event.</p>
+          </div>
+        </div>
+        ${state.session.role === "coach" ? '<div class="hero-actions"><button class="primary-button" type="button" data-modal="event">Add fixture/training</button></div>' : ""}
+      </section>
+    `;
+  }
   const counts = availabilityCounts(next.id);
+  const playerCount = state.session.role === "coach" ? activePlayers().length : approvedPlayers().length;
+  const pendingCount = state.session.role === "coach" ? state.accessRequests.filter((request) => request.status === "pending").length : pendingRequests().length;
 
   return `
     <section class="hero-panel" data-tour="dashboard-next">
@@ -1002,10 +873,10 @@ function homeView() {
     </section>
 
     <section class="metric-grid">
-      <article><strong>${activePlayers().length}</strong><span>Active players</span></article>
+      <article><strong>${playerCount}</strong><span>${state.session.role === "coach" ? "Active players" : "Linked children"}</span></article>
       <article><strong>${counts.available}</strong><span>Available next event</span></article>
       <article><strong>${averageAttendance()}%</strong><span>Attendance average</span></article>
-      <article><strong>${state.accessRequests.filter((request) => request.status === "pending").length}</strong><span>Pending requests</span></article>
+      <article><strong>${pendingCount}</strong><span>Pending requests</span></article>
     </section>
 
     <section class="content-grid two-col">
@@ -1069,24 +940,26 @@ function messageCard() {
 }
 
 function scheduleView() {
+  const childTeamIds = new Set(approvedPlayers().map((player) => player.teamId));
   const visibleEvents = state.events
+    .filter((event) => state.session.role === "coach" || event.teamId === "all" || childTeamIds.has(event.teamId))
     .filter((event) => state.scheduleFilter === "all" || event.teamId === state.scheduleFilter || event.teamId === "all")
     .sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
 
   return `
     <section class="toolbar" data-tour="schedule-toolbar">
-      <div class="segmented light">
+      ${state.session.role === "coach" ? `<div class="segmented light">
         ${["all", ...teams.map((team) => team.id)].map((id) => `
           <button type="button" class="${state.scheduleFilter === id ? "active" : ""}" data-action="set-schedule-filter" data-team-id="${id}">
             ${id === "all" ? "All" : teamName(id)}
           </button>
         `).join("")}
-      </div>
+      </div>` : "<div></div>"}
       ${state.session.role === "coach" ? '<button class="primary-button" type="button" data-modal="event">Add fixture/training</button>' : ""}
     </section>
-    ${isCoachDemo() ? '<aside class="coach-demo-hint" data-tour="away-support">Away destination adds venue name and address fields, so map buttons still work for places like Bellfield Estate.</aside>' : ""}
+    ${isCoachGuide() ? '<aside class="coach-guide-hint" data-tour="away-support">Away destination adds venue name and address fields, so map buttons still work for places like Bellfield Estate.</aside>' : ""}
     <div class="event-list" data-tour="event-list">
-      ${visibleEvents.map(eventCard).join("")}
+      ${visibleEvents.length ? visibleEvents.map(eventCard).join("") : '<article class="panel"><h3>No events to show yet</h3><p class="muted">Once fixtures or training are added in Firestore they will appear here.</p></article>'}
     </div>
   `;
 }
@@ -1136,10 +1009,11 @@ function eventCard(event) {
 function availabilityView() {
   const event = state.events.find((item) => item.id === state.selectedEventId) || state.events[0];
   if (!event) return emptyEventsView("Availability");
-  const players = getPlayersForEvent(event);
-  const counts = availabilityCounts(event.id);
   const child = currentPlayer();
-  const childInEvent = child && players.some((player) => player.id === child.id);
+  const eventPlayers = getPlayersForEvent(event);
+  const childInEvent = child && eventPlayers.some((player) => player.id === child.id);
+  const players = state.session.role === "coach" ? eventPlayers : [child].filter(Boolean).filter((player) => childInEvent);
+  const counts = availabilityCounts(event.id);
 
   return `
     <section class="toolbar" data-tour="availability-summary">
@@ -1231,7 +1105,11 @@ function responseRow(event, player) {
 function attendanceView() {
   const event = state.events.find((item) => item.id === state.selectedEventId) || state.events[0];
   if (!event) return emptyEventsView("Attendance");
-  const players = state.session.role === "coach" ? getPlayersForEvent(event) : [currentPlayer()].filter(Boolean);
+  const eventPlayers = getPlayersForEvent(event);
+  const child = currentPlayer();
+  const players = state.session.role === "coach"
+    ? eventPlayers
+    : [child].filter(Boolean).filter((player) => eventPlayers.some((eventPlayer) => eventPlayer.id === player.id));
 
   return `
     <section class="toolbar" data-tour="attendance-session">
@@ -1283,7 +1161,7 @@ function attendanceCard(event, player) {
 }
 
 function parentAlertLog(event) {
-  const alerts = (state.parentAlerts || []).filter((alert) => alert.eventId === event.id).slice(0, 8);
+  const alerts = (state.notifications || []).filter((alert) => alert.data?.eventId === event.id || alert.eventId === event.id).slice(0, 8);
   return `
     <article class="panel parent-alert-log">
       <div class="panel-title">
@@ -1291,18 +1169,18 @@ function parentAlertLog(event) {
           <p class="eyebrow">Parent alerts</p>
           <h3>Push and in-app notification log</h3>
         </div>
-        <span class="status-pill warn">Demo send</span>
+        <span class="status-pill good">Firebase</span>
       </div>
-      <p class="muted">This GitHub demo logs the push notification that would be sent. Real push delivery needs the secure Firebase backend.</p>
+      <p class="muted">Present and collected updates are written to Firestore. Firebase Cloud Functions sends the parent push notification and records it here.</p>
       ${alerts.length ? alerts.map((alert) => `
         <div class="person-row compact">
           <div>
             <strong>${escapeHtml(alert.title)}</strong>
             <p>${escapeHtml(alert.body)}</p>
           </div>
-          <span class="status-pill good">${escapeHtml(alert.sentAt)}</span>
+          <span class="status-pill good">${escapeHtml(displayDate(alert.createdAt || alert.sentAt))}</span>
         </div>
-      `).join("") : '<p class="muted">No parent alerts sent for this session yet.</p>'}
+      `).join("") : '<p class="muted">No Firebase parent alerts recorded for this session yet.</p>'}
     </article>
   `;
 }
@@ -1362,8 +1240,8 @@ function messagesView() {
     return message.teamId === "all" || message.teamId === child?.teamId;
   });
   const child = currentPlayer();
-  const parentAlerts = state.session.role === "parent" && child
-    ? (state.parentAlerts || []).filter((alert) => alert.playerId === child.id)
+  const parentNotifications = state.session.role === "parent" && child
+    ? (state.notifications || []).filter((alert) => alert.data?.playerId === child.id || alert.playerId === child.id)
     : [];
 
   return `
@@ -1372,11 +1250,11 @@ function messagesView() {
       ${state.session.role === "coach" ? '<button class="primary-button" type="button" data-modal="message">New message</button>' : ""}
     </section>
     <div class="message-list" data-tour="messages-panel">
-      ${parentAlerts.map((alert) => `
+      ${parentNotifications.map((alert) => `
         <article class="message-card parent-alert-message">
           <div class="panel-title">
             <div>
-              <p class="eyebrow">Attendance alert - ${escapeHtml(alert.sentAt)}</p>
+              <p class="eyebrow">Attendance alert - ${escapeHtml(displayDate(alert.createdAt || alert.sentAt))}</p>
               <h3>${escapeHtml(alert.title)}</h3>
             </div>
           </div>
@@ -1387,7 +1265,7 @@ function messagesView() {
         <article class="message-card">
           <div class="panel-title">
             <div>
-              <p class="eyebrow">${escapeHtml(message.createdAt)} - ${teamName(message.teamId)}</p>
+              <p class="eyebrow">${escapeHtml(displayDate(message.createdAt))} - ${teamName(message.teamId)}</p>
               <h3>${escapeHtml(message.title)}</h3>
             </div>
           </div>
@@ -1469,7 +1347,6 @@ function accessView() {
 function parentAccessView() {
   const approved = approvedLinks();
   const pending = pendingRequests();
-  const account = parentAccount(state.session.parentName);
   return `
     <section class="content-grid two-col">
       <article class="panel">
@@ -1486,9 +1363,9 @@ function parentAccessView() {
         <div class="panel-title">
           <div>
             <p class="eyebrow">Account security</p>
-            <h3>${account?.mustChangePassword ? "Change temporary password" : "Password"}</h3>
+            <h3>Change password</h3>
           </div>
-          <span class="status-pill ${account?.mustChangePassword ? "warn" : "good"}">${account?.mustChangePassword ? "Required" : "Set"}</span>
+          <span class="status-pill good">Firebase Auth</span>
         </div>
         <form class="stacked-form" data-form="change-password">
           <label class="field">
@@ -1511,10 +1388,8 @@ function parentAccessView() {
         </div>
         <form class="stacked-form" data-form="request-access">
           <label class="field">
-            <span>Child</span>
-            <select name="playerId">
-              ${activePlayers().map((player) => `<option value="${player.id}">${escapeHtml(player.name)} - ${teamName(player.teamId)}</option>`).join("")}
-            </select>
+            <span>Child name</span>
+            <input name="childName" required placeholder="Child name">
           </label>
           <label class="field">
             <span>Relationship</span>
@@ -1537,7 +1412,7 @@ function accessLinkRow(link) {
     <div class="person-row">
       <div>
         <strong>${escapeHtml(player?.name || "Unknown child")}</strong>
-        <p>${escapeHtml(link.relation)} - ${teamName(player?.teamId)}</p>
+        <p>${escapeHtml(link.relation)} - ${player ? teamName(player.teamId) : "Team to confirm"}</p>
       </div>
       <span class="status-pill good">Approved</span>
     </div>
@@ -1549,7 +1424,7 @@ function accessRequestRow(request) {
   return `
     <div class="person-row">
       <div>
-        <strong>${escapeHtml(player?.name || "Unknown child")}</strong>
+        <strong>${escapeHtml(player?.name || request.childName || "Child requested")}</strong>
         <p>${escapeHtml(request.relation)}</p>
       </div>
       <span class="status-pill warn">Pending</span>
@@ -1591,9 +1466,9 @@ function coachAccessView() {
         <div class="check-list">
           <span>Parent requests access to their child.</span>
           <span>Coach checks the parent is known to the team.</span>
-          <span>Coach approves the request and the app creates a temporary password.</span>
-          <span>Coach sends the temporary password to the parent.</span>
-          <span>Parent signs in and changes the password.</span>
+          <span>Coach chooses the matching player and approves the link.</span>
+          <span>Parent uses their own Firebase email and password.</span>
+          <span>Once approved, the parent only sees their linked child.</span>
         </div>
       </article>
     </section>
@@ -1602,21 +1477,23 @@ function coachAccessView() {
 
 function coachRequestRow(request) {
   const player = activePlayers().find((item) => item.id === request.playerId);
-  const tempPassword = request.temporaryPassword || "";
   return `
     <div class="person-row">
       <div>
         <strong>${escapeHtml(request.parentName)}</strong>
-        <p>${escapeHtml(player?.name || "Unknown child")} - ${escapeHtml(request.relation)}</p>
-        ${tempPassword ? `<p>Temporary password: <strong>${escapeHtml(tempPassword)}</strong> expires ${escapeHtml(request.expiresAt)}</p>` : ""}
+        <p>${escapeHtml(player?.name || request.childName || "Child requested")} - ${escapeHtml(request.relation)}</p>
+        ${request.email ? `<p>${escapeHtml(request.email)}</p>` : ""}
       </div>
       <div class="inline-actions">
         <span class="status-pill ${statusClass(request.status)}">${statusText(request.status)}</span>
         ${request.status === "pending" ? `
+          <select class="tiny-select" data-request-player="${escapeHtml(request.id)}">
+            <option value="">Choose child</option>
+            ${activePlayers().map((item) => `<option value="${item.id}" ${item.id === request.playerId ? "selected" : ""}>${escapeHtml(item.name)} - ${teamName(item.teamId)}</option>`).join("")}
+          </select>
           <button class="tiny-button approve" type="button" data-action="review-request" data-request-id="${request.id}" data-status="approved">Approve</button>
           <button class="tiny-button reject" type="button" data-action="review-request" data-request-id="${request.id}" data-status="rejected">Reject</button>
         ` : ""}
-        ${tempPassword ? `<button class="tiny-button" type="button" data-action="copy-link" data-copy="${escapeHtml(tempPassword)}">Copy password</button>` : ""}
       </div>
     </div>
   `;
@@ -1664,17 +1541,18 @@ function installView() {
         </div>
         <div class="check-list">
           <span>Exact club crest loaded</span>
-          <span>Parent login and child verification mocked</span>
-          <span>Coach approval generates a temporary parent password</span>
-          <span>Parents can change temporary passwords</span>
-          <span>Coach approval queue working</span>
-          <span>Full roster with placeholder parent contacts loaded</span>
-          <span>Blue and Yellow weekend fixtures loaded</span>
-          <span>Tuesday and Wednesday training loaded</span>
+          <span>Firebase email and password login active</span>
+          <span>Coach and parent routes separated by Firestore role</span>
+          <span>Coach parent verification queue writes to Firestore</span>
+          <span>Parents can change their Firebase password</span>
+          <span>Full roster and teams seeded into Firestore</span>
+          <span>Fixtures and training stored in Firestore</span>
+          <span>Availability and attendance stored per event in Firestore</span>
+          <span>Announcements trigger parent push notifications</span>
           <span>Home, 3G, Barrfields and typed away venues loaded</span>
           <span>Google Maps and Apple Maps buttons added</span>
           <span>Coach contacts added with call and text links</span>
-          <span>Offline app shell enabled after HTTPS upload</span>
+          <span>Capacitor config ready for iOS and Android wrapping</span>
         </div>
       </article>
     </section>
@@ -1801,8 +1679,6 @@ function editPlayerModal(playerId) {
 }
 
 function bindFormDefaults() {
-  const parentName = $('[name="parentName"]');
-  if (parentName && !parentName.value) parentName.value = placeholderParent;
   toggleAwayFields();
 }
 
@@ -1813,7 +1689,7 @@ function toggleAwayFields() {
   awayFields.hidden = venueChoice.value !== "away-custom";
 }
 
-document.addEventListener("click", (event) => {
+document.addEventListener("click", async (event) => {
   const target = event.target.closest("[data-action], [data-route], [data-route-target], [data-modal]");
   if (!target) return;
 
@@ -1853,28 +1729,8 @@ document.addEventListener("click", (event) => {
     return;
   }
 
-  if (action === "demo-parent") {
-    state.session = { loggedIn: true, role: "parent", parentName: placeholderParent, coachName: "", selectedPlayerId: "p1", demoMode: false };
-    state.route = "home";
-    saveState();
-    render();
-    return;
-  }
-
-  if (action === "demo-coach") {
-    state.session = { loggedIn: true, role: "coach", parentName: "", coachName: "Coach", selectedPlayerId: "", demoMode: true };
-    state.coachGuide = { active: true, step: 0, completed: false };
-    applyCoachGuideStep();
-    saveState();
-    render();
-    return;
-  }
-
   if (action === "sign-out") {
-    state.session = { ...defaultState.session };
-    state.route = "home";
-    saveState();
-    render();
+    await signOutLive();
     return;
   }
 
@@ -1914,17 +1770,26 @@ document.addEventListener("click", (event) => {
   }
 
   if (action === "delete-event") {
-    deleteEvent(target.dataset.eventId);
+    await deleteEvent(target.dataset.eventId);
     return;
   }
 
   if (action === "set-availability") {
     const child = currentPlayer();
     if (child) {
+      const previous = state.availability[state.selectedEventId]?.[child.id] || { status: "unknown", note: "" };
+      state.availability[state.selectedEventId] = state.availability[state.selectedEventId] || {};
       state.availability[state.selectedEventId][child.id] = {
-        ...(state.availability[state.selectedEventId][child.id] || {}),
+        ...previous,
         status: target.dataset.status,
       };
+      try {
+        await saveAvailability(child.id);
+      } catch {
+        state.availability[state.selectedEventId][child.id] = previous;
+        render();
+        return;
+      }
       saveState();
       render();
       toast("Availability saved");
@@ -1933,12 +1798,12 @@ document.addEventListener("click", (event) => {
   }
 
   if (action === "set-attendance") {
-    setAttendance(target.dataset.playerId, target.dataset.status);
+    await setAttendance(target.dataset.playerId, target.dataset.status);
     return;
   }
 
   if (action === "review-request") {
-    reviewRequest(target.dataset.requestId, target.dataset.status);
+    await reviewRequest(target.dataset.requestId, target.dataset.status);
     saveState();
     render();
     return;
@@ -1981,6 +1846,7 @@ document.addEventListener("input", (event) => {
       ...(state.availability[state.selectedEventId][child.id] || { status: "unknown" }),
       note: target.value,
     };
+    scheduleAvailabilitySave(child.id);
     saveState();
   }
 });
@@ -1991,206 +1857,274 @@ document.addEventListener("submit", async (event) => {
   event.preventDefault();
   const data = new FormData(form);
 
-  if (form.dataset.form === "parent-login") await handleParentLogin(data);
-  if (form.dataset.form === "coach-login") await handleCoachLogin(data);
-  if (form.dataset.form === "request-access") await requestAccess(data);
-  if (form.dataset.form === "change-password") changePassword(data);
-  if (form.dataset.form === "event") addEvent(data);
-  if (form.dataset.form === "edit-event") editEvent(data);
-  if (form.dataset.form === "message") addMessage(data);
-  if (form.dataset.form === "player") addPlayer(data);
-  if (form.dataset.form === "move-player") movePlayer(data);
-  if (form.dataset.form === "edit-player") editPlayer(data);
-
-  saveState();
-  render();
+  try {
+    if (form.dataset.form === "parent-login") await handleParentLogin(data);
+    if (form.dataset.form === "coach-login") await handleCoachLogin(data);
+    if (form.dataset.form === "request-access") await requestAccess(data);
+    if (form.dataset.form === "change-password") await changePassword(data);
+    if (form.dataset.form === "event") await addEvent(data);
+    if (form.dataset.form === "edit-event") await editEvent(data);
+    if (form.dataset.form === "message") await addMessage(data);
+    if (form.dataset.form === "player") await addPlayer(data);
+    if (form.dataset.form === "move-player") await movePlayer(data);
+    if (form.dataset.form === "edit-player") await editPlayer(data);
+    saveState();
+    render();
+  } catch (error) {
+    console.error(error);
+    showError(error?.code ? authErrorMessage(error) : "That action could not be completed. Check Firebase permissions and try again.");
+  }
 });
 
 async function handleParentLogin(data) {
-  const parentName = data.get("parentName").trim();
-  const playerId = data.get("playerId");
-  const relation = data.get("relation");
-  const passcode = data.get("passcode");
+  const parentName = String(data.get("parentName") || "").trim();
+  const childName = String(data.get("childName") || "").trim();
+  const relation = String(data.get("relation") || "Parent");
+  const password = String(data.get("passcode") || "");
   const email = String(data.get("email") || "").trim();
 
-  if (backendConfig.enabled && email) {
-    await handleFirebaseParentLogin({ email, password: passcode, parentName, playerId, relation });
+  if (!backendConfig.enabled) {
+    showError("Firebase is not enabled yet. Add the Firebase config before parents can sign in.");
     return;
   }
 
-  const existingLink = state.parentLinks.find(
-    (link) => sameName(link.parentName, parentName) && link.playerId === playerId && link.status === "approved",
-  );
-
-  if (!existingLink) {
-    state.session = { loggedIn: true, role: "parent", parentName, coachName: "", selectedPlayerId: playerId, demoMode: false };
-    ensureRequest(parentName, playerId, relation);
-    state.route = "access";
-    toast("Access request sent to coaches");
-  } else {
-    const account = parentAccount(parentName) || upsertParentAccount(parentName);
-    const accepted = passcode === account.password || passcode === account.temporaryPassword;
-    if (!accepted) {
-      toast("Use the current password or coach-issued temporary password");
-      return;
-    }
-    if (passcode === account.temporaryPassword) account.mustChangePassword = true;
-    state.session = { loggedIn: true, role: "parent", parentName, coachName: "", selectedPlayerId: playerId, demoMode: false };
-    state.route = "home";
-    toast("Signed in");
-  }
+  await handleFirebaseParentLogin({ email, password, parentName, childName, relation });
 }
 
 async function handleCoachLogin(data) {
-  const passcode = data.get("passcode");
+  const password = String(data.get("passcode") || "");
   const email = String(data.get("email") || "").trim();
 
-  if (backendConfig.enabled && email) {
-    await handleFirebaseCoachLogin(email, passcode);
+  if (!backendConfig.enabled) {
+    showError("Firebase is not enabled yet. Add the Firebase config before coaches can sign in.");
     return;
   }
 
-  if (passcode !== "coach2016") {
-    toast("Coach passcode is coach2016 for this test build");
-    return;
-  }
-  state.session = {
-    loggedIn: true,
-    role: "coach",
-    parentName: "",
-    coachName: data.get("coachName").trim(),
-    selectedPlayerId: "",
-    demoMode: false,
-  };
-  state.route = "home";
-  toast("Coach signed in");
+  await handleFirebaseCoachLogin(email, password);
 }
 
 async function handleFirebaseCoachLogin(email, password) {
   try {
+    setBusy("Signing coach in...");
     const runtime = await ensureFirebase();
     const credential = await runtime.modules.signInWithEmailAndPassword(runtime.auth, email, password);
     const profileSnap = await runtime.modules.getDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "users", credential.user.uid));
     const profile = profileSnap.exists() ? profileSnap.data() : {};
     if (!["coach", "admin"].includes(profile.role)) {
       await runtime.modules.signOut(runtime.auth);
-      toast("This account is not approved as a coach");
+      showError("This Firebase account is not approved as a coach.");
       return;
     }
     state.session = {
       loggedIn: true,
       role: "coach",
+      userId: credential.user.uid,
+      email,
       parentName: "",
       coachName: profile.name || "Coach",
       selectedPlayerId: "",
-      demoMode: false,
     };
     await loadLiveStateFromFirebase();
+    await startLiveSubscriptions();
     state.route = "home";
+    state.error = "";
     toast("Coach signed in with Firebase");
   } catch (error) {
     console.error(error);
-    toast("Firebase coach sign-in failed");
+    showError(authErrorMessage(error));
+  } finally {
+    state.loading = false;
+    render();
   }
 }
 
-async function handleFirebaseParentLogin({ email, password, parentName, playerId, relation }) {
+async function handleFirebaseParentLogin({ email, password, parentName, childName, relation }) {
   try {
+    setBusy("Signing parent in...");
     const runtime = await ensureFirebase();
-    const credential = await runtime.modules.signInWithEmailAndPassword(runtime.auth, email, password);
+    const credential = await signInOrCreateParent(runtime, email, password, parentName);
     const profileSnap = await runtime.modules.getDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "users", credential.user.uid));
     const profile = profileSnap.exists() ? profileSnap.data() : {};
-    const linkId = `${credential.user.uid}_${playerId}`;
-    const linkSnap = await runtime.modules.getDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "parentLinks", linkId));
-    const approved = linkSnap.exists() && linkSnap.data().status === "approved";
-
-    if (!approved) {
-      await runtime.modules.setDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "accessRequests", linkId), {
-        parentUid: credential.user.uid,
-        parentName: profile.name || parentName,
+    if (!profileSnap.exists()) {
+      await runtime.modules.setDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "users", credential.user.uid), {
+        role: "parent",
+        name: parentName,
         email,
-        playerId,
-        relation,
-        status: "pending",
+        consentAcceptedAt: runtime.modules.serverTimestamp(),
         createdAt: runtime.modules.serverTimestamp(),
+        updatedAt: runtime.modules.serverTimestamp(),
       }, { merge: true });
-      state.session = { loggedIn: true, role: "parent", parentName: profile.name || parentName, coachName: "", selectedPlayerId: playerId, demoMode: false };
-      state.route = "access";
-      toast("Firebase access request sent");
+      profile.role = "parent";
+      profile.name = parentName;
+    }
+    if (profile.role && profile.role !== "parent") {
+      await runtime.modules.signOut(runtime.auth);
+      showError("This account is not set up as a parent account.");
       return;
     }
 
-    state.session = { loggedIn: true, role: "parent", parentName: profile.name || parentName, coachName: "", selectedPlayerId: playerId, demoMode: false };
+    state.session = {
+      loggedIn: true,
+      role: "parent",
+      userId: credential.user.uid,
+      email,
+      parentName: profile.name || parentName,
+      coachName: "",
+      selectedPlayerId: "",
+    };
     await loadLiveStateFromFirebase();
-    state.route = "home";
+
+    if (!approvedPlayers().length && childName) {
+      await createAccessRequest({ childName, relation, parentName: profile.name || parentName, email });
+      await loadLiveStateFromFirebase();
+    }
+
+    await startLiveSubscriptions();
+    state.route = approvedPlayers().length ? "home" : "access";
+    state.error = "";
     toast("Parent signed in with Firebase");
   } catch (error) {
     console.error(error);
-    toast("Firebase parent sign-in failed");
+    showError(authErrorMessage(error));
+  } finally {
+    state.loading = false;
+    render();
   }
 }
 
-function ensureRequest(parentName, playerId, relation) {
-  const existing = state.accessRequests.find(
-    (request) => sameName(request.parentName, parentName) && request.playerId === playerId && request.status === "pending",
-  );
-  if (!existing) {
-    state.accessRequests.unshift({
-      id: uid("req"),
-      parentName,
-      playerId,
-      relation,
-      status: "pending",
-      createdAt: "Today",
-    });
+async function signInOrCreateParent(runtime, email, password, parentName) {
+  try {
+    return await runtime.modules.signInWithEmailAndPassword(runtime.auth, email, password);
+  } catch (error) {
+    if (!["auth/user-not-found", "auth/invalid-credential"].includes(error.code)) throw error;
+    const credential = await runtime.modules.createUserWithEmailAndPassword(runtime.auth, email, password);
+    await runtime.modules.setDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "users", credential.user.uid), {
+      role: "parent",
+      name: parentName,
+      email,
+      consentAcceptedAt: runtime.modules.serverTimestamp(),
+      createdAt: runtime.modules.serverTimestamp(),
+      updatedAt: runtime.modules.serverTimestamp(),
+    }, { merge: true });
+    return credential;
   }
 }
 
-function requestAccess(data) {
-  ensureRequest(state.session.parentName, data.get("playerId"), data.get("relation"));
+async function requestAccess(data) {
+  await createAccessRequest({
+    childName: String(data.get("childName") || "").trim(),
+    relation: String(data.get("relation") || "Parent"),
+    parentName: state.session.parentName,
+    email: state.session.email,
+  });
+  await loadLiveStateFromFirebase();
   toast("Access request sent");
 }
 
-function changePassword(data) {
+async function createAccessRequest({ childName, relation, parentName, email }) {
+  if (!childName) {
+    toast("Add the child name for the request");
+    return;
+  }
+  const runtime = await ensureFirebase();
+  const normalizedChild = childName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+  const requestId = `${runtime.user.uid}_${normalizedChild || "child"}_${Date.now()}`;
+  await runtime.modules.setDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "accessRequests", requestId), {
+    parentUid: runtime.user.uid,
+    parentName,
+    email,
+    childName,
+    relation,
+    status: "pending",
+    consent: true,
+    createdAt: runtime.modules.serverTimestamp(),
+    updatedAt: runtime.modules.serverTimestamp(),
+  }, { merge: true });
+}
+
+async function changePassword(data) {
   const password = data.get("newPassword");
   const confirm = data.get("confirmPassword");
   if (password !== confirm) {
     toast("Passwords do not match");
     return;
   }
-  const account = upsertParentAccount(state.session.parentName);
-  account.password = password;
-  account.temporaryPassword = "";
-  account.mustChangePassword = false;
-  account.updatedAt = "Today";
+  const runtime = await ensureFirebase();
+  await runtime.modules.updatePassword(runtime.auth.currentUser, password);
+  await runtime.modules.setDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "users", runtime.auth.currentUser.uid), {
+    updatedAt: runtime.modules.serverTimestamp(),
+  }, { merge: true });
   toast("Password changed");
 }
 
-function reviewRequest(requestId, status) {
+async function reviewRequest(requestId, status) {
+  if (!requireCoach()) return;
   const request = state.accessRequests.find((item) => item.id === requestId);
   if (!request) return;
+  const runtime = await ensureFirebase();
   request.status = status;
   if (status === "approved") {
-    const tempPassword = generateTemporaryPassword();
-    request.temporaryPassword = tempPassword;
-    request.expiresAt = temporaryPasswordExpiry();
-    upsertParentAccount(request.parentName, placeholderPhone, tempPassword);
-    const exists = state.parentLinks.some(
-      (link) => sameName(link.parentName, request.parentName) && link.playerId === request.playerId,
-    );
-    if (!exists) {
-      state.parentLinks.push({
-        id: uid("link"),
-        parentName: request.parentName,
-        playerId: request.playerId,
-        relation: request.relation,
-        status: "approved",
-        consent: true,
-        createdAt: "Today",
-      });
+    const selectedPlayerId = $(`[data-request-player="${CSS.escape(requestId)}"]`)?.value || request.playerId;
+    const player = activePlayers().find((item) => item.id === selectedPlayerId);
+    if (!player) {
+      toast("Choose the matching child before approving");
+      return;
     }
+    const linkId = `${request.parentUid}_${player.id}`;
+    const batch = runtime.modules.writeBatch(runtime.db);
+    batch.set(runtime.modules.doc(runtime.db, "clubs", clubId, "parentLinks", linkId), {
+      parentUid: request.parentUid,
+      parentName: request.parentName,
+      email: request.email || "",
+      playerId: player.id,
+      playerTeamId: player.teamId,
+      relation: request.relation,
+      status: "approved",
+      consent: true,
+      createdAt: runtime.modules.serverTimestamp(),
+      updatedAt: runtime.modules.serverTimestamp(),
+    }, { merge: true });
+    batch.set(runtime.modules.doc(runtime.db, "clubs", clubId, "accessRequests", requestId), {
+      status: "approved",
+      playerId: player.id,
+      playerTeamId: player.teamId,
+      reviewedBy: state.session.userId,
+      reviewedAt: runtime.modules.serverTimestamp(),
+      updatedAt: runtime.modules.serverTimestamp(),
+    }, { merge: true });
+    await batch.commit();
+  } else {
+    await runtime.modules.setDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "accessRequests", requestId), {
+      status: "rejected",
+      reviewedBy: state.session.userId,
+      reviewedAt: runtime.modules.serverTimestamp(),
+      updatedAt: runtime.modules.serverTimestamp(),
+    }, { merge: true });
   }
+  await loadLiveStateFromFirebase();
   toast(`Request ${status}`);
+}
+
+function scheduleAvailabilitySave(playerId) {
+  clearTimeout(scheduleAvailabilitySave.timer);
+  scheduleAvailabilitySave.timer = setTimeout(() => {
+    saveAvailability(playerId).catch((error) => {
+      console.error(error);
+      toast("Availability note could not be saved");
+    });
+  }, 650);
+}
+
+async function saveAvailability(playerId) {
+  const entry = state.availability[state.selectedEventId]?.[playerId];
+  if (!entry) return;
+  await saveLiveDocument(`availability/${state.selectedEventId}/players`, playerId, {
+    playerId,
+    eventId: state.selectedEventId,
+    status: entry.status || "unknown",
+    note: entry.note || "",
+    updatedBy: state.session.userId,
+  });
 }
 
 function eventTitle(type, teamId, opponent, venueId) {
@@ -2245,68 +2179,48 @@ function syncEventRoster(event) {
   });
 }
 
-function addEvent(data) {
+async function addEvent(data) {
+  if (!requireCoach()) return;
   const event = eventDataFromForm(data);
+  await saveLiveDocument("events", event.id, event);
   state.events.push(event);
   syncEventRoster(event);
-  saveLiveDocument("events", event.id, event);
   state.selectedEventId = event.id;
   delete state.modal;
   toast("Event added");
 }
 
-function editEvent(data) {
+async function editEvent(data) {
+  if (!requireCoach()) return;
   const eventId = data.get("eventId");
   const index = state.events.findIndex((event) => event.id === eventId);
   if (index === -1) return;
-  state.events[index] = eventDataFromForm(data, eventId);
-  syncEventRoster(state.events[index]);
-  saveLiveDocument("events", eventId, state.events[index]);
+  const nextEvent = eventDataFromForm(data, eventId);
+  await saveLiveDocument("events", eventId, nextEvent);
+  state.events[index] = nextEvent;
+  syncEventRoster(nextEvent);
   state.selectedEventId = eventId;
   delete state.modal;
   toast("Event updated");
 }
 
-function setAttendance(playerId, status) {
+async function setAttendance(playerId, status) {
+  if (!requireCoach()) return;
   state.attendance[state.selectedEventId] = state.attendance[state.selectedEventId] || {};
-  const previous = state.attendance[state.selectedEventId][playerId];
-  state.attendance[state.selectedEventId][playerId] = status;
-  saveLiveDocument(`attendance/${state.selectedEventId}/players`, playerId, {
+  await saveLiveDocument(`attendance/${state.selectedEventId}/players`, playerId, {
     playerId,
     eventId: state.selectedEventId,
     status,
     markedBy: state.session.coachName || "Coach",
+    markedByUid: state.session.userId,
   });
-  if (previous !== status && ["present", "collected"].includes(status)) {
-    queueParentAlert(playerId, state.selectedEventId, status);
-  }
+  state.attendance[state.selectedEventId][playerId] = status;
   saveState();
   render();
-  toast(["present", "collected"].includes(status) ? "Attendance updated and parent alert logged" : "Attendance updated");
+  toast(["present", "collected"].includes(status) ? "Attendance updated and parent push queued" : "Attendance updated");
 }
 
-function queueParentAlert(playerId, eventId, status) {
-  const player = activePlayers().find((item) => item.id === playerId);
-  const event = state.events.find((item) => item.id === eventId);
-  if (!player || !event) return;
-  const actionText = status === "present"
-    ? `${player.name} has been marked present. We have the child at ${event.title}.`
-    : `${player.name} has been marked collected from ${event.title}.`;
-  state.parentAlerts = state.parentAlerts || [];
-  state.parentAlerts.unshift({
-    id: uid("alert"),
-    playerId,
-    eventId,
-    status,
-    parentName: player.parentName,
-    parentPhone: player.parentPhone,
-    title: status === "present" ? `${player.name} checked in` : `${player.name} collected`,
-    body: `Demo push + in-app notification to ${player.parentName}: ${actionText}`,
-    sentAt: "Just now",
-  });
-}
-
-function deleteEvent(eventId) {
+async function deleteEvent(eventId) {
   if (state.session.role !== "coach") return;
   const event = state.events.find((item) => item.id === eventId);
   if (!event) return;
@@ -2314,10 +2228,10 @@ function deleteEvent(eventId) {
   const confirmed = window.confirm(`Remove "${event.title}"? This will also remove its availability and attendance marks.`);
   if (!confirmed) return;
 
+  await deleteEventLive(eventId);
   state.events = state.events.filter((item) => item.id !== eventId);
   delete state.availability[eventId];
   delete state.attendance[eventId];
-  deleteLiveDocument("events", eventId);
 
   if (state.selectedEventId === eventId) {
     state.selectedEventId = state.events[0]?.id || "";
@@ -2328,21 +2242,23 @@ function deleteEvent(eventId) {
   toast("Event removed");
 }
 
-function addMessage(data) {
+async function addMessage(data) {
+  if (!requireCoach()) return;
   const message = {
     id: uid("msg"),
     title: data.get("title"),
     body: data.get("body"),
     teamId: data.get("teamId"),
-    createdAt: "Just now",
+    createdBy: state.session.userId,
   };
+  await saveLiveDocument("announcements", message.id, message);
   state.messages.unshift(message);
-  saveLiveDocument("messages", message.id, message);
   delete state.modal;
   toast("Message sent");
 }
 
-function addPlayer(data) {
+async function addPlayer(data) {
+  if (!requireCoach()) return;
   const player = {
     id: uid("player"),
     name: data.get("name"),
@@ -2352,8 +2268,8 @@ function addPlayer(data) {
     parentPhone: data.get("parentPhone"),
     status: "active",
   };
+  await saveLiveDocument("players", player.id, player);
   state.players.push(player);
-  saveLiveDocument("players", player.id, player);
   state.events.forEach((event) => {
     if (event.teamId === "all" || event.teamId === player.teamId) {
       state.availability[event.id][player.id] = { status: "unknown", note: "" };
@@ -2364,24 +2280,31 @@ function addPlayer(data) {
   toast("Player added");
 }
 
-function movePlayer(data) {
+async function movePlayer(data) {
+  if (!requireCoach()) return;
   const player = activePlayers().find((item) => item.id === data.get("playerId"));
   if (!player) return;
-  player.teamId = data.get("teamId");
-  saveLiveDocument("players", player.id, player);
+  const updated = { ...player, teamId: data.get("teamId") };
+  await saveLiveDocument("players", player.id, updated);
+  Object.assign(player, updated);
   delete state.modal;
   toast("Player moved");
 }
 
-function editPlayer(data) {
+async function editPlayer(data) {
+  if (!requireCoach()) return;
   const player = activePlayers().find((item) => item.id === data.get("playerId"));
   if (!player) return;
-  player.name = data.get("name");
-  player.teamId = data.get("teamId");
-  player.role = data.get("role");
-  player.parentName = data.get("parentName");
-  player.parentPhone = data.get("parentPhone");
-  saveLiveDocument("players", player.id, player);
+  const updated = {
+    ...player,
+    name: data.get("name"),
+    teamId: data.get("teamId"),
+    role: data.get("role"),
+    parentName: data.get("parentName"),
+    parentPhone: data.get("parentPhone"),
+  };
+  await saveLiveDocument("players", player.id, updated);
+  Object.assign(player, updated);
   delete state.modal;
   toast("Player updated");
 }
@@ -2447,33 +2370,302 @@ async function loadDocs(collectionName) {
 async function loadLiveStateFromFirebase() {
   if (!isFirebaseSignedIn()) return;
   try {
-    const [events, messages] = await Promise.all([
+    const runtime = await ensureFirebase();
+    const role = state.session.role;
+    const [squadDocs, teamDocs, events, announcements] = await Promise.all([
+      loadDocs("squads"),
+      loadDocs("teams"),
       loadDocs("events"),
-      loadDocs("messages"),
+      loadDocs("announcements"),
     ]);
-    if (events.length) state.events = events;
-    if (messages.length) state.messages = messages.sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
-    if (state.session.role === "coach") {
-      const players = await loadDocs("players");
-      if (players.length) state.players = players;
+
+    const squadSource = squadDocs.length ? squadDocs : teamDocs;
+    state.teams = squadSource.length ? squadSource.sort((a, b) => (a.order || 0) - (b.order || 0)) : teams;
+    liveTeams = state.teams;
+    state.events = events.sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
+    state.messages = announcements.sort(sortByCreatedAtDesc);
+
+    if (role === "coach") {
+      const [players, parentLinks, accessRequests, notifications] = await Promise.all([
+        loadDocs("players"),
+        loadDocs("parentLinks"),
+        loadDocs("accessRequests"),
+        loadDocs("notifications"),
+      ]);
+      state.players = players.sort((a, b) => a.name.localeCompare(b.name));
+      state.parentLinks = parentLinks;
+      state.accessRequests = accessRequests.sort(sortByCreatedAtDesc);
+      state.notifications = notifications.sort(sortByCreatedAtDesc);
+    } else {
+      const uid = runtime.user.uid;
+      const [parentLinks, accessRequests, notifications] = await Promise.all([
+        loadDocsWhere("parentLinks", "parentUid", "==", uid),
+        loadDocsWhere("accessRequests", "parentUid", "==", uid),
+        loadDocsWhere("notifications", "userId", "==", uid),
+      ]);
+      state.parentLinks = parentLinks;
+      state.accessRequests = accessRequests.sort(sortByCreatedAtDesc);
+      state.notifications = notifications.sort(sortByCreatedAtDesc);
+      state.players = await loadApprovedPlayerDocs(parentLinks);
+    }
+
+    await loadEventSubcollections();
+    if (!state.selectedEventId || !state.events.some((event) => event.id === state.selectedEventId)) {
+      state.selectedEventId = state.events[0]?.id || "";
+    }
+    if (state.session.role === "parent" && !state.session.selectedPlayerId) {
+      state.session.selectedPlayerId = approvedPlayers()[0]?.id || "";
     }
   } catch (error) {
     console.error(error);
-    toast("Live data could not be loaded");
+    showError("Live Firestore data could not be loaded. Check the rules, seed data and account role.");
   }
+}
+
+function sortByCreatedAtDesc(a, b) {
+  const left = a.createdAt?.seconds || Date.parse(a.createdAt || "") / 1000 || 0;
+  const right = b.createdAt?.seconds || Date.parse(b.createdAt || "") / 1000 || 0;
+  return right - left;
+}
+
+async function loadDocsWhere(collectionName, field, operator, value) {
+  const runtime = await ensureFirebase();
+  const queryRef = runtime.modules.query(await liveCollection(collectionName), runtime.modules.where(field, operator, value));
+  const snapshot = await runtime.modules.getDocs(queryRef);
+  return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+}
+
+async function loadApprovedPlayerDocs(parentLinks) {
+  const runtime = await ensureFirebase();
+  const approved = parentLinks.filter((link) => link.status === "approved");
+  const docs = await Promise.all(approved.map((link) => runtime.modules.getDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "players", link.playerId))));
+  return docs.filter((snap) => snap.exists()).map((snap) => ({ id: snap.id, ...snap.data() })).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+async function loadEventSubcollections() {
+  const runtime = await ensureFirebase();
+    const approvedIds = approvedPlayers().map((player) => player.id);
+  state.availability = {};
+  state.attendance = {};
+
+  await Promise.all(state.events.map(async (event) => {
+    const availabilityCollection = runtime.modules.collection(runtime.db, "clubs", clubId, "availability", event.id, "players");
+    const attendanceCollection = runtime.modules.collection(runtime.db, "clubs", clubId, "attendance", event.id, "players");
+    const approvedChunks = chunkArray(approvedIds, 10);
+    const [availabilitySnap, attendanceSnap] = await Promise.all([
+      getEventPlayerDocs(runtime, availabilityCollection, approvedChunks),
+      getEventPlayerDocs(runtime, attendanceCollection, approvedChunks),
+    ]);
+
+    state.availability[event.id] = {};
+    availabilitySnap.forEach((docSnap) => {
+      const data = docSnap.data();
+      state.availability[event.id][data.playerId || docSnap.id] = data;
+    });
+
+    state.attendance[event.id] = {};
+    attendanceSnap.forEach((docSnap) => {
+      const data = docSnap.data();
+      state.attendance[event.id][data.playerId || docSnap.id] = data.status || "unknown";
+    });
+  }));
+}
+
+function chunkArray(items, size) {
+  const chunks = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+}
+
+async function getEventPlayerDocs(runtime, collectionRef, approvedChunks) {
+  if (state.session.role === "coach") {
+    const snapshot = await runtime.modules.getDocs(collectionRef);
+    return snapshot.docs;
+  }
+  if (!approvedChunks.length) return [];
+  const snapshots = await Promise.all(approvedChunks.map((chunk) => runtime.modules.getDocs(
+    runtime.modules.query(collectionRef, runtime.modules.where("playerId", "in", chunk)),
+  )));
+  return snapshots.flatMap((snapshot) => snapshot.docs);
+}
+
+function clearLiveSubscriptions() {
+  liveUnsubscribers.forEach((unsubscribe) => {
+    try {
+      unsubscribe();
+    } catch {}
+  });
+  eventDataUnsubscribers.forEach((unsubscribe) => {
+    try {
+      unsubscribe();
+    } catch {}
+  });
+  liveUnsubscribers = [];
+  eventDataUnsubscribers = [];
+}
+
+function clearEventDataSubscriptions() {
+  eventDataUnsubscribers.forEach((unsubscribe) => {
+    try {
+      unsubscribe();
+    } catch {}
+  });
+  eventDataUnsubscribers = [];
+}
+
+async function startLiveSubscriptions() {
+  if (!isFirebaseSignedIn()) return;
+  clearLiveSubscriptions();
+  const runtime = await ensureFirebase();
+  const watchCollection = (collectionName, apply) => {
+    const unsubscribe = runtime.modules.onSnapshot(
+      runtime.modules.collection(runtime.db, "clubs", clubId, collectionName),
+      (snapshot) => {
+        Promise.resolve(apply(snapshot.docs.map((item) => ({ id: item.id, ...item.data() })))).then(render).catch(console.error);
+      },
+      (error) => console.error(error),
+    );
+    liveUnsubscribers.push(unsubscribe);
+  };
+  const watchQuery = (queryRef, apply) => {
+    const unsubscribe = runtime.modules.onSnapshot(
+      queryRef,
+      (snapshot) => {
+        Promise.resolve(apply(snapshot.docs.map((item) => ({ id: item.id, ...item.data() })))).then(render).catch(console.error);
+      },
+      (error) => console.error(error),
+    );
+    liveUnsubscribers.push(unsubscribe);
+  };
+
+  watchCollection("announcements", (items) => {
+    state.messages = items.sort(sortByCreatedAtDesc);
+  });
+  watchCollection("squads", (items) => {
+    if (!items.length) return;
+    state.teams = items.sort((a, b) => (a.order || 0) - (b.order || 0));
+    liveTeams = state.teams;
+  });
+  watchCollection("events", async (items) => {
+    state.events = items.sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
+    if (!state.selectedEventId || !state.events.some((event) => event.id === state.selectedEventId)) {
+      state.selectedEventId = state.events[0]?.id || "";
+    }
+    await loadEventSubcollections();
+    startEventDataSubscriptions(runtime);
+  });
+
+  if (state.session.role === "coach") {
+    watchCollection("players", (items) => {
+      state.players = items.sort((a, b) => a.name.localeCompare(b.name));
+    });
+    watchCollection("accessRequests", (items) => {
+      state.accessRequests = items.sort(sortByCreatedAtDesc);
+    });
+    watchCollection("parentLinks", (items) => {
+      state.parentLinks = items;
+    });
+    watchCollection("notifications", (items) => {
+      state.notifications = items.sort(sortByCreatedAtDesc);
+    });
+  } else {
+    const uid = state.session.userId;
+    watchQuery(runtime.modules.query(
+      runtime.modules.collection(runtime.db, "clubs", clubId, "notifications"),
+      runtime.modules.where("userId", "==", uid),
+    ), (items) => {
+      state.notifications = items.sort(sortByCreatedAtDesc);
+    });
+    watchQuery(runtime.modules.query(
+      runtime.modules.collection(runtime.db, "clubs", clubId, "accessRequests"),
+      runtime.modules.where("parentUid", "==", uid),
+    ), (items) => {
+      state.accessRequests = items.sort(sortByCreatedAtDesc);
+    });
+    watchQuery(runtime.modules.query(
+      runtime.modules.collection(runtime.db, "clubs", clubId, "parentLinks"),
+      runtime.modules.where("parentUid", "==", uid),
+    ), async (items) => {
+      state.parentLinks = items;
+      state.players = await loadApprovedPlayerDocs(items);
+      if (!state.session.selectedPlayerId) state.session.selectedPlayerId = approvedPlayers()[0]?.id || "";
+    });
+  }
+
+  startEventDataSubscriptions(runtime);
+}
+
+function startEventDataSubscriptions(runtime) {
+  clearEventDataSubscriptions();
+  const approvedIds = approvedPlayers().map((player) => player.id);
+  const approvedChunks = chunkArray(approvedIds, 10);
+  const canReadAll = state.session.role === "coach";
+
+  state.events.forEach((event) => {
+    const availabilityRef = runtime.modules.collection(runtime.db, "clubs", clubId, "availability", event.id, "players");
+    const attendanceRef = runtime.modules.collection(runtime.db, "clubs", clubId, "attendance", event.id, "players");
+
+    const watchPlayerCollection = (collectionRef, applyDocs) => {
+      if (canReadAll) {
+        const unsubscribe = runtime.modules.onSnapshot(
+          collectionRef,
+          (snapshot) => applyDocs(snapshot.docs),
+          (error) => console.error(error),
+        );
+        eventDataUnsubscribers.push(unsubscribe);
+        return;
+      }
+      approvedChunks.forEach((chunk) => {
+        const unsubscribe = runtime.modules.onSnapshot(
+          runtime.modules.query(collectionRef, runtime.modules.where("playerId", "in", chunk)),
+          (snapshot) => applyDocs(snapshot.docs),
+          (error) => console.error(error),
+        );
+        eventDataUnsubscribers.push(unsubscribe);
+      });
+    };
+
+    watchPlayerCollection(
+      availabilityRef,
+      (snapshot) => {
+        state.availability[event.id] = {};
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data();
+          state.availability[event.id][data.playerId || docSnap.id] = data;
+        });
+        render();
+      },
+    );
+    watchPlayerCollection(
+      attendanceRef,
+      (snapshot) => {
+        state.attendance[event.id] = {};
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data();
+          state.attendance[event.id][data.playerId || docSnap.id] = data.status || "unknown";
+        });
+        render();
+      },
+    );
+  });
 }
 
 async function saveLiveDocument(collectionName, id, data) {
   if (!isFirebaseSignedIn()) return;
   try {
     const runtime = await ensureFirebase();
-    await runtime.modules.setDoc(await liveDoc(collectionName, id), {
+    const payload = {
       ...data,
       updatedAt: runtime.modules.serverTimestamp(),
-    }, { merge: true });
+    };
+    if (!data.createdAt) payload.createdAt = runtime.modules.serverTimestamp();
+    await runtime.modules.setDoc(await liveDoc(collectionName, id), payload, { merge: true });
   } catch (error) {
     console.error(error);
-    toast("Live save failed");
+    showError("Firestore save failed. Check this user has permission for that action.");
+    throw error;
   }
 }
 
@@ -2484,11 +2676,31 @@ async function deleteLiveDocument(collectionName, id) {
     await runtime.modules.deleteDoc(await liveDoc(collectionName, id));
   } catch (error) {
     console.error(error);
-    toast("Live delete failed");
+    showError("Firestore delete failed. Check this user has permission for that action.");
+    throw error;
   }
 }
 
+async function deleteEventLive(eventId) {
+  const runtime = await ensureFirebase();
+  const batch = runtime.modules.writeBatch(runtime.db);
+  const eventRef = runtime.modules.doc(runtime.db, "clubs", clubId, "events", eventId);
+  const [availabilitySnap, attendanceSnap] = await Promise.all([
+    runtime.modules.getDocs(runtime.modules.collection(runtime.db, "clubs", clubId, "availability", eventId, "players")),
+    runtime.modules.getDocs(runtime.modules.collection(runtime.db, "clubs", clubId, "attendance", eventId, "players")),
+  ]);
+  availabilitySnap.docs.forEach((docSnap) => batch.delete(docSnap.ref));
+  attendanceSnap.docs.forEach((docSnap) => batch.delete(docSnap.ref));
+  batch.delete(eventRef);
+  await batch.commit();
+}
+
 async function enablePushNotifications() {
+  if (isNativeCapacitor()) {
+    await enableNativePushNotifications();
+    return;
+  }
+
   if (!backendConfig.enabled) {
     toast("Add Firebase config before push testing");
     return;
@@ -2521,23 +2733,126 @@ async function enablePushNotifications() {
       return;
     }
 
-    localStorage.setItem("largs-colts-fcm-token", token);
-    if (runtime.user) {
-      await runtime.modules.setDoc(
-        runtime.modules.doc(runtime.db, "clubs", clubId, "notificationTokens", `${runtime.user.uid}_${token.slice(-12)}`),
-        {
-          token,
-          userId: runtime.user.uid,
-          role: state.session.role || "unknown",
-          updatedAt: runtime.modules.serverTimestamp(),
-        },
-        { merge: true },
-      );
-    }
+    await savePushToken(token, "web");
     toast("Push enabled on this device");
   } catch (error) {
     console.error(error);
     toast("Push setup needs Firebase details");
+  }
+}
+
+function isNativeCapacitor() {
+  return Boolean(window.Capacitor?.isNativePlatform?.() && window.Capacitor?.Plugins?.PushNotifications);
+}
+
+async function enableNativePushNotifications() {
+  try {
+    const PushNotifications = window.Capacitor.Plugins.PushNotifications;
+    const permission = await PushNotifications.requestPermissions();
+    if (permission.receive !== "granted") {
+      toast("Push permission was not granted");
+      return;
+    }
+
+    await PushNotifications.addListener("registration", async (token) => {
+      await savePushToken(token.value, "capacitor");
+      toast("Push enabled on this phone");
+    });
+    await PushNotifications.addListener("registrationError", () => {
+      toast("Phone push registration failed");
+    });
+    await PushNotifications.addListener("pushNotificationReceived", (notification) => {
+      toast(notification.title || "Largs Colts update");
+    });
+    await PushNotifications.register();
+  } catch (error) {
+    console.error(error);
+    toast("Native push setup needs the Capacitor push plugin");
+  }
+}
+
+async function savePushToken(token, platform) {
+  if (!token) return;
+  const runtime = await ensureFirebase();
+  if (!runtime.user) return;
+  await runtime.modules.setDoc(
+    runtime.modules.doc(runtime.db, "clubs", clubId, "notificationTokens", `${runtime.user.uid}_${token.slice(-18)}`),
+    {
+      token,
+      platform,
+      userId: runtime.user.uid,
+      role: state.session.role || "unknown",
+      updatedAt: runtime.modules.serverTimestamp(),
+    },
+    { merge: true },
+  );
+}
+
+async function signOutLive() {
+  try {
+    clearLiveSubscriptions();
+    const runtime = await ensureFirebase();
+    await runtime.modules.signOut(runtime.auth);
+  } catch (error) {
+    console.error(error);
+  }
+  state = loadState();
+  state.loading = false;
+  state.route = "home";
+  render();
+  toast("Signed out");
+}
+
+async function bootApp() {
+  render();
+  if (!backendConfig.enabled) {
+    state.loading = false;
+    state.error = "Firebase is not enabled. Add your config before testing real accounts.";
+    render();
+    return;
+  }
+
+  try {
+    const runtime = await ensureFirebase();
+    runtime.modules.onAuthStateChanged(runtime.auth, async (user) => {
+      if (!user) {
+        clearLiveSubscriptions();
+        state = loadState();
+        state.loading = false;
+        render();
+        return;
+      }
+
+      state.loading = true;
+      render();
+      try {
+        const profileSnap = await runtime.modules.getDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "users", user.uid));
+        const profile = profileSnap.exists() ? profileSnap.data() : {};
+        const role = profile.role || "parent";
+        state.session = {
+          loggedIn: true,
+          role,
+          userId: user.uid,
+          email: user.email || "",
+          parentName: role === "parent" ? profile.name || user.email || "Parent" : "",
+          coachName: ["coach", "admin"].includes(role) ? profile.name || "Coach" : "",
+          selectedPlayerId: state.session.selectedPlayerId || "",
+        };
+        state.route = ["coach", "admin"].includes(role) ? state.route || "home" : state.route || "home";
+        if (role === "admin") state.session.role = "coach";
+        await loadLiveStateFromFirebase();
+        await startLiveSubscriptions();
+        state.loading = false;
+        state.error = "";
+        render();
+      } catch (error) {
+        console.error(error);
+        showError("Could not load this Firebase account. Check the user role document.");
+      }
+    });
+  } catch (error) {
+    console.error(error);
+    showError("Firebase could not start. Check firebase-config.js and the enabled Firebase services.");
   }
 }
 
@@ -2554,4 +2869,4 @@ if ("serviceWorker" in navigator && location.protocol !== "file:") {
   navigator.serviceWorker.register("service-worker.js").catch(() => {});
 }
 
-render();
+bootApp();

@@ -1,6 +1,6 @@
 # Firebase Backend Setup
 
-This build is ready for Firebase, but Firebase is not live until the project config and keys are added.
+This build is Firebase-first. The app expects Authentication, Firestore and Cloud Messaging to be enabled.
 
 ## What Firebase Will Handle
 
@@ -11,6 +11,7 @@ This build is ready for Firebase, but Firebase is not live until the project con
 - Fixtures and training
 - Availability
 - Attendance and collection status
+- Announcements
 - In-app notification records
 - Push notification tokens
 - Push alerts when a child is marked present or collected
@@ -28,7 +29,7 @@ This build is ready for Firebase, but Firebase is not live until the project con
 
 Firebase Auth supports email/password sign-in on the web. Firebase Cloud Messaging is used for push delivery.
 
-## 2. Add Config
+## 2. Confirm Config
 
 Open:
 
@@ -36,17 +37,7 @@ Open:
 firebase-config.js
 ```
 
-Set:
-
-```js
-enabled: true
-```
-
-Paste the Firebase web config and Web Push certificate key:
-
-```js
-vapidKey: "YOUR_WEB_PUSH_CERTIFICATE_KEY"
-```
+Make sure `enabled: true`, the Firebase web config, and the Web Push certificate key are present.
 
 Repeat the same Firebase config in:
 
@@ -72,9 +63,39 @@ The included files are:
 - `functions/package.json`
 - `functions/index.js`
 
-## 4. Create Users
+## 4. Seed Firestore
 
-Create coach and parent users in Firebase Authentication.
+Install dependencies:
+
+```powershell
+npm install
+```
+
+Run the seed:
+
+```powershell
+npm run seed:firestore
+```
+
+The seed script uses Firebase Admin credentials. Set `GOOGLE_APPLICATION_CREDENTIALS` to a service account JSON file, or run `gcloud auth application-default login` before seeding.
+
+This creates the live `teams`, `squads`, `players`, `events`, `attendance`, `availability`, and `announcements` records under:
+
+```text
+clubs/largs-colts-2016s
+```
+
+The main seed no longer creates sample parent accounts. Coaches who are also parents should create separate parent accounts in the app using separate parent emails.
+
+If older sample parent accounts were already created, remove them with:
+
+```powershell
+npm run remove:sample-parents
+```
+
+## 5. Create Users
+
+Create coach users in Firebase Authentication. Parents can create their own parent account from the app.
 
 Each user also needs a Firestore profile:
 
@@ -102,9 +123,9 @@ Parent:
 }
 ```
 
-## 5. Parent Links
+## 6. Parent Links
 
-Approved parent-child links go here:
+Parents request access in the app. Coaches approve requests in the Access page, which creates approved links here:
 
 ```text
 clubs/largs-colts-2016s/parentLinks/{parentUid_playerId}
@@ -122,7 +143,7 @@ Example:
 }
 ```
 
-## 6. Push Notifications
+## 7. Push Notifications
 
 When a parent allows push notifications, the app stores their FCM token in:
 
@@ -130,9 +151,9 @@ When a parent allows push notifications, the app stores their FCM token in:
 clubs/largs-colts-2016s/notificationTokens/{uid_tokenSuffix}
 ```
 
-When a coach marks a child as `present` or `collected`, the Cloud Function sends a push notification to approved parent tokens.
+When a coach marks a child as `present` or `collected`, the Cloud Function sends a push notification to approved parent tokens. Coach announcements also send push notifications to the selected team group.
 
-## 7. Support Contact
+## 8. Support Contact
 
 Temporary support email is:
 
@@ -151,4 +172,3 @@ Do not use real parent or child data in production until:
 - Parent consent wording has been approved
 - Push notifications have been tested on real iPhone and Android devices
 - Apple/Google developer accounts are ready for app testing
-

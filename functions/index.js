@@ -42,7 +42,23 @@ async function tokensForUsers(clubId, userIds) {
 }
 
 async function sendPushToUsers(clubId, userIds, title, body, data = {}) {
-  const tokens = await tokensForUsers(clubId, [...new Set(userIds)]);
+  const uniqueUserIds = [...new Set(userIds)].filter(Boolean);
+  if (!uniqueUserIds.length) return;
+
+  await Promise.all(uniqueUserIds.map((userId) => db
+    .collection("clubs")
+    .doc(clubId)
+    .collection("notifications")
+    .add({
+      userId,
+      title,
+      body,
+      data,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      read: false,
+    })));
+
+  const tokens = await tokensForUsers(clubId, uniqueUserIds);
   if (!tokens.length) {
     logger.info("No push tokens found", { clubId, userIds });
     return;
@@ -59,19 +75,6 @@ async function sendPushToUsers(clubId, userIds, title, body, data = {}) {
     successCount: response.successCount,
     failureCount: response.failureCount,
   });
-
-  await Promise.all(tokens.map((token) => db
-    .collection("clubs")
-    .doc(clubId)
-    .collection("notifications")
-    .add({
-      userId: token.userId,
-      title,
-      body,
-      data,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      read: false,
-    })));
 }
 
 exports.notifyParentOnAttendance = onDocumentWritten(
@@ -111,7 +114,7 @@ exports.notifyParentOnAttendance = onDocumentWritten(
 );
 
 exports.notifyParentsOnMessage = onDocumentCreated(
-  "clubs/{clubId}/messages/{messageId}",
+  "clubs/{clubId}/announcements/{messageId}",
   async (event) => {
     const { clubId, messageId } = event.params;
     const message = event.data.data();

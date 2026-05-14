@@ -6,12 +6,16 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    function userDoc(clubId) {
-      return get(/databases/$(database)/documents/clubs/$(clubId)/users/$(request.auth.uid));
+    function userPath(clubId) {
+      return /databases/$(database)/documents/clubs/$(clubId)/users/$(request.auth.uid);
+    }
+
+    function hasUserDoc(clubId) {
+      return signedIn() && exists(userPath(clubId));
     }
 
     function role(clubId) {
-      return signedIn() ? userDoc(clubId).data.role : "";
+      return hasUserDoc(clubId) ? get(userPath(clubId)).data.role : "";
     }
 
     function isCoach(clubId) {
@@ -28,12 +32,34 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/clubs/$(clubId)/parentLinks/$(request.auth.uid + "_" + playerId)).data.status == "approved";
     }
 
+    function ownUserDoc(userId) {
+      return signedIn() && request.auth.uid == userId;
+    }
+
     match /clubs/{clubId} {
       allow read: if signedIn();
-      allow write: if isCoach(clubId);
+      allow create, update, delete: if isCoach(clubId);
 
       match /users/{userId} {
-        allow read: if isCoach(clubId) || (signedIn() && request.auth.uid == userId);
+        allow read: if isCoach(clubId) || ownUserDoc(userId);
+        allow create: if ownUserDoc(userId)
+          && request.resource.data.role == "parent"
+          && request.resource.data.keys().hasOnly(["role", "name", "email", "phone", "consentAcceptedAt", "createdAt", "updatedAt"]);
+        allow update: if isCoach(clubId)
+          || (ownUserDoc(userId)
+            && resource.data.role == "parent"
+            && request.resource.data.role == "parent"
+            && request.resource.data.keys().hasOnly(["role", "name", "email", "phone", "consentAcceptedAt", "createdAt", "updatedAt"]));
+        allow delete: if isCoach(clubId);
+      }
+
+      match /teams/{teamId} {
+        allow read: if signedIn();
+        allow create, update, delete: if isCoach(clubId);
+      }
+
+      match /squads/{squadId} {
+        allow read: if signedIn();
         allow create, update, delete: if isCoach(clubId);
       }
 
@@ -54,7 +80,10 @@ service cloud.firestore {
 
       match /availability/{eventId}/players/{playerId} {
         allow read: if isCoach(clubId) || approvedFor(clubId, playerId);
-        allow create, update: if isCoach(clubId) || approvedFor(clubId, playerId);
+        allow create, update: if isCoach(clubId)
+          || (approvedFor(clubId, playerId)
+            && request.resource.data.playerId == playerId
+            && request.resource.data.keys().hasOnly(["playerId", "eventId", "status", "note", "updatedBy", "createdAt", "updatedAt"]));
         allow delete: if isCoach(clubId);
       }
 
@@ -65,8 +94,16 @@ service cloud.firestore {
 
       match /accessRequests/{requestId} {
         allow read: if isCoach(clubId) || (signedIn() && resource.data.parentUid == request.auth.uid);
-        allow create: if isParent(clubId) && request.resource.data.parentUid == request.auth.uid;
+        allow create: if isParent(clubId)
+          && request.resource.data.parentUid == request.auth.uid
+          && request.resource.data.status == "pending"
+          && request.resource.data.consent == true;
         allow update, delete: if isCoach(clubId);
+      }
+
+      match /announcements/{announcementId} {
+        allow read: if signedIn();
+        allow create, update, delete: if isCoach(clubId);
       }
 
       match /messages/{messageId} {

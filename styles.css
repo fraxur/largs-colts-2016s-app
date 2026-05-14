@@ -179,12 +179,45 @@ a {
   gap: 10px;
 }
 
-.demo-build-note {
+.live-build-note {
   grid-column: 1 / -1;
   margin: 0;
   color: var(--muted);
   font-size: 0.88rem;
   font-weight: 850;
+}
+
+.loading-card {
+  min-height: 360px;
+  align-content: center;
+}
+
+.loading-bar {
+  grid-column: 1 / -1;
+  height: 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(133, 0, 8, 0.12);
+}
+
+.loading-bar span {
+  display: block;
+  width: 45%;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--red-700), var(--gold));
+  animation: loading-sweep 1.2s ease-in-out infinite;
+}
+
+@keyframes loading-sweep {
+  0% { transform: translateX(-110%); }
+  100% { transform: translateX(240%); }
+}
+
+.error-banner {
+  border-color: rgba(176, 0, 32, 0.32);
+  background: #fff1f2;
+  color: #7f1d1d;
 }
 
 .field,
@@ -207,6 +240,15 @@ textarea {
   background: var(--paper);
   color: var(--ink);
   outline: 0;
+}
+
+.tiny-select {
+  min-height: 34px;
+  max-width: 220px;
+  border-radius: 999px;
+  padding: 0 12px;
+  font-size: 0.8rem;
+  font-weight: 850;
 }
 
 input,
@@ -799,7 +841,7 @@ button:disabled {
   white-space: nowrap;
 }
 
-.coach-demo-hint {
+.coach-guide-hint {
   border: 1px solid rgba(211, 168, 74, 0.45);
   border-radius: 18px;
   padding: 14px 16px;
