@@ -20,8 +20,9 @@ It is not ready for live use with real private child data until the app has a se
 - Coach approval or rejection of parent access requests
 - Random temporary password generation after parent approval
 - Parent password change after receiving a temporary password
-- Fixtures for Orange, Blue and Yellow
-- Training sessions and venue details
+- Blue and Yellow weekend fixtures
+- Tuesday and Wednesday all-team training, 18:00-19:30
+- Bowencraig, Inverclyde Sports Centre 3G, Barrfields Park and typed away destination venue details
 - Google Maps, Apple Maps and copy-address buttons
 - Parent availability yes/no responses
 - Parent notes for a fixture or training session
@@ -67,9 +68,11 @@ http://127.0.0.1:4173/
 3. Press `Add fixture`.
 4. Choose the team colour: Orange, Blue or Yellow.
 5. Add opponent, date, time, venue, meet time and notes.
-6. Save the fixture.
-7. Check that it appears in the fixture list.
-8. Use the map buttons to test the address links.
+6. Choose `Away destination` if the venue is not Bowencraig, Inverclyde Sports Centre 3G or Barrfields Park.
+7. Type the away venue name and address.
+8. Save the fixture.
+9. Check that it appears in the fixture list.
+10. Use the map buttons to test the address links.
 
 ## Coach Test: Remove A Fixture
 

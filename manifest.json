@@ -2,9 +2,9 @@
   "name": "Largs Colts 2016s",
   "short_name": "Colts 2016s",
   "description": "Private Largs Colts 2016s team app for verified parents and coaches.",
-  "id": "/",
-  "start_url": "/",
-  "scope": "/",
+  "id": ".",
+  "start_url": ".",
+  "scope": ".",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#fff8f3",
@@ -29,13 +29,13 @@
       "name": "Availability",
       "short_name": "Availability",
       "description": "Mark player availability",
-      "url": "/#availability"
+      "url": "./#availability"
     },
     {
       "name": "Fixtures",
       "short_name": "Fixtures",
       "description": "View Orange, Blue and Yellow fixtures",
-      "url": "/#schedule"
+      "url": "./#schedule"
     }
   ]
 }

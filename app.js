@@ -1,5 +1,5 @@
-const storageKey = "largs-colts-2016s-feature-complete-1";
-const appVersion = "3.3";
+const storageKey = "largs-colts-2016s-coach-test-1";
+const appVersion = "3.4";
 const crestPath = "assets/LargsColtsCrest.png";
 
 const teams = [
@@ -18,33 +18,23 @@ const coaches = [
 
 const venues = [
   {
+    id: "bowencraig",
+    name: "Bowencraig (Home pitch)",
+    address: "Bowencraig, Largs",
+  },
+  {
+    id: "inverclyde-3g",
+    name: "Inverclyde Sports Centre 3G",
+    address: "Burnside Road, Largs KA30 8RW",
+  },
+  {
     id: "barrfields",
-    name: "Barrfields 3G",
-    address: "Barrfields, Largs KA30 8QG",
+    name: "Barrfields Park",
+    address: "Barrfields Park, Greenock Road, Largs",
   },
   {
-    id: "largs-academy",
-    name: "Largs Academy",
-    address: "Largs Academy, Alexander Avenue, Largs KA30 9DR",
-  },
-  {
-    id: "winton-park",
-    name: "Winton Park",
-    address: "Winton Park, Ardrossan KA22 8JP",
-  },
-  {
-    id: "west-kilbride",
-    name: "West Kilbride Community Sports Club",
-    address: "West Kilbride KA23 9QB",
-  },
-  {
-    id: "kilwinning",
-    name: "Kilwinning Sports Club",
-    address: "Kilwinning KA13 6PU",
-  },
-  {
-    id: "away-tbc",
-    name: "Away venue TBC",
+    id: "away-custom",
+    name: "Away destination",
     address: "Address to be confirmed",
   },
 ];
@@ -95,21 +85,19 @@ function player(id, name, teamId) {
 }
 
 const defaultEvents = [
-  fixture("e1", "orange", "Kilwinning Rangers", "2026-05-16T10:30", "Barrfields 3G", "barrfields", "10:00", "Home kit"),
-  fixture("e2", "blue", "Ardrossan Winton Rovers", "2026-05-17T09:45", "Winton Park", "winton-park", "09:15", "Red kit"),
-  fixture("e3", "yellow", "West Kilbride", "2026-05-17T11:15", "Barrfields 3G", "barrfields", "10:45", "Red kit"),
-  fixture("e4", "orange", "Troon Thistle", "2026-05-23T10:00", "Away venue TBC", "away-tbc", "09:30", "Awaiting venue"),
-  fixture("e5", "blue", "Kilwinning Rangers", "2026-05-24T10:30", "Kilwinning Sports Club", "kilwinning", "10:00", "Red kit"),
-  fixture("e6", "yellow", "Ardrossan Winton Rovers", "2026-05-24T11:30", "Winton Park", "winton-park", "11:00", "Red kit"),
-  fixture("e7", "orange", "West Kilbride", "2026-05-30T09:45", "West Kilbride Community Sports Club", "west-kilbride", "09:15", "Red kit"),
-  fixture("e8", "blue", "Troon Thistle", "2026-05-31T10:15", "Barrfields 3G", "barrfields", "09:45", "Home kit"),
-  fixture("e9", "yellow", "Kilwinning Rangers", "2026-05-31T11:30", "Kilwinning Sports Club", "kilwinning", "11:00", "Red kit"),
-  training("t0", "all", "Passing and shape session", "2026-05-08T18:00", "Largs Academy", "largs-academy"),
-  training("t1", "all", "All teams training", "2026-05-20T18:00", "Largs Academy", "largs-academy"),
-  training("t2", "all", "Finishing and small-sided games", "2026-05-27T18:00", "Largs Academy", "largs-academy"),
-  training("t3", "orange", "Orange team shape", "2026-06-03T18:00", "Largs Academy", "largs-academy"),
-  training("t4", "blue", "Blue team shape", "2026-06-03T18:45", "Largs Academy", "largs-academy"),
-  training("t5", "yellow", "Yellow team shape", "2026-06-03T19:30", "Largs Academy", "largs-academy"),
+  {
+    ...fixture("e1", "blue", "Opposition TBC", "2026-05-16T09:30", "Bowencraig (Home pitch)", "bowencraig", "09:00", "Home match. Report for 9:00am."),
+    title: "Blue home match",
+  },
+  {
+    ...fixture("e2", "yellow", "Bellfield", "2026-05-16T10:00", "Bellfield Estate", "away-custom", "09:30", "Grass pitch. Please report for 9:30am."),
+    title: "Yellow away to Bellfield",
+    address: "Bellfield Estate, Kilmarnock KA1 3XG",
+  },
+  training("t1", "all", "Training", "2026-05-19T18:00", "Bowencraig (Home pitch)", "bowencraig"),
+  training("t2", "all", "Training", "2026-05-20T18:00", "Bowencraig (Home pitch)", "bowencraig"),
+  training("t3", "all", "Training", "2026-05-26T18:00", "Bowencraig (Home pitch)", "bowencraig"),
+  training("t4", "all", "Training", "2026-05-27T18:00", "Bowencraig (Home pitch)", "bowencraig"),
 ];
 
 function fixture(id, teamId, opponent, datetime, venue, venueId, meetTime, notes) {
@@ -138,7 +126,7 @@ function training(id, teamId, title, datetime, venue, venueId) {
     venue,
     venueId,
     meetTime: "",
-    notes: "Bring boots, water and shin pads",
+    notes: "18:00-19:30. All teams. Bring boots, water and shin pads.",
   };
 }
 
@@ -199,26 +187,21 @@ const defaultState = {
   events: defaultEvents,
   availability: {
     e1: {
-      p1: { status: "available", note: "Can arrive at 10:00" },
-      p4: { status: "available", note: "" },
-      p7: { status: "unknown", note: "" },
-    },
-    e2: {
       p10: { status: "available", note: "" },
-      p13: { status: "unavailable", note: "Family plans" },
+      p13: { status: "unknown", note: "" },
       p16: { status: "available", note: "" },
       p18: { status: "unknown", note: "" },
     },
-    e3: {
+    e2: {
       p19: { status: "available", note: "" },
       p22: { status: "available", note: "" },
       p26: { status: "unknown", note: "" },
     },
     t1: {},
-    t0: {},
+    t2: {},
   },
   attendance: {
-    t0: {
+    t1: {
       p1: "present",
       p2: "present",
       p3: "present",
@@ -292,6 +275,9 @@ function normalizeState(saved) {
   merged.inactivePlayers = defaultState.inactivePlayers;
   merged.events = merged.events?.length ? merged.events : defaultEvents;
   merged.selectedEventId = merged.selectedEventId || merged.events[0].id;
+  if (!merged.events.some((event) => event.id === merged.selectedEventId)) {
+    merged.selectedEventId = merged.events[0]?.id || "";
+  }
   merged.scheduleFilter = merged.scheduleFilter || "all";
   merged.parentAccounts = merged.parentAccounts?.length ? merged.parentAccounts : defaultState.parentAccounts;
 
@@ -377,11 +363,24 @@ function venueById(venueId) {
 
 function venueIdFromName(name = "") {
   const normalized = name.toLowerCase();
-  return venues.find((venue) => venue.name.toLowerCase() === normalized)?.id || "away-tbc";
+  return venues.find((venue) => venue.name.toLowerCase() === normalized)?.id || "away-custom";
 }
 
 function eventVenue(event) {
+  if (event.venueId === "away-custom" || event.address) {
+    return {
+      id: event.venueId || "away-custom",
+      name: event.venue || "Away destination",
+      address: event.address || "Address to be confirmed",
+    };
+  }
   return venueById(event.venueId || venueIdFromName(event.venue));
+}
+
+function startOfToday() {
+  const date = new Date();
+  date.setHours(0, 0, 0, 0);
+  return date;
 }
 
 function mapsUrl(address) {
@@ -668,10 +667,10 @@ function navRoutes(pendingOnly = false) {
 
 function navItem(item, route, compact = false) {
   return `
-    <a href="#${item.id}" data-route="${item.id}" class="${route === item.id ? "active" : ""}">
+    <button class="nav-link ${route === item.id ? "active" : ""}" type="button" data-route-target="${item.id}">
       <span class="nav-mark">${item.label.slice(0, 1)}</span>
       <span>${compact ? item.label.replace("Availability", "Avail.") : item.label}</span>
-    </a>
+    </button>
   `;
 }
 
@@ -728,7 +727,7 @@ function pageView(route) {
 
 function homeView() {
   const next = state.events
-    .filter((event) => new Date(event.datetime) >= new Date("2026-05-13T00:00"))
+    .filter((event) => new Date(event.datetime) >= startOfToday())
     .sort((a, b) => new Date(a.datetime) - new Date(b.datetime))[0] || state.events[0];
   const child = currentPlayer();
   const counts = availabilityCounts(next.id);
@@ -830,7 +829,7 @@ function scheduleView() {
           </button>
         `).join("")}
       </div>
-      ${state.session.role === "coach" ? '<button class="primary-button" type="button" data-modal="event">Add event</button>' : ""}
+      ${state.session.role === "coach" ? '<button class="primary-button" type="button" data-modal="event">Add fixture/training</button>' : ""}
     </section>
     <div class="event-list">
       ${visibleEvents.map(eventCard).join("")}
@@ -996,7 +995,7 @@ function emptyEventsView(title) {
       <p class="eyebrow">${escapeHtml(title)}</p>
       <h3>No events yet</h3>
       <p class="muted">Add a fixture or training session before using this page.</p>
-      ${state.session.role === "coach" ? '<button class="primary-button" type="button" data-modal="event">Add event</button>' : ""}
+      ${state.session.role === "coach" ? '<button class="primary-button" type="button" data-modal="event">Add fixture/training</button>' : ""}
     </section>
   `;
 }
@@ -1353,8 +1352,9 @@ function installView() {
           <span>Parents can change temporary passwords</span>
           <span>Coach approval queue working</span>
           <span>Full roster with placeholder parent contacts loaded</span>
-          <span>Orange, Blue and Yellow fixtures loaded</span>
-          <span>Training times and venue addresses loaded</span>
+          <span>Blue and Yellow weekend fixtures loaded</span>
+          <span>Tuesday and Wednesday training loaded</span>
+          <span>Home, 3G, Barrfields and typed away venues loaded</span>
           <span>Google Maps and Apple Maps buttons added</span>
           <span>Coach contacts added with call and text links</span>
           <span>Offline app shell enabled after HTTPS upload</span>
@@ -1389,16 +1389,20 @@ function modalContent(type) {
 function eventModal() {
   return `
     <p class="eyebrow">Coach action</p>
-    <h2 id="modal-title">Add event</h2>
+    <h2 id="modal-title">Add fixture/training</h2>
     <form class="stacked-form" data-form="event">
       <label class="field"><span>Type</span><select name="type"><option>Fixture</option><option>Training</option></select></label>
       <label class="field"><span>Team</span><select name="teamId"><option value="all">All teams</option>${teams.map((team) => `<option value="${team.id}">${team.name}</option>`).join("")}</select></label>
       <label class="field"><span>Opponent or title</span><input name="opponent" required placeholder="Kilwinning Rangers"></label>
       <label class="field"><span>Date and time</span><input name="datetime" type="datetime-local" required></label>
-      <label class="field"><span>Venue</span><select name="venueId">${venues.map((venue) => `<option value="${venue.id}">${venue.name}</option>`).join("")}</select></label>
+      <label class="field"><span>Venue</span><select name="venueId" data-action="venue-choice">${venues.map((venue) => `<option value="${venue.id}">${venue.name}</option>`).join("")}</select></label>
+      <div class="away-fields" data-away-fields hidden>
+        <label class="field"><span>Away venue name</span><input name="customVenue" placeholder="Bellfield Estate"></label>
+        <label class="field"><span>Away address</span><input name="customAddress" placeholder="Bellfield Estate, Kilmarnock KA1 3XG"></label>
+      </div>
       <label class="field"><span>Meet time</span><input name="meetTime" placeholder="10:00"></label>
       <label class="field"><span>Notes</span><input name="notes" placeholder="Home kit, bring water"></label>
-      <button class="primary-button" type="submit">Add event</button>
+      <button class="primary-button" type="submit">Add fixture/training</button>
     </form>
   `;
 }
@@ -1464,6 +1468,14 @@ function editPlayerModal(playerId) {
 function bindFormDefaults() {
   const parentName = $('[name="parentName"]');
   if (parentName && !parentName.value) parentName.value = placeholderParent;
+  toggleAwayFields();
+}
+
+function toggleAwayFields() {
+  const venueChoice = $('[data-action="venue-choice"]');
+  const awayFields = $('[data-away-fields]');
+  if (!venueChoice || !awayFields) return;
+  awayFields.hidden = venueChoice.value !== "away-custom";
 }
 
 document.addEventListener("click", (event) => {
@@ -1597,6 +1609,9 @@ document.addEventListener("change", (event) => {
     state.selectedEventId = target.value;
     saveState();
     render();
+  }
+  if (target.dataset.action === "venue-choice") {
+    toggleAwayFields();
   }
 });
 
@@ -1745,7 +1760,17 @@ function addEvent(data) {
   const type = data.get("type");
   const teamId = data.get("teamId");
   const opponent = data.get("opponent");
-  const venue = venueById(data.get("venueId"));
+  const venueId = data.get("venueId");
+  const selectedVenue = venueById(venueId);
+  const customVenue = String(data.get("customVenue") || "").trim();
+  const customAddress = String(data.get("customAddress") || "").trim();
+  const venue = venueId === "away-custom"
+    ? {
+      id: "away-custom",
+      name: customVenue || "Away destination",
+      address: customAddress || "Address to be confirmed",
+    }
+    : selectedVenue;
   const id = uid("event");
   const title = type === "Fixture"
     ? `${teamName(teamId)} vs ${opponent}`
@@ -1759,6 +1784,7 @@ function addEvent(data) {
     datetime: data.get("datetime"),
     venue: venue.name,
     venueId: venue.id,
+    address: venue.address,
     meetTime: data.get("meetTime"),
     notes: data.get("notes"),
   };

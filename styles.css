@@ -347,20 +347,29 @@ textarea:focus {
 }
 
 .side-nav a:not(.brand),
-.bottom-nav a {
+.side-nav .nav-link,
+.bottom-nav .nav-link {
   display: flex;
   min-height: 48px;
   align-items: center;
   gap: 10px;
+  width: 100%;
   border-radius: 16px;
   padding: 0 12px;
+  border: 0;
+  background: transparent;
   color: rgba(255, 255, 255, 0.76);
   font-weight: 850;
+  font-family: inherit;
+  font-size: 1rem;
   text-decoration: none;
+  text-align: left;
 }
 
 .side-nav a.active,
-.side-nav a:hover {
+.side-nav a:hover,
+.side-nav .nav-link.active,
+.side-nav .nav-link:hover {
   background: rgba(255, 255, 255, 0.12);
   color: #ffffff;
 }
@@ -771,6 +780,15 @@ textarea:focus {
   white-space: nowrap;
 }
 
+.away-fields {
+  display: grid;
+  gap: 12px;
+}
+
+.away-fields[hidden] {
+  display: none;
+}
+
 .mini-stats {
   margin-top: 10px;
 }
@@ -1046,7 +1064,7 @@ textarea:focus {
     color: #ffffff;
   }
 
-  .bottom-nav a {
+  .bottom-nav .nav-link {
     min-height: 58px;
     flex-direction: column;
     gap: 4px;
@@ -1056,7 +1074,7 @@ textarea:focus {
     text-align: center;
   }
 
-  .bottom-nav a.active {
+  .bottom-nav .nav-link.active {
     background: rgba(255, 255, 255, 0.14);
     color: #ffffff;
   }

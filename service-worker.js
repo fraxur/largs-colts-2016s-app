@@ -1,14 +1,14 @@
-const cacheName = "largs-colts-feature-complete-2";
+const cacheName = "largs-colts-coach-test-1";
 const appShell = [
-  "/",
-  "/index.html",
-  "/styles.css",
-  "/app.js",
-  "/manifest.json",
-  "/assets/LargsColtsCrest.png",
-  "/assets/app-icon-192.png",
-  "/assets/app-icon-512.png",
-  "/assets/pitch-pattern.svg",
+  "./",
+  "index.html",
+  "styles.css",
+  "app.js",
+  "manifest.json",
+  "assets/LargsColtsCrest.png",
+  "assets/app-icon-192.png",
+  "assets/app-icon-512.png",
+  "assets/pitch-pattern.svg",
 ];
 
 self.addEventListener("install", (event) => {
