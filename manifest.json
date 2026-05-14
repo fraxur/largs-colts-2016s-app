@@ -1,0 +1,41 @@
+{
+  "name": "Largs Colts 2016s",
+  "short_name": "Colts 2016s",
+  "description": "Private Largs Colts 2016s team app for verified parents and coaches.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#fff8f3",
+  "theme_color": "#850008",
+  "categories": ["sports", "productivity"],
+  "icons": [
+    {
+      "src": "assets/app-icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "assets/app-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Availability",
+      "short_name": "Availability",
+      "description": "Mark player availability",
+      "url": "/#availability"
+    },
+    {
+      "name": "Fixtures",
+      "short_name": "Fixtures",
+      "description": "View Orange, Blue and Yellow fixtures",
+      "url": "/#schedule"
+    }
+  ]
+}
