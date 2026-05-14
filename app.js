@@ -1,5 +1,5 @@
-const storageKey = "largs-colts-2016s-coach-test-3";
-const appVersion = "3.6";
+const storageKey = "largs-colts-2016s-coach-test-4";
+const appVersion = "3.7";
 const crestPath = "assets/LargsColtsCrest.png";
 
 const teams = [
@@ -39,6 +39,7 @@ const venues = [
   },
 ];
 
+const kitOptions = ["Home kit", "Away kit"];
 const leavers = ["Caleb", "Robyn", "Alexander", "Harry Smith"];
 const placeholderParent = "Parent Placeholder";
 const placeholderPhone = "07000 000000";
@@ -86,11 +87,11 @@ function player(id, name, teamId) {
 
 const defaultEvents = [
   {
-    ...fixture("e1", "blue", "Opposition TBC", "2026-05-16T09:30", "Bowencraig (Home pitch)", "bowencraig", "09:00", "Home match. Report for 9:00am."),
+    ...fixture("e1", "blue", "Opposition TBC", "2026-05-16T09:30", "10:45", "Bowencraig (Home pitch)", "bowencraig", "09:00", "Home kit", "Home match. Report for 9:00am."),
     title: "Blue home match",
   },
   {
-    ...fixture("e2", "yellow", "Bellfield", "2026-05-16T10:00", "Bellfield Estate", "away-custom", "09:30", "Grass pitch. Please report for 9:30am."),
+    ...fixture("e2", "yellow", "Bellfield", "2026-05-16T10:00", "11:15", "Bellfield Estate", "away-custom", "09:30", "Away kit", "Grass pitch. Please report for 9:30am."),
     title: "Yellow away to Bellfield",
     address: "Bellfield Estate, Kilmarnock KA1 3XG",
   },
@@ -100,7 +101,7 @@ const defaultEvents = [
   training("t4", "all", "Training", "2026-05-27T18:00", "Bowencraig (Home pitch)", "bowencraig"),
 ];
 
-function fixture(id, teamId, opponent, datetime, venue, venueId, meetTime, notes) {
+function fixture(id, teamId, opponent, datetime, finishTime, venue, venueId, meetTime, kit, notes) {
   return {
     id,
     type: "Fixture",
@@ -108,9 +109,11 @@ function fixture(id, teamId, opponent, datetime, venue, venueId, meetTime, notes
     title: `${teamName(teamId)} vs ${opponent}`,
     opponent,
     datetime,
+    finishTime,
     venue,
     venueId,
     meetTime,
+    kit,
     notes,
   };
 }
@@ -123,9 +126,11 @@ function training(id, teamId, title, datetime, venue, venueId) {
     title,
     opponent: "",
     datetime,
+    finishTime: "19:30",
     venue,
     venueId,
     meetTime: "",
+    kit: "",
     notes: "18:00-19:30. All teams. Bring boots, water and shin pads.",
   };
 }
@@ -236,6 +241,7 @@ const defaultState = {
       p26: "unknown",
     },
   },
+  parentAlerts: [],
   messages: [
     {
       id: "m1",
@@ -297,7 +303,7 @@ const coachGuideSteps = [
     target: "attendance-grid",
     eventId: "t1",
     title: "Attendance",
-    body: "This is where a coach marks players present or absent. The cards also show each player’s running attendance percentage.",
+    body: "This is where a coach marks players present, absent or collected. Present and collected also log the parent email/app notification that would be sent in the live system.",
   },
   {
     route: "squads",
@@ -363,6 +369,7 @@ function normalizeState(saved) {
   }
   merged.scheduleFilter = merged.scheduleFilter || "all";
   merged.parentAccounts = merged.parentAccounts?.length ? merged.parentAccounts : defaultState.parentAccounts;
+  merged.parentAlerts = merged.parentAlerts || [];
   merged.coachGuide = {
     ...defaultState.coachGuide,
     ...(saved.coachGuide || {}),
@@ -375,6 +382,8 @@ function normalizeState(saved) {
     event.venueId = event.venueId || venueIdFromName(event.venue);
     event.notes = event.notes || "";
     event.meetTime = event.meetTime || "";
+    event.finishTime = event.finishTime || suggestFinishTime(event.datetime, event.type);
+    event.kit = event.kit || (event.type === "Fixture" ? "Home kit" : "");
     merged.availability[event.id] = merged.availability[event.id] || {};
     getPlayersForEvent(event, merged.players).forEach((player) => {
       merged.availability[event.id][player.id] = merged.availability[event.id][player.id] || {
@@ -473,6 +482,45 @@ function startOfToday() {
   return date;
 }
 
+function timeSlots() {
+  const slots = [];
+  for (let hour = 0; hour < 24; hour += 1) {
+    for (let minute = 0; minute < 60; minute += 15) {
+      slots.push(`${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`);
+    }
+  }
+  return slots;
+}
+
+function timeOptions(selected = "", includeBlank = false) {
+  return `${includeBlank ? '<option value="">Not set</option>' : ""}${timeSlots()
+    .map((slot) => `<option value="${slot}" ${slot === selected ? "selected" : ""}>${slot}</option>`)
+    .join("")}`;
+}
+
+function dateValue(datetime = "") {
+  return datetime ? String(datetime).slice(0, 10) : "";
+}
+
+function timeValue(datetime = "") {
+  return datetime ? String(datetime).slice(11, 16) : "";
+}
+
+function combineDateTime(date, time) {
+  return `${date}T${time}`;
+}
+
+function addMinutesToTime(datetime, minutes) {
+  const date = new Date(datetime);
+  if (Number.isNaN(date.getTime())) return "";
+  date.setMinutes(date.getMinutes() + minutes);
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+function suggestFinishTime(datetime, type) {
+  return addMinutesToTime(datetime, type === "Training" ? 90 : 75);
+}
+
 function mapsUrl(address) {
   return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`;
 }
@@ -549,6 +597,7 @@ function statusText(status) {
     unknown: "No reply",
     present: "Present",
     absent: "Absent",
+    collected: "Collected",
     pending: "Pending",
     approved: "Approved",
     rejected: "Rejected",
@@ -556,7 +605,7 @@ function statusText(status) {
 }
 
 function statusClass(status) {
-  if (["available", "present", "approved"].includes(status)) return "good";
+  if (["available", "present", "approved", "collected"].includes(status)) return "good";
   if (["unavailable", "absent", "rejected"].includes(status)) return "bad";
   return "warn";
 }
@@ -582,7 +631,7 @@ function attendancePercent(playerId) {
     const value = state.attendance[event.id]?.[playerId];
     if (value && value !== "unknown") {
       total += 1;
-      if (value === "present") present += 1;
+      if (value === "present" || value === "collected") present += 1;
     }
   });
   return total ? Math.round((present / total) * 100) : 0;
@@ -1022,7 +1071,10 @@ function eventCard(event) {
   const counts = availabilityCounts(event.id);
   const venue = eventVenue(event);
   const coachActions = state.session.role === "coach"
-    ? `<button class="secondary-button danger-button" type="button" data-action="delete-event" data-event-id="${event.id}">Remove</button>`
+    ? `
+      <button class="secondary-button" type="button" data-modal="edit-event" data-event-id="${event.id}">Edit</button>
+      <button class="secondary-button danger-button" type="button" data-action="delete-event" data-event-id="${event.id}">Remove</button>
+    `
     : "";
   return `
     <article class="event-card">
@@ -1035,12 +1087,13 @@ function eventCard(event) {
           </div>
           <span class="team-pill ${event.teamId}">${teamName(event.teamId)}</span>
         </div>
-        <p>${formatDate(event.datetime)} at ${escapeHtml(venue.name)}</p>
-        <p>${escapeHtml(venue.address)}${event.meetTime ? ` - Meet ${escapeHtml(event.meetTime)}` : ""}</p>
+        <p>${formatDate(event.datetime)}${event.finishTime ? ` to ${escapeHtml(event.finishTime)}` : ""} at ${escapeHtml(venue.name)}</p>
+        <p>${escapeHtml(venue.address)}${event.meetTime ? ` - Report ${escapeHtml(event.meetTime)}` : ""}</p>
         <div class="mini-stats">
           <span>${counts.available} available</span>
           <span>${counts.unavailable} unavailable</span>
           <span>${counts.unknown} no reply</span>
+          ${event.kit ? `<span>${escapeHtml(event.kit)}</span>` : ""}
           ${event.notes ? `<span>${escapeHtml(event.notes)}</span>` : ""}
         </div>
       </div>
@@ -1117,7 +1170,8 @@ function parentAvailabilityCard(event, child, childInEvent) {
         </div>
         <span class="status-pill ${statusClass(entry.status)}">${statusText(entry.status)}</span>
       </div>
-      <p class="muted">${formatDate(event.datetime)} at ${escapeHtml(event.venue)}</p>
+      <p class="muted">${formatDate(event.datetime)}${event.finishTime ? ` to ${escapeHtml(event.finishTime)}` : ""} at ${escapeHtml(event.venue)}</p>
+      ${event.kit ? `<p class="muted">${escapeHtml(event.kit)}</p>` : ""}
       <p class="muted">${escapeHtml(venue.address)}</p>
       <div class="choice-row">
         <a class="secondary-link" href="${mapsUrl(venue.address)}" target="_blank" rel="noreferrer">Google Maps</a>
@@ -1166,6 +1220,7 @@ function attendanceView() {
     <div class="attendance-grid" data-tour="attendance-grid">
       ${players.map((player) => attendanceCard(event, player)).join("")}
     </div>
+    ${state.session.role === "coach" ? parentAlertLog(event) : ""}
   `;
 }
 
@@ -1195,8 +1250,34 @@ function attendanceCard(event, player) {
         <div class="choice-row">
           <button type="button" class="available-button" data-action="set-attendance" data-player-id="${player.id}" data-status="present">Present</button>
           <button type="button" class="unavailable-button" data-action="set-attendance" data-player-id="${player.id}" data-status="absent">Absent</button>
+          <button type="button" class="collected-button" data-action="set-attendance" data-player-id="${player.id}" data-status="collected">Collected</button>
         </div>
       ` : ""}
+    </article>
+  `;
+}
+
+function parentAlertLog(event) {
+  const alerts = (state.parentAlerts || []).filter((alert) => alert.eventId === event.id).slice(0, 8);
+  return `
+    <article class="panel parent-alert-log">
+      <div class="panel-title">
+        <div>
+          <p class="eyebrow">Parent alerts</p>
+          <h3>Email and app notification log</h3>
+        </div>
+        <span class="status-pill warn">Demo send</span>
+      </div>
+      <p class="muted">This GitHub demo logs the alert that would be sent. Real email and push delivery needs the secure backend.</p>
+      ${alerts.length ? alerts.map((alert) => `
+        <div class="person-row compact">
+          <div>
+            <strong>${escapeHtml(alert.title)}</strong>
+            <p>${escapeHtml(alert.body)}</p>
+          </div>
+          <span class="status-pill good">${escapeHtml(alert.sentAt)}</span>
+        </div>
+      `).join("") : '<p class="muted">No parent alerts sent for this session yet.</p>'}
     </article>
   `;
 }
@@ -1255,6 +1336,10 @@ function messagesView() {
     const child = currentPlayer();
     return message.teamId === "all" || message.teamId === child?.teamId;
   });
+  const child = currentPlayer();
+  const parentAlerts = state.session.role === "parent" && child
+    ? (state.parentAlerts || []).filter((alert) => alert.playerId === child.id)
+    : [];
 
   return `
     <section class="toolbar" data-tour="message-actions">
@@ -1262,6 +1347,17 @@ function messagesView() {
       ${state.session.role === "coach" ? '<button class="primary-button" type="button" data-modal="message">New message</button>' : ""}
     </section>
     <div class="message-list" data-tour="messages-panel">
+      ${parentAlerts.map((alert) => `
+        <article class="message-card parent-alert-message">
+          <div class="panel-title">
+            <div>
+              <p class="eyebrow">Attendance alert - ${escapeHtml(alert.sentAt)}</p>
+              <h3>${escapeHtml(alert.title)}</h3>
+            </div>
+          </div>
+          <p>${escapeHtml(alert.body)}</p>
+        </article>
+      `).join("")}
       ${visible.map((message) => `
         <article class="message-card">
           <div class="panel-title">
@@ -1559,6 +1655,7 @@ function modalView() {
 
 function modalContent(type) {
   if (type === "event") return eventModal();
+  if (type === "edit-event") return eventModal(state.modal.eventId);
   if (type === "message") return messageModal();
   if (type === "player") return playerModal();
   if (type === "move-player") return movePlayerModal(state.modal.playerId);
@@ -1566,23 +1663,40 @@ function modalContent(type) {
   return "";
 }
 
-function eventModal() {
+function eventModal(eventId = "") {
+  const event = state.events.find((item) => item.id === eventId);
+  const editing = Boolean(event);
+  const venue = event ? eventVenue(event) : venues[0];
+  const selectedVenueId = event?.venueId || venue.id;
+  const isAway = selectedVenueId === "away-custom";
+  const type = event?.type || "Fixture";
+  const teamId = event?.teamId || "all";
+  const opponent = type === "Fixture" ? event?.opponent || "" : event?.title || "";
+  const date = dateValue(event?.datetime);
+  const startTime = timeValue(event?.datetime) || "09:30";
+  const finishTime = event?.finishTime || suggestFinishTime(event?.datetime || combineDateTime(date || "2026-05-16", startTime), type);
+  const meetTime = event?.meetTime || "";
+  const kit = event?.kit || "Home kit";
   return `
     <p class="eyebrow">Coach action</p>
-    <h2 id="modal-title">Add fixture/training</h2>
-    <form class="stacked-form" data-form="event">
-      <label class="field"><span>Type</span><select name="type"><option>Fixture</option><option>Training</option></select></label>
-      <label class="field"><span>Team</span><select name="teamId"><option value="all">All teams</option>${teams.map((team) => `<option value="${team.id}">${team.name}</option>`).join("")}</select></label>
-      <label class="field"><span>Opponent or title</span><input name="opponent" required placeholder="Kilwinning Rangers"></label>
-      <label class="field"><span>Date and time</span><input name="datetime" type="datetime-local" required></label>
-      <label class="field"><span>Venue</span><select name="venueId" data-action="venue-choice">${venues.map((venue) => `<option value="${venue.id}">${venue.name}</option>`).join("")}</select></label>
-      <div class="away-fields" data-away-fields hidden>
-        <label class="field"><span>Away venue name</span><input name="customVenue" placeholder="Bellfield Estate"></label>
-        <label class="field"><span>Away address</span><input name="customAddress" placeholder="Bellfield Estate, Kilmarnock KA1 3XG"></label>
+    <h2 id="modal-title">${editing ? "Edit fixture/training" : "Add fixture/training"}</h2>
+    <form class="stacked-form" data-form="${editing ? "edit-event" : "event"}">
+      ${editing ? `<input type="hidden" name="eventId" value="${escapeHtml(event.id)}">` : ""}
+      <label class="field"><span>Type</span><select name="type"><option ${type === "Fixture" ? "selected" : ""}>Fixture</option><option ${type === "Training" ? "selected" : ""}>Training</option></select></label>
+      <label class="field"><span>Team</span><select name="teamId"><option value="all" ${teamId === "all" ? "selected" : ""}>All teams</option>${teams.map((team) => `<option value="${team.id}" ${team.id === teamId ? "selected" : ""}>${team.name}</option>`).join("")}</select></label>
+      <label class="field"><span>Opponent or title</span><input name="opponent" required value="${escapeHtml(opponent)}" placeholder="Kilwinning Rangers"></label>
+      <label class="field"><span>Date</span><input name="date" type="date" required value="${escapeHtml(date)}"></label>
+      <label class="field"><span>Start time</span><select name="startTime">${timeOptions(startTime)}</select></label>
+      <label class="field"><span>Finish time</span><select name="finishTime">${timeOptions(finishTime)}</select></label>
+      <label class="field"><span>Report time</span><select name="meetTime">${timeOptions(meetTime, true)}</select></label>
+      <label class="field"><span>Kit</span><select name="kit">${kitOptions.map((option) => `<option value="${option}" ${option === kit ? "selected" : ""}>${option}</option>`).join("")}</select></label>
+      <label class="field"><span>Venue</span><select name="venueId" data-action="venue-choice">${venues.map((item) => `<option value="${item.id}" ${item.id === selectedVenueId ? "selected" : ""}>${item.name}</option>`).join("")}</select></label>
+      <div class="away-fields" data-away-fields ${isAway ? "" : "hidden"}>
+        <label class="field"><span>Away venue name</span><input name="customVenue" value="${escapeHtml(isAway ? venue.name : "")}" placeholder="Bellfield Estate"></label>
+        <label class="field"><span>Away address</span><input name="customAddress" value="${escapeHtml(isAway ? venue.address : "")}" placeholder="Bellfield Estate, Kilmarnock KA1 3XG"></label>
       </div>
-      <label class="field"><span>Meet time</span><input name="meetTime" placeholder="10:00"></label>
-      <label class="field"><span>Notes</span><input name="notes" placeholder="Home kit, bring water"></label>
-      <button class="primary-button" type="submit">Add fixture/training</button>
+      <label class="field"><span>Notes</span><input name="notes" value="${escapeHtml(event?.notes || "")}" placeholder="Home kit, bring water"></label>
+      <button class="primary-button" type="submit">${editing ? "Save changes" : "Add fixture/training"}</button>
     </form>
   `;
 }
@@ -1681,7 +1795,7 @@ document.addEventListener("click", (event) => {
   }
 
   if (target.dataset.modal) {
-    state.modal = { type: target.dataset.modal, playerId: target.dataset.playerId };
+    state.modal = { type: target.dataset.modal, playerId: target.dataset.playerId, eventId: target.dataset.eventId };
     render();
     return;
   }
@@ -1778,11 +1892,7 @@ document.addEventListener("click", (event) => {
   }
 
   if (action === "set-attendance") {
-    state.attendance[state.selectedEventId] = state.attendance[state.selectedEventId] || {};
-    state.attendance[state.selectedEventId][target.dataset.playerId] = target.dataset.status;
-    saveState();
-    render();
-    toast("Attendance updated");
+    setAttendance(target.dataset.playerId, target.dataset.status);
     return;
   }
 
@@ -1840,6 +1950,7 @@ document.addEventListener("submit", (event) => {
   if (form.dataset.form === "request-access") requestAccess(data);
   if (form.dataset.form === "change-password") changePassword(data);
   if (form.dataset.form === "event") addEvent(data);
+  if (form.dataset.form === "edit-event") editEvent(data);
   if (form.dataset.form === "message") addMessage(data);
   if (form.dataset.form === "player") addPlayer(data);
   if (form.dataset.form === "move-player") movePlayer(data);
@@ -1958,48 +2069,109 @@ function reviewRequest(requestId, status) {
   toast(`Request ${status}`);
 }
 
-function addEvent(data) {
-  const type = data.get("type");
-  const teamId = data.get("teamId");
-  const opponent = data.get("opponent");
+function eventTitle(type, teamId, opponent, venueId) {
+  if (type !== "Fixture") return opponent;
+  if (opponent.trim().toLowerCase() === "opposition tbc") return `${teamName(teamId)} home match`;
+  if (venueId === "away-custom") return `${teamName(teamId)} away to ${opponent}`;
+  return `${teamName(teamId)} vs ${opponent}`;
+}
+
+function eventVenueFromForm(data) {
   const venueId = data.get("venueId");
   const selectedVenue = venueById(venueId);
   const customVenue = String(data.get("customVenue") || "").trim();
   const customAddress = String(data.get("customAddress") || "").trim();
-  const venue = venueId === "away-custom"
+  return venueId === "away-custom"
     ? {
       id: "away-custom",
       name: customVenue || "Away destination",
       address: customAddress || "Address to be confirmed",
     }
     : selectedVenue;
-  const id = uid("event");
-  const title = type === "Fixture"
-    ? `${teamName(teamId)} vs ${opponent}`
-    : opponent;
-  const event = {
+}
+
+function eventDataFromForm(data, id = uid("event")) {
+  const type = data.get("type");
+  const teamId = data.get("teamId");
+  const opponent = String(data.get("opponent") || "").trim();
+  const venue = eventVenueFromForm(data);
+  return {
     id,
     type,
     teamId,
-    title,
+    title: eventTitle(type, teamId, opponent, venue.id),
     opponent: type === "Fixture" ? opponent : "",
-    datetime: data.get("datetime"),
+    datetime: combineDateTime(data.get("date"), data.get("startTime")),
+    finishTime: data.get("finishTime"),
     venue: venue.name,
     venueId: venue.id,
     address: venue.address,
     meetTime: data.get("meetTime"),
+    kit: type === "Fixture" ? data.get("kit") : "",
     notes: data.get("notes"),
   };
-  state.events.push(event);
-  state.availability[id] = {};
-  state.attendance[id] = {};
+}
+
+function syncEventRoster(event) {
+  state.availability[event.id] = state.availability[event.id] || {};
+  state.attendance[event.id] = state.attendance[event.id] || {};
   getPlayersForEvent(event).forEach((player) => {
-    state.availability[id][player.id] = { status: "unknown", note: "" };
-    state.attendance[id][player.id] = "unknown";
+    state.availability[event.id][player.id] = state.availability[event.id][player.id] || { status: "unknown", note: "" };
+    state.attendance[event.id][player.id] = state.attendance[event.id][player.id] || "unknown";
   });
-  state.selectedEventId = id;
+}
+
+function addEvent(data) {
+  const event = eventDataFromForm(data);
+  state.events.push(event);
+  syncEventRoster(event);
+  state.selectedEventId = event.id;
   delete state.modal;
   toast("Event added");
+}
+
+function editEvent(data) {
+  const eventId = data.get("eventId");
+  const index = state.events.findIndex((event) => event.id === eventId);
+  if (index === -1) return;
+  state.events[index] = eventDataFromForm(data, eventId);
+  syncEventRoster(state.events[index]);
+  state.selectedEventId = eventId;
+  delete state.modal;
+  toast("Event updated");
+}
+
+function setAttendance(playerId, status) {
+  state.attendance[state.selectedEventId] = state.attendance[state.selectedEventId] || {};
+  const previous = state.attendance[state.selectedEventId][playerId];
+  state.attendance[state.selectedEventId][playerId] = status;
+  if (previous !== status && ["present", "collected"].includes(status)) {
+    queueParentAlert(playerId, state.selectedEventId, status);
+  }
+  saveState();
+  render();
+  toast(["present", "collected"].includes(status) ? "Attendance updated and parent alert logged" : "Attendance updated");
+}
+
+function queueParentAlert(playerId, eventId, status) {
+  const player = activePlayers().find((item) => item.id === playerId);
+  const event = state.events.find((item) => item.id === eventId);
+  if (!player || !event) return;
+  const actionText = status === "present"
+    ? `${player.name} has been marked present. We have the child at ${event.title}.`
+    : `${player.name} has been marked collected from ${event.title}.`;
+  state.parentAlerts = state.parentAlerts || [];
+  state.parentAlerts.unshift({
+    id: uid("alert"),
+    playerId,
+    eventId,
+    status,
+    parentName: player.parentName,
+    parentPhone: player.parentPhone,
+    title: status === "present" ? `${player.name} checked in` : `${player.name} collected`,
+    body: `Demo email + app notification to ${player.parentName}: ${actionText}`,
+    sentAt: "Just now",
+  });
 }
 
 function deleteEvent(eventId) {

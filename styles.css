@@ -244,6 +244,7 @@ textarea:focus {
 .secondary-button,
 .available-button,
 .unavailable-button,
+.collected-button,
 .secondary-link,
 .quick-grid button,
 .tiny-button,
@@ -299,6 +300,11 @@ button:disabled {
 .unavailable-button {
   background: #ffe5e1;
   color: var(--bad);
+}
+
+.collected-button {
+  background: #eef0ff;
+  color: #3730a3;
 }
 
 .app-shell {
@@ -801,6 +807,12 @@ button:disabled {
   color: var(--red-900);
   font-weight: 850;
   box-shadow: var(--small-shadow);
+}
+
+.parent-alert-log,
+.parent-alert-message {
+  border-color: rgba(55, 48, 163, 0.18);
+  background: #fbfbff;
 }
 
 .away-fields {
