@@ -1,6 +1,23 @@
-const storageKey = "largs-colts-2016s-coach-test-4";
-const appVersion = "3.7";
+const storageKey = "largs-colts-2016s-coach-test-5";
+const appVersion = "3.8";
 const crestPath = "assets/LargsColtsCrest.png";
+const backendConfig = window.largsFirebaseConfig || {
+  enabled: false,
+  supportEmail: "fraxur@outlook.com",
+  firebaseConfig: {},
+  vapidKey: "",
+};
+const supportEmail = backendConfig.supportEmail || "fraxur@outlook.com";
+const firebaseRuntime = {
+  ready: false,
+  modules: {},
+  app: null,
+  auth: null,
+  db: null,
+  messaging: null,
+  user: null,
+};
+const clubId = "largs-colts-2016s";
 
 const teams = [
   { id: "orange", name: "Orange", colour: "#f97316" },
@@ -303,7 +320,7 @@ const coachGuideSteps = [
     target: "attendance-grid",
     eventId: "t1",
     title: "Attendance",
-    body: "This is where a coach marks players present, absent or collected. Present and collected also log the parent email/app notification that would be sent in the live system.",
+    body: "This is where a coach marks players present, absent or collected. Present and collected also log the parent push/in-app notification that would be sent in the live system.",
   },
   {
     route: "squads",
@@ -793,12 +810,16 @@ function parentLoginView() {
         </select>
       </label>
       <label>
+        <span>Email for live app</span>
+        <input name="email" type="email" autocomplete="email" placeholder="parent@example.com">
+      </label>
+      <label>
         <span>Passcode</span>
         <input name="passcode" type="password" autocomplete="current-password" placeholder="parent2016 or temporary password" required>
       </label>
       <label class="check-row">
         <input name="consent" type="checkbox" required>
-        <span>I agree this prototype stores test child information on this device.</span>
+        <span>I confirm I am allowed to request access for this child and consent to Largs Colts 2016s storing child profile, availability, attendance and app notification data for team management. Temporary support contact: ${escapeHtml(supportEmail)}.</span>
       </label>
       <div class="auth-actions">
         <button class="primary-button" type="submit">Continue</button>
@@ -814,6 +835,10 @@ function coachLoginView() {
       <label>
         <span>Coach name</span>
         <input name="coachName" autocomplete="name" required placeholder="Coach">
+      </label>
+      <label>
+        <span>Email for live app</span>
+        <input name="email" type="email" autocomplete="email" placeholder="coach@example.com">
       </label>
       <label>
         <span>Coach passcode</span>
@@ -1264,11 +1289,11 @@ function parentAlertLog(event) {
       <div class="panel-title">
         <div>
           <p class="eyebrow">Parent alerts</p>
-          <h3>Email and app notification log</h3>
+          <h3>Push and in-app notification log</h3>
         </div>
         <span class="status-pill warn">Demo send</span>
       </div>
-      <p class="muted">This GitHub demo logs the alert that would be sent. Real email and push delivery needs the secure backend.</p>
+      <p class="muted">This GitHub demo logs the push notification that would be sent. Real push delivery needs the secure Firebase backend.</p>
       ${alerts.length ? alerts.map((alert) => `
         <div class="person-row compact">
           <div>
@@ -1599,6 +1624,7 @@ function coachRequestRow(request) {
 
 function installView() {
   const appUrl = `${window.location.origin}${window.location.pathname}`;
+  const backendEnabled = Boolean(backendConfig.enabled);
   return `
     <section class="content-grid two-col">
       <article class="panel install-panel" data-tour="install-panel">
@@ -1612,6 +1638,21 @@ function installView() {
         <div class="choice-row">
           <button class="primary-button" type="button" data-action="copy-link" data-copy="${escapeHtml(appUrl)}">Copy link</button>
           <a class="secondary-link" href="dist/largs-colts-2016s-pwa.zip" download>Download package</a>
+        </div>
+      </article>
+      <article class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Live backend</p>
+            <h3>${backendEnabled ? "Firebase connected" : "Firebase config needed"}</h3>
+          </div>
+          <span class="status-pill ${backendEnabled ? "good" : "warn"}">${backendEnabled ? "Ready" : "Setup"}</span>
+        </div>
+        <p class="muted">Support contact: ${escapeHtml(supportEmail)}</p>
+        <p class="muted">${backendEnabled ? "You can request push permission on this device." : "Add your Firebase web config and VAPID key in firebase-config.js before real login and push testing."}</p>
+        <div class="choice-row">
+          <button class="primary-button" type="button" data-action="enable-push">Enable push on this device</button>
+          <a class="secondary-link" href="FIREBASE-SETUP.md" target="_blank" rel="noreferrer">Firebase setup guide</a>
         </div>
       </article>
       <article class="panel">
@@ -1907,6 +1948,11 @@ document.addEventListener("click", (event) => {
     copyText(target.dataset.copy);
     return;
   }
+
+  if (action === "enable-push") {
+    enablePushNotifications();
+    return;
+  }
 });
 
 document.addEventListener("change", (event) => {
@@ -1939,15 +1985,15 @@ document.addEventListener("input", (event) => {
   }
 });
 
-document.addEventListener("submit", (event) => {
+document.addEventListener("submit", async (event) => {
   const form = event.target.closest("[data-form]");
   if (!form) return;
   event.preventDefault();
   const data = new FormData(form);
 
-  if (form.dataset.form === "parent-login") handleParentLogin(data);
-  if (form.dataset.form === "coach-login") handleCoachLogin(data);
-  if (form.dataset.form === "request-access") requestAccess(data);
+  if (form.dataset.form === "parent-login") await handleParentLogin(data);
+  if (form.dataset.form === "coach-login") await handleCoachLogin(data);
+  if (form.dataset.form === "request-access") await requestAccess(data);
   if (form.dataset.form === "change-password") changePassword(data);
   if (form.dataset.form === "event") addEvent(data);
   if (form.dataset.form === "edit-event") editEvent(data);
@@ -1960,11 +2006,18 @@ document.addEventListener("submit", (event) => {
   render();
 });
 
-function handleParentLogin(data) {
+async function handleParentLogin(data) {
   const parentName = data.get("parentName").trim();
   const playerId = data.get("playerId");
   const relation = data.get("relation");
   const passcode = data.get("passcode");
+  const email = String(data.get("email") || "").trim();
+
+  if (backendConfig.enabled && email) {
+    await handleFirebaseParentLogin({ email, password: passcode, parentName, playerId, relation });
+    return;
+  }
+
   const existingLink = state.parentLinks.find(
     (link) => sameName(link.parentName, parentName) && link.playerId === playerId && link.status === "approved",
   );
@@ -1988,8 +2041,15 @@ function handleParentLogin(data) {
   }
 }
 
-function handleCoachLogin(data) {
+async function handleCoachLogin(data) {
   const passcode = data.get("passcode");
+  const email = String(data.get("email") || "").trim();
+
+  if (backendConfig.enabled && email) {
+    await handleFirebaseCoachLogin(email, passcode);
+    return;
+  }
+
   if (passcode !== "coach2016") {
     toast("Coach passcode is coach2016 for this test build");
     return;
@@ -2004,6 +2064,70 @@ function handleCoachLogin(data) {
   };
   state.route = "home";
   toast("Coach signed in");
+}
+
+async function handleFirebaseCoachLogin(email, password) {
+  try {
+    const runtime = await ensureFirebase();
+    const credential = await runtime.modules.signInWithEmailAndPassword(runtime.auth, email, password);
+    const profileSnap = await runtime.modules.getDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "users", credential.user.uid));
+    const profile = profileSnap.exists() ? profileSnap.data() : {};
+    if (!["coach", "admin"].includes(profile.role)) {
+      await runtime.modules.signOut(runtime.auth);
+      toast("This account is not approved as a coach");
+      return;
+    }
+    state.session = {
+      loggedIn: true,
+      role: "coach",
+      parentName: "",
+      coachName: profile.name || "Coach",
+      selectedPlayerId: "",
+      demoMode: false,
+    };
+    await loadLiveStateFromFirebase();
+    state.route = "home";
+    toast("Coach signed in with Firebase");
+  } catch (error) {
+    console.error(error);
+    toast("Firebase coach sign-in failed");
+  }
+}
+
+async function handleFirebaseParentLogin({ email, password, parentName, playerId, relation }) {
+  try {
+    const runtime = await ensureFirebase();
+    const credential = await runtime.modules.signInWithEmailAndPassword(runtime.auth, email, password);
+    const profileSnap = await runtime.modules.getDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "users", credential.user.uid));
+    const profile = profileSnap.exists() ? profileSnap.data() : {};
+    const linkId = `${credential.user.uid}_${playerId}`;
+    const linkSnap = await runtime.modules.getDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "parentLinks", linkId));
+    const approved = linkSnap.exists() && linkSnap.data().status === "approved";
+
+    if (!approved) {
+      await runtime.modules.setDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "accessRequests", linkId), {
+        parentUid: credential.user.uid,
+        parentName: profile.name || parentName,
+        email,
+        playerId,
+        relation,
+        status: "pending",
+        createdAt: runtime.modules.serverTimestamp(),
+      }, { merge: true });
+      state.session = { loggedIn: true, role: "parent", parentName: profile.name || parentName, coachName: "", selectedPlayerId: playerId, demoMode: false };
+      state.route = "access";
+      toast("Firebase access request sent");
+      return;
+    }
+
+    state.session = { loggedIn: true, role: "parent", parentName: profile.name || parentName, coachName: "", selectedPlayerId: playerId, demoMode: false };
+    await loadLiveStateFromFirebase();
+    state.route = "home";
+    toast("Parent signed in with Firebase");
+  } catch (error) {
+    console.error(error);
+    toast("Firebase parent sign-in failed");
+  }
 }
 
 function ensureRequest(parentName, playerId, relation) {
@@ -2125,6 +2249,7 @@ function addEvent(data) {
   const event = eventDataFromForm(data);
   state.events.push(event);
   syncEventRoster(event);
+  saveLiveDocument("events", event.id, event);
   state.selectedEventId = event.id;
   delete state.modal;
   toast("Event added");
@@ -2136,6 +2261,7 @@ function editEvent(data) {
   if (index === -1) return;
   state.events[index] = eventDataFromForm(data, eventId);
   syncEventRoster(state.events[index]);
+  saveLiveDocument("events", eventId, state.events[index]);
   state.selectedEventId = eventId;
   delete state.modal;
   toast("Event updated");
@@ -2145,6 +2271,12 @@ function setAttendance(playerId, status) {
   state.attendance[state.selectedEventId] = state.attendance[state.selectedEventId] || {};
   const previous = state.attendance[state.selectedEventId][playerId];
   state.attendance[state.selectedEventId][playerId] = status;
+  saveLiveDocument(`attendance/${state.selectedEventId}/players`, playerId, {
+    playerId,
+    eventId: state.selectedEventId,
+    status,
+    markedBy: state.session.coachName || "Coach",
+  });
   if (previous !== status && ["present", "collected"].includes(status)) {
     queueParentAlert(playerId, state.selectedEventId, status);
   }
@@ -2169,7 +2301,7 @@ function queueParentAlert(playerId, eventId, status) {
     parentName: player.parentName,
     parentPhone: player.parentPhone,
     title: status === "present" ? `${player.name} checked in` : `${player.name} collected`,
-    body: `Demo email + app notification to ${player.parentName}: ${actionText}`,
+    body: `Demo push + in-app notification to ${player.parentName}: ${actionText}`,
     sentAt: "Just now",
   });
 }
@@ -2185,6 +2317,7 @@ function deleteEvent(eventId) {
   state.events = state.events.filter((item) => item.id !== eventId);
   delete state.availability[eventId];
   delete state.attendance[eventId];
+  deleteLiveDocument("events", eventId);
 
   if (state.selectedEventId === eventId) {
     state.selectedEventId = state.events[0]?.id || "";
@@ -2196,13 +2329,15 @@ function deleteEvent(eventId) {
 }
 
 function addMessage(data) {
-  state.messages.unshift({
+  const message = {
     id: uid("msg"),
     title: data.get("title"),
     body: data.get("body"),
     teamId: data.get("teamId"),
     createdAt: "Just now",
-  });
+  };
+  state.messages.unshift(message);
+  saveLiveDocument("messages", message.id, message);
   delete state.modal;
   toast("Message sent");
 }
@@ -2218,6 +2353,7 @@ function addPlayer(data) {
     status: "active",
   };
   state.players.push(player);
+  saveLiveDocument("players", player.id, player);
   state.events.forEach((event) => {
     if (event.teamId === "all" || event.teamId === player.teamId) {
       state.availability[event.id][player.id] = { status: "unknown", note: "" };
@@ -2232,6 +2368,7 @@ function movePlayer(data) {
   const player = activePlayers().find((item) => item.id === data.get("playerId"));
   if (!player) return;
   player.teamId = data.get("teamId");
+  saveLiveDocument("players", player.id, player);
   delete state.modal;
   toast("Player moved");
 }
@@ -2244,8 +2381,164 @@ function editPlayer(data) {
   player.role = data.get("role");
   player.parentName = data.get("parentName");
   player.parentPhone = data.get("parentPhone");
+  saveLiveDocument("players", player.id, player);
   delete state.modal;
   toast("Player updated");
+}
+
+async function ensureFirebase() {
+  if (!backendConfig.enabled) {
+    throw new Error("Firebase config is not enabled yet.");
+  }
+  if (firebaseRuntime.ready) return firebaseRuntime;
+
+  const [
+    appModule,
+    authModule,
+    firestoreModule,
+    messagingModule,
+  ] = await Promise.all([
+    import("https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js"),
+    import("https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js"),
+    import("https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js"),
+    import("https://www.gstatic.com/firebasejs/10.12.5/firebase-messaging.js"),
+  ]);
+
+  firebaseRuntime.modules = {
+    ...appModule,
+    ...authModule,
+    ...firestoreModule,
+    ...messagingModule,
+  };
+  firebaseRuntime.app = appModule.initializeApp(backendConfig.firebaseConfig);
+  firebaseRuntime.auth = authModule.getAuth(firebaseRuntime.app);
+  firebaseRuntime.db = firestoreModule.getFirestore(firebaseRuntime.app);
+  firebaseRuntime.messaging = messagingModule.isSupported && await messagingModule.isSupported()
+    ? messagingModule.getMessaging(firebaseRuntime.app)
+    : null;
+  firebaseRuntime.user = firebaseRuntime.auth.currentUser;
+  authModule.onAuthStateChanged(firebaseRuntime.auth, (user) => {
+    firebaseRuntime.user = user;
+  });
+  firebaseRuntime.ready = true;
+  return firebaseRuntime;
+}
+
+function isFirebaseSignedIn() {
+  return backendConfig.enabled && firebaseRuntime.ready && Boolean(firebaseRuntime.user);
+}
+
+async function liveCollection(name) {
+  const runtime = await ensureFirebase();
+  return runtime.modules.collection(runtime.db, "clubs", clubId, name);
+}
+
+async function liveDoc(collectionName, id) {
+  const runtime = await ensureFirebase();
+  return runtime.modules.doc(runtime.db, "clubs", clubId, collectionName, id);
+}
+
+async function loadDocs(collectionName) {
+  const runtime = await ensureFirebase();
+  const snapshot = await runtime.modules.getDocs(await liveCollection(collectionName));
+  return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+}
+
+async function loadLiveStateFromFirebase() {
+  if (!isFirebaseSignedIn()) return;
+  try {
+    const [events, messages] = await Promise.all([
+      loadDocs("events"),
+      loadDocs("messages"),
+    ]);
+    if (events.length) state.events = events;
+    if (messages.length) state.messages = messages.sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+    if (state.session.role === "coach") {
+      const players = await loadDocs("players");
+      if (players.length) state.players = players;
+    }
+  } catch (error) {
+    console.error(error);
+    toast("Live data could not be loaded");
+  }
+}
+
+async function saveLiveDocument(collectionName, id, data) {
+  if (!isFirebaseSignedIn()) return;
+  try {
+    const runtime = await ensureFirebase();
+    await runtime.modules.setDoc(await liveDoc(collectionName, id), {
+      ...data,
+      updatedAt: runtime.modules.serverTimestamp(),
+    }, { merge: true });
+  } catch (error) {
+    console.error(error);
+    toast("Live save failed");
+  }
+}
+
+async function deleteLiveDocument(collectionName, id) {
+  if (!isFirebaseSignedIn()) return;
+  try {
+    const runtime = await ensureFirebase();
+    await runtime.modules.deleteDoc(await liveDoc(collectionName, id));
+  } catch (error) {
+    console.error(error);
+    toast("Live delete failed");
+  }
+}
+
+async function enablePushNotifications() {
+  if (!backendConfig.enabled) {
+    toast("Add Firebase config before push testing");
+    return;
+  }
+  if (!("Notification" in window)) {
+    toast("This browser does not support push notifications");
+    return;
+  }
+
+  try {
+    const runtime = await ensureFirebase();
+    if (!runtime.messaging) {
+      toast("Firebase messaging is not supported in this browser");
+      return;
+    }
+
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") {
+      toast("Push permission was not granted");
+      return;
+    }
+
+    const registration = await navigator.serviceWorker.ready;
+    const token = await runtime.modules.getToken(runtime.messaging, {
+      vapidKey: backendConfig.vapidKey,
+      serviceWorkerRegistration: registration,
+    });
+    if (!token) {
+      toast("No push token returned");
+      return;
+    }
+
+    localStorage.setItem("largs-colts-fcm-token", token);
+    if (runtime.user) {
+      await runtime.modules.setDoc(
+        runtime.modules.doc(runtime.db, "clubs", clubId, "notificationTokens", `${runtime.user.uid}_${token.slice(-12)}`),
+        {
+          token,
+          userId: runtime.user.uid,
+          role: state.session.role || "unknown",
+          updatedAt: runtime.modules.serverTimestamp(),
+        },
+        { merge: true },
+      );
+    }
+    toast("Push enabled on this device");
+  } catch (error) {
+    console.error(error);
+    toast("Push setup needs Firebase details");
+  }
 }
 
 async function copyText(text) {

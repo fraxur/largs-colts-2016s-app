@@ -1,0 +1,89 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function userDoc(clubId) {
+      return get(/databases/$(database)/documents/clubs/$(clubId)/users/$(request.auth.uid));
+    }
+
+    function role(clubId) {
+      return signedIn() ? userDoc(clubId).data.role : "";
+    }
+
+    function isCoach(clubId) {
+      return signedIn() && role(clubId) in ["coach", "admin"];
+    }
+
+    function isParent(clubId) {
+      return signedIn() && role(clubId) == "parent";
+    }
+
+    function approvedFor(clubId, playerId) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/clubs/$(clubId)/parentLinks/$(request.auth.uid + "_" + playerId))
+        && get(/databases/$(database)/documents/clubs/$(clubId)/parentLinks/$(request.auth.uid + "_" + playerId)).data.status == "approved";
+    }
+
+    match /clubs/{clubId} {
+      allow read: if signedIn();
+      allow write: if isCoach(clubId);
+
+      match /users/{userId} {
+        allow read: if isCoach(clubId) || (signedIn() && request.auth.uid == userId);
+        allow create, update, delete: if isCoach(clubId);
+      }
+
+      match /players/{playerId} {
+        allow read: if isCoach(clubId) || approvedFor(clubId, playerId);
+        allow create, update, delete: if isCoach(clubId);
+      }
+
+      match /events/{eventId} {
+        allow read: if signedIn();
+        allow create, update, delete: if isCoach(clubId);
+      }
+
+      match /attendance/{eventId}/players/{playerId} {
+        allow read: if isCoach(clubId) || approvedFor(clubId, playerId);
+        allow create, update, delete: if isCoach(clubId);
+      }
+
+      match /availability/{eventId}/players/{playerId} {
+        allow read: if isCoach(clubId) || approvedFor(clubId, playerId);
+        allow create, update: if isCoach(clubId) || approvedFor(clubId, playerId);
+        allow delete: if isCoach(clubId);
+      }
+
+      match /parentLinks/{linkId} {
+        allow read: if isCoach(clubId) || (signedIn() && resource.data.parentUid == request.auth.uid);
+        allow create, update, delete: if isCoach(clubId);
+      }
+
+      match /accessRequests/{requestId} {
+        allow read: if isCoach(clubId) || (signedIn() && resource.data.parentUid == request.auth.uid);
+        allow create: if isParent(clubId) && request.resource.data.parentUid == request.auth.uid;
+        allow update, delete: if isCoach(clubId);
+      }
+
+      match /messages/{messageId} {
+        allow read: if signedIn();
+        allow create, update, delete: if isCoach(clubId);
+      }
+
+      match /notifications/{notificationId} {
+        allow read: if isCoach(clubId) || (signedIn() && resource.data.userId == request.auth.uid);
+        allow create, update, delete: if isCoach(clubId);
+      }
+
+      match /notificationTokens/{tokenId} {
+        allow read: if isCoach(clubId) || (signedIn() && resource.data.userId == request.auth.uid);
+        allow create, update: if signedIn() && request.resource.data.userId == request.auth.uid;
+        allow delete: if isCoach(clubId) || (signedIn() && resource.data.userId == request.auth.uid);
+      }
+    }
+  }
+}

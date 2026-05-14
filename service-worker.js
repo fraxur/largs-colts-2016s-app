@@ -1,7 +1,27 @@
-const cacheName = "largs-colts-coach-test-4";
+importScripts("firebase-sw-config.js");
+
+if (self.largsFirebaseMessagingConfig?.enabled) {
+  importScripts("https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js");
+  importScripts("https://www.gstatic.com/firebasejs/10.12.5/firebase-messaging-compat.js");
+  firebase.initializeApp(self.largsFirebaseMessagingConfig.firebaseConfig);
+  const messaging = firebase.messaging();
+  messaging.onBackgroundMessage((payload) => {
+    const notification = payload.notification || {};
+    self.registration.showNotification(notification.title || "Largs Colts 2016s", {
+      body: notification.body || "New team update",
+      icon: "assets/app-icon-192.png",
+      badge: "assets/app-icon-192.png",
+      data: payload.data || {},
+    });
+  });
+}
+
+const cacheName = "largs-colts-coach-test-5";
 const appShell = [
   "./",
   "index.html",
+  "firebase-config.js",
+  "firebase-sw-config.js",
   "styles.css",
   "app.js",
   "manifest.json",
