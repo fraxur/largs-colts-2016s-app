@@ -49,7 +49,7 @@ const players = [
 ];
 
 const events = [
-  fixture("e1", "Blue home match", "blue", "Opposition TBC", "2026-05-16T09:30", "10:45", "Bowencraig (Home pitch)", "bowencraig", "Bowencraig, Largs", "09:00", "Home kit", "Home match. Report for 9:00am."),
+  fixture("e1", "Blue home match", "blue", "Opposition TBC", "2026-05-16T09:30", "10:45", "Bowencraig (Home pitch)", "bowencraig", "55.77946, -4.856398", "09:00", "Home kit", "Home match. Report for 9:00am."),
   fixture("e2", "Yellow away to Bellfield", "yellow", "Bellfield", "2026-05-16T10:00", "11:15", "Bellfield Estate", "away-custom", "Bellfield Estate, Kilmarnock KA1 3XG", "09:30", "Away kit", "Grass pitch. Please report for 9:30am."),
   training("t1", "2026-05-19T18:00"),
   training("t2", "2026-05-20T18:00"),
@@ -90,6 +90,7 @@ function fixture(id, title, teamId, opponent, datetime, finishTime, venue, venue
     venue,
     venueId,
     address,
+    parkingAddress: venueId === "bowencraig" ? "Bowencraig East Car Park, Irvine Rd, Fairlie, Largs KA29 0BG" : "",
     meetTime,
     kit,
     notes,
@@ -107,7 +108,8 @@ function training(id, datetime) {
     finishTime: "19:30",
     venue: "Bowencraig (Home pitch)",
     venueId: "bowencraig",
-    address: "Bowencraig, Largs",
+    address: "55.77946, -4.856398",
+    parkingAddress: "Bowencraig East Car Park, Irvine Rd, Fairlie, Largs KA29 0BG",
     meetTime: "",
     kit: "",
     notes: "18:00-19:30. All teams. Bring boots, water and shin pads.",
