@@ -483,14 +483,22 @@ function showError(message) {
 }
 
 function authErrorMessage(error) {
-  return {
+  const friendlyMessage = {
     "auth/invalid-credential": "Those Firebase login details were not recognised.",
     "auth/user-not-found": "No account was found for that email address.",
     "auth/wrong-password": "That password is not correct.",
+    "auth/invalid-email": "That email address does not look right.",
+    "auth/operation-not-allowed": "Email/password sign-in is not enabled in Firebase Authentication.",
+    "auth/unauthorized-domain": "This website address is not authorised in Firebase Authentication.",
+    "auth/network-request-failed": "Firebase could not be reached from this device. Check the internet connection and try again.",
+    "auth/too-many-requests": "Firebase has temporarily blocked sign-in attempts for this account. Please wait a few minutes and try again.",
     "auth/email-already-in-use": "That email is already registered. Please sign in with the existing password.",
     "auth/weak-password": "Please choose a password with at least six characters.",
     "auth/requires-recent-login": "Please sign out and back in before changing the password.",
-  }[error?.code] || "Firebase could not complete that action. Please check the account and try again.";
+    "permission-denied": "Firebase blocked access to the app data. Check the coach user document is in clubs / largs-colts-2016s / users and the document ID is the full Authentication UID.",
+  }[error?.code];
+
+  return friendlyMessage || `Firebase could not complete that action. Error code: ${error?.code || "unknown"}.`;
 }
 
 function requireCoach() {
