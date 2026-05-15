@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-keyfix-2";
+const appVersion = "4.0-live-keyfix-3";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -482,7 +482,19 @@ function showError(message) {
   toast(message);
 }
 
+function firebaseConfigDebugSummary() {
+  const config = backendConfig.firebaseConfig || {};
+  const apiKey = String(config.apiKey || "");
+  const keyEnding = apiKey ? `...${apiKey.slice(-14)}` : "missing";
+  return `Loaded project: ${config.projectId || "missing"}. Loaded API key ending: ${keyEnding}.`;
+}
+
 function authErrorMessage(error) {
+  const code = String(error?.code || "");
+  if (code.includes("api-key-not-valid")) {
+    return `Firebase rejected the web API key before checking the email or password. ${firebaseConfigDebugSummary()}`;
+  }
+
   const friendlyMessage = {
     "auth/invalid-credential": "Those Firebase login details were not recognised.",
     "auth/user-not-found": "No account was found for that email address.",
