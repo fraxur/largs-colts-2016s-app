@@ -31,7 +31,7 @@ liveTeams = teams;
 const coaches = [
   { id: "carl", name: "Carl", teamId: "all", role: "Coach", phone: "07999696043", email: "" },
   { id: "faroque", name: "Faroque", teamId: "all", role: "Coach", phone: "07791199936", email: "" },
-  { id: "ed", name: "Edward Dowds", teamId: "all", role: "Coach", phone: "07818480627", email: "" },
+  { id: "ed", name: "Edward Dowds", teamId: "all", role: "Coach", phone: "07881 597600", email: "" },
   { id: "martin", name: "Martin", teamId: "all", role: "Coach", phone: "07904718672", email: "" },
   { id: "gordy", name: "Gordy", teamId: "all", role: "Coach", phone: "07984645328", email: "" },
 ];
