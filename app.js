@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-keyfix-4";
+const appVersion = "4.0-live-coach-1";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -31,7 +31,7 @@ liveTeams = teams;
 const coaches = [
   { id: "carl", name: "Carl", teamId: "all", role: "Coach", phone: "07999696043", email: "" },
   { id: "faroque", name: "Faroque", teamId: "all", role: "Coach", phone: "07791199936", email: "" },
-  { id: "ed", name: "Ed", teamId: "all", role: "Coach", phone: "07818480627", email: "" },
+  { id: "ed", name: "Edward Dowds", teamId: "all", role: "Coach", phone: "07818480627", email: "" },
   { id: "martin", name: "Martin", teamId: "all", role: "Coach", phone: "07904718672", email: "" },
   { id: "gordy", name: "Gordy", teamId: "all", role: "Coach", phone: "07984645328", email: "" },
 ];
@@ -40,7 +40,8 @@ const venues = [
   {
     id: "bowencraig",
     name: "Bowencraig (Home pitch)",
-    address: "Bowencraig, Largs",
+    address: "55.77946, -4.856398",
+    parkingAddress: "Bowencraig East Car Park, Irvine Rd, Fairlie, Largs KA29 0BG",
   },
   {
     id: "inverclyde-3g",
@@ -87,13 +88,6 @@ const defaultState = {
   },
   teams,
   players: [],
-  inactivePlayers: leavers.map((name, index) => ({
-    id: `left-${index + 1}`,
-    name,
-    teamId: "left",
-    role: "Left club",
-    status: "left",
-  })),
   parentLinks: [],
   accessRequests: [],
   events: [],
@@ -204,7 +198,6 @@ function normalizeState(saved) {
     session: { ...defaultState.session, ...(saved.session || {}) },
   };
 
-  merged.inactivePlayers = defaultState.inactivePlayers;
   merged.players = (merged.players || []).filter((player) => !leavers.includes(player.name));
   merged.teams = merged.teams?.length ? merged.teams : teams;
   liveTeams = merged.teams;
@@ -314,11 +307,15 @@ function venueIdFromName(name = "") {
 }
 
 function eventVenue(event) {
+  const knownVenue = venues.find((venue) => venue.id === event.venueId);
+  if (knownVenue && knownVenue.id !== "away-custom") return knownVenue;
+
   if (event.venueId === "away-custom" || event.address) {
     return {
       id: event.venueId || "away-custom",
       name: event.venue || "Away destination",
       address: event.address || "Address to be confirmed",
+      parkingAddress: event.parkingAddress || "",
     };
   }
   return venueById(event.venueId || venueIdFromName(event.venue));
@@ -375,6 +372,27 @@ function mapsUrl(address) {
 
 function mapsAppleUrl(address) {
   return `https://maps.apple.com/?q=${encodeURIComponent(address)}`;
+}
+
+function venueParkingLine(venue) {
+  return venue.parkingAddress ? `<p>Parking: ${escapeHtml(venue.parkingAddress)}</p>` : "";
+}
+
+function venueMapActions(venue) {
+  const parkingActions = venue.parkingAddress
+    ? `
+      <a class="secondary-link" href="${mapsUrl(venue.parkingAddress)}" target="_blank" rel="noreferrer">Parking Google Maps</a>
+      <a class="secondary-link" href="${mapsAppleUrl(venue.parkingAddress)}" target="_blank" rel="noreferrer">Parking Apple Maps</a>
+      <button class="secondary-button" type="button" data-action="copy-link" data-copy="${escapeHtml(venue.parkingAddress)}">Copy parking</button>
+    `
+    : "";
+
+  return `
+    <a class="secondary-link" href="${mapsUrl(venue.address)}" target="_blank" rel="noreferrer">Pitch Google Maps</a>
+    <a class="secondary-link" href="${mapsAppleUrl(venue.address)}" target="_blank" rel="noreferrer">Pitch Apple Maps</a>
+    <button class="secondary-button" type="button" data-action="copy-link" data-copy="${escapeHtml(venue.address)}">Copy pitch</button>
+    ${parkingActions}
+  `;
 }
 
 function getPlayersForEvent(event, players = activePlayers()) {
@@ -1006,7 +1024,8 @@ function eventCard(event) {
           <span class="team-pill ${event.teamId}">${teamName(event.teamId)}</span>
         </div>
         <p>${formatDate(event.datetime)}${event.finishTime ? ` to ${escapeHtml(event.finishTime)}` : ""} at ${escapeHtml(venue.name)}</p>
-        <p>${escapeHtml(venue.address)}${event.meetTime ? ` - Report ${escapeHtml(event.meetTime)}` : ""}</p>
+        <p>Pitch: ${escapeHtml(venue.address)}${event.meetTime ? ` - Report ${escapeHtml(event.meetTime)}` : ""}</p>
+        ${venueParkingLine(venue)}
         <div class="mini-stats">
           <span>${counts.available} available</span>
           <span>${counts.unavailable} unavailable</span>
@@ -1017,9 +1036,7 @@ function eventCard(event) {
       </div>
       <div class="event-actions">
         <button class="secondary-button" type="button" data-action="focus-event" data-event-id="${event.id}">Open</button>
-        <a class="secondary-link" href="${mapsUrl(venue.address)}" target="_blank" rel="noreferrer">Google Maps</a>
-        <a class="secondary-link" href="${mapsAppleUrl(venue.address)}" target="_blank" rel="noreferrer">Apple Maps</a>
-        <button class="secondary-button" type="button" data-action="copy-link" data-copy="${escapeHtml(venue.address)}">Copy address</button>
+        ${venueMapActions(venue)}
         ${coachActions}
       </div>
     </article>
@@ -1089,13 +1106,12 @@ function parentAvailabilityCard(event, child, childInEvent) {
         </div>
         <span class="status-pill ${statusClass(entry.status)}">${statusText(entry.status)}</span>
       </div>
-      <p class="muted">${formatDate(event.datetime)}${event.finishTime ? ` to ${escapeHtml(event.finishTime)}` : ""} at ${escapeHtml(event.venue)}</p>
+      <p class="muted">${formatDate(event.datetime)}${event.finishTime ? ` to ${escapeHtml(event.finishTime)}` : ""} at ${escapeHtml(venue.name)}</p>
       ${event.kit ? `<p class="muted">${escapeHtml(event.kit)}</p>` : ""}
-      <p class="muted">${escapeHtml(venue.address)}</p>
+      <p class="muted">Pitch: ${escapeHtml(venue.address)}</p>
+      ${venue.parkingAddress ? `<p class="muted">Parking: ${escapeHtml(venue.parkingAddress)}</p>` : ""}
       <div class="choice-row">
-        <a class="secondary-link" href="${mapsUrl(venue.address)}" target="_blank" rel="noreferrer">Google Maps</a>
-        <a class="secondary-link" href="${mapsAppleUrl(venue.address)}" target="_blank" rel="noreferrer">Apple Maps</a>
-        <button class="secondary-button" type="button" data-action="copy-link" data-copy="${escapeHtml(venue.address)}">Copy address</button>
+        ${venueMapActions(venue)}
       </div>
       <div class="choice-row">
         <button class="available-button" type="button" data-action="set-availability" data-status="available">Available</button>
@@ -1212,13 +1228,6 @@ function squadsView() {
     </section>
     <div class="team-board" data-tour="team-board">
       ${teams.map(teamColumn).join("")}
-      <article class="team-column">
-        <div class="panel-title">
-          <h3>Left club</h3>
-          <span class="status-pill bad">${state.inactivePlayers.length}</span>
-        </div>
-        ${state.inactivePlayers.map((player) => `<div class="person-row compact"><strong>${escapeHtml(player.name)}</strong><span>Inactive</span></div>`).join("")}
-      </article>
     </div>
   `;
 }
@@ -2184,6 +2193,7 @@ function eventDataFromForm(data, id = uid("event")) {
     venue: venue.name,
     venueId: venue.id,
     address: venue.address,
+    parkingAddress: venue.parkingAddress || "",
     meetTime: data.get("meetTime"),
     kit: type === "Fixture" ? data.get("kit") : "",
     notes: data.get("notes"),
