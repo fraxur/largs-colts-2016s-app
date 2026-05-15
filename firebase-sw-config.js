@@ -1,7 +1,7 @@
 self.largsFirebaseMessagingConfig = {
     enabled: true,
     firebaseConfig: {
-        apiKey: "AIzaSyDpavXw2gRiAAWLTGRLYNgoqMgOUbQ9hwM",
+        apiKey: "AIzaSyDpavXw2gRiAAWLTGRLYNgoqMgOUBQ9hwM",
         authDomain: "largs-colts-2016s-app-c8909.firebaseapp.com",
         projectId: "largs-colts-2016s-app-c8909",
         storageBucket: "largs-colts-2016s-app-c8909.firebasestorage.app",

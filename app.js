@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-keyfix";
+const appVersion = "4.0-live-keyfix-2";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
