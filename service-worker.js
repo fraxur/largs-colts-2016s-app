@@ -1,4 +1,4 @@
-importScripts("firebase-sw-config.js?v=live-7");
+importScripts("firebase-sw-config.js?v=live-8");
 
 if (self.largsFirebaseMessagingConfig?.enabled) {
   importScripts("https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js");
@@ -16,7 +16,7 @@ if (self.largsFirebaseMessagingConfig?.enabled) {
   });
 }
 
-const cacheName = "largs-colts-live-7";
+const cacheName = "largs-colts-live-8";
 const appShell = [
   "./",
   "index.html",
