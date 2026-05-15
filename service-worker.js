@@ -16,7 +16,7 @@ if (self.largsFirebaseMessagingConfig?.enabled) {
   });
 }
 
-const cacheName = "largs-colts-live-4";
+const cacheName = "largs-colts-live-5";
 const appShell = [
   "./",
   "index.html",
