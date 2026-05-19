@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-3";
+const appVersion = "4.0-live-rollout-4";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -111,6 +111,7 @@ const defaultState = {
   players: [],
   parentLinks: [],
   accessRequests: [],
+  dataRequests: [],
   events: [],
   availability: {},
   attendance: {},
@@ -226,6 +227,7 @@ function loadState() {
     attendance: {},
     parentLinks: [],
     accessRequests: [],
+    dataRequests: [],
     notifications: [],
     messages: [],
     users: [],
@@ -246,6 +248,7 @@ function normalizeState(saved) {
   merged.events = merged.events || [];
   merged.messages = merged.messages || [];
   merged.notifications = merged.notifications || [];
+  merged.dataRequests = merged.dataRequests || [];
   merged.users = merged.users || [];
   merged.messageReadAt = merged.messageReadAt || "";
   merged.selectedEventId = merged.selectedEventId || merged.events[0]?.id || "";
@@ -812,11 +815,20 @@ function parentLoginView() {
       </label>
       <label class="check-row">
         <input name="consent" type="checkbox" required>
-        <span>I confirm I am allowed to request access for this child and consent to Largs Colts 2016s storing child profile, availability, attendance and app notification data for team management. Temporary support contact: ${escapeHtml(supportEmail)}.</span>
+        <span>
+          I confirm that I am a parent, guardian, or otherwise authorised to request access for this child.
+          I understand that Largs Colts 2016 will store and use the child's profile information, attendance records, availability status, and app notification data for the legitimate purpose of managing football training, matches, team communication, player welfare, and general team administration.
+          I understand that this information will only be accessible to authorised coaches and team administrators and will not be shared outside the club except where required for football administration or safeguarding purposes.
+          For support or data queries, contact: ${escapeHtml(supportEmail)}.
+        </span>
       </label>
       <div class="auth-actions">
         <button class="primary-button" type="submit">Sign in or request access</button>
       </div>
+      <details class="privacy-preview">
+        <summary>Privacy notice</summary>
+        ${privacyNoticeContent()}
+      </details>
     </form>
   `;
 }
@@ -925,11 +937,12 @@ function navRoutes(pendingOnly = false) {
     { id: "coaches", label: "Coaches" },
     { id: "venues", label: "Venues" },
     { id: "access", label: "Access" },
+    { id: "privacy", label: "Privacy" },
     { id: "install", label: "Install" },
   ];
   const parentRoutes = coachRoutes.filter((item) => item.id !== "squads");
   const base = hasCoachAccess() ? coachRoutes : parentRoutes;
-  return pendingOnly ? base.filter((item) => ["access", "install"].includes(item.id)) : base;
+  return pendingOnly ? base.filter((item) => ["access", "privacy", "install"].includes(item.id)) : base;
 }
 
 function navItem(item, route, compact = false) {
@@ -952,6 +965,7 @@ function pageTitle(route) {
     coaches: "Coaches",
     venues: "Venues",
     access: "Access",
+    privacy: "Privacy",
     install: "Mobile Test",
   }[route] || "Dashboard";
 }
@@ -979,7 +993,7 @@ function pendingBanner() {
 
 function pageView(route) {
   const pendingOnly = state.session.role === "parent" && !approvedPlayers().length;
-  if (pendingOnly && route !== "install") return accessView();
+  if (pendingOnly && !["privacy", "install"].includes(route)) return accessView();
   if (!hasCoachAccess() && route === "squads") return homeView();
   return {
     home: homeView,
@@ -991,6 +1005,7 @@ function pageView(route) {
     coaches: coachesView,
     venues: venuesView,
     access: accessView,
+    privacy: privacyView,
     install: installView,
   }[route]?.() || homeView();
 }
@@ -1799,6 +1814,165 @@ function coachRequestRow(request) {
   `;
 }
 
+function privacyView() {
+  return `
+    <section class="content-grid two-col">
+      <article class="panel privacy-panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Privacy notice</p>
+            <h3>Largs Colts 2016</h3>
+          </div>
+          <span class="status-pill good">Live</span>
+        </div>
+        ${privacyNoticeContent()}
+      </article>
+      ${hasCoachAccess() ? coachDataRequestsPanel() : parentDataRequestPanel()}
+    </section>
+  `;
+}
+
+function privacyNoticeContent() {
+  return `
+    <div class="privacy-copy">
+      <h4>Introduction</h4>
+      <p>Largs Colts 2016 uses a team management app to help organise training, matches, player availability, attendance, and team communication.</p>
+      <p>We are committed to protecting the privacy and security of players' and parents' personal information and handling data responsibly in line with UK data protection legislation.</p>
+
+      <h4>What Information We Collect</h4>
+      <p>Player information may include player name, date of birth or age group, team/squad information, attendance records, match and training availability, parent/guardian contact details, and app notification preferences.</p>
+      <p>Parent/guardian information may include name, email address, telephone number, and relationship to the player.</p>
+      <p>We aim to minimise the information collected and only request information necessary for running the team safely and effectively.</p>
+
+      <h4>Why We Use This Information</h4>
+      <ul>
+        <li>Organising training sessions and matches</li>
+        <li>Managing player availability and attendance</li>
+        <li>Communicating important team updates</li>
+        <li>Supporting player welfare and safeguarding</li>
+        <li>Managing team operations and administration</li>
+      </ul>
+
+      <h4>Lawful Basis</h4>
+      <p>Our lawful basis for processing this information is legitimate interests, as the data is necessary for the safe and effective management of the football team.</p>
+      <p>Where required, we may also rely on parental consent for certain communications or optional features.</p>
+
+      <h4>Who Can Access the Information</h4>
+      <p>Information is only accessible to authorised coaches and team administrators who require access for team management purposes.</p>
+      <p>We do not sell or share personal information with third parties for marketing purposes.</p>
+      <p>Information may be shared where necessary for football administration, fixture organisation, player registration, safeguarding, or legal obligations.</p>
+
+      <h4>Data Security</h4>
+      <p>We take reasonable steps to protect information held within the app, including restricted administrator access, password-protected accounts, and limiting access to relevant team officials only.</p>
+
+      <h4>How Long We Keep Information</h4>
+      <p>Information will only be retained for as long as reasonably necessary for team administration and safeguarding purposes.</p>
+      <p>Data relating to players who leave the club will be periodically reviewed and removed where no longer required.</p>
+
+      <h4>Your Rights</h4>
+      <ul>
+        <li>Request access to the information held about their child</li>
+        <li>Correct inaccurate information</li>
+        <li>Request deletion of information where appropriate</li>
+        <li>Raise concerns regarding how information is being used</li>
+      </ul>
+
+      <h4>Contact</h4>
+      <p>For questions, support, or data-related requests, please contact: <a href="mailto:${escapeHtml(supportEmail)}">${escapeHtml(supportEmail)}</a>.</p>
+    </div>
+  `;
+}
+
+function parentDataRequestPanel() {
+  const players = approvedPlayers();
+  const requests = state.dataRequests.filter((request) => request.parentUid === state.session.userId);
+  return `
+    <article class="panel">
+      <div class="panel-title">
+        <div>
+          <p class="eyebrow">Data request</p>
+          <h3>Remove or correct data</h3>
+        </div>
+      </div>
+      <p class="muted">Use this form for requests such as removing your child's data, checking what is held, correcting details, or raising a privacy concern.</p>
+      <form class="stacked-form" data-form="data-request">
+        <label class="field">
+          <span>Request type</span>
+          <select name="requestType">
+            <option value="delete">Remove my child's data</option>
+            <option value="access">Access information held</option>
+            <option value="correct">Correct inaccurate information</option>
+            <option value="concern">Raise a data concern</option>
+          </select>
+        </label>
+        ${players.length ? `
+          <label class="field">
+            <span>Child</span>
+            <select name="playerId">
+              <option value="">Choose child</option>
+              ${players.map((player) => `<option value="${player.id}">${escapeHtml(player.name)} - ${teamName(player.teamId)}</option>`).join("")}
+            </select>
+          </label>
+        ` : ""}
+        <label class="field">
+          <span>Child name</span>
+          <input name="childName" ${players.length ? "" : "required"} placeholder="Child name if not listed above">
+        </label>
+        <label class="field">
+          <span>Details</span>
+          <textarea name="details" rows="5" placeholder="Add any detail that will help coaches deal with the request"></textarea>
+        </label>
+        <button class="primary-button" type="submit">Send data request</button>
+      </form>
+      <div class="divider"></div>
+      <div class="request-list">
+        ${requests.length ? requests.map(dataRequestRow).join("") : '<p class="muted">No data requests submitted yet.</p>'}
+      </div>
+    </article>
+  `;
+}
+
+function coachDataRequestsPanel() {
+  const requests = state.dataRequests.slice().sort(sortByCreatedAtDesc);
+  return `
+    <article class="panel">
+      <div class="panel-title">
+        <div>
+          <p class="eyebrow">Parent data requests</p>
+          <h3>${requests.filter((request) => request.status === "pending").length} pending</h3>
+        </div>
+      </div>
+      <p class="muted">Review requests with the coaches/admins before deleting or changing any child record, especially where safeguarding or football administration records may need to be retained.</p>
+      <div class="request-list">
+        ${requests.length ? requests.map(dataRequestRow).join("") : '<p class="muted">No parent data requests yet.</p>'}
+      </div>
+    </article>
+  `;
+}
+
+function dataRequestRow(request) {
+  const player = activePlayers().find((item) => item.id === request.playerId);
+  const typeText = {
+    delete: "Remove data",
+    access: "Access data",
+    correct: "Correct data",
+    concern: "Data concern",
+  }[request.requestType] || request.requestType || "Data request";
+  return `
+    <div class="person-row">
+      <div>
+        <strong>${escapeHtml(typeText)} - ${escapeHtml(player?.name || request.childName || "Child")}</strong>
+        <p>${escapeHtml(request.parentName || "Parent")} - ${escapeHtml(request.email || "")}</p>
+        ${request.details ? `<p>${escapeHtml(request.details)}</p>` : ""}
+      </div>
+      <div class="inline-actions">
+        <span class="status-pill ${request.status === "resolved" ? "good" : "warn"}">${request.status === "resolved" ? "Resolved" : "Pending"}</span>
+        ${hasCoachAccess() && request.status !== "resolved" ? `<button class="tiny-button approve" type="button" data-action="resolve-data-request" data-request-id="${escapeHtml(request.id)}">Mark resolved</button>` : ""}
+      </div>
+    </div>
+  `;
+}
+
 function installView() {
   const appUrl = `${window.location.origin}${window.location.pathname}`;
   const backendEnabled = Boolean(backendConfig.enabled);
@@ -1853,6 +2027,7 @@ function installView() {
           <span>Google Maps and Apple Maps buttons added</span>
           <span>Venue page includes pitch, parking and photo spaces</span>
           <span>Parents can offer snacks and lifts on fixture availability</span>
+          <span>Privacy notice and parent data request process added</span>
           <span>Coach contacts added with call and text links</span>
           <span>Capacitor config ready for iOS and Android wrapping</span>
         </div>
@@ -2129,6 +2304,11 @@ document.addEventListener("click", async (event) => {
     return;
   }
 
+  if (action === "resolve-data-request") {
+    await resolveDataRequest(target.dataset.requestId);
+    return;
+  }
+
   if (action === "copy-link") {
     copyText(target.dataset.copy);
     return;
@@ -2228,6 +2408,7 @@ document.addEventListener("submit", async (event) => {
     if (form.dataset.form === "parent-login") await handleParentLogin(data);
     if (form.dataset.form === "coach-login") await handleCoachLogin(data);
     if (form.dataset.form === "request-access") await requestAccess(data);
+    if (form.dataset.form === "data-request") await submitDataRequest(data);
     if (form.dataset.form === "change-password") await changePassword(data);
     if (form.dataset.form === "event") await addEvent(data);
     if (form.dataset.form === "edit-event") await editEvent(data);
@@ -2392,6 +2573,38 @@ async function requestAccess(data) {
   toast("Access request sent");
 }
 
+async function submitDataRequest(data) {
+  if (!state.session.loggedIn || hasCoachAccess()) return;
+  const runtime = await ensureFirebase();
+  const playerId = String(data.get("playerId") || "");
+  const player = approvedPlayers().find((item) => item.id === playerId);
+  const childName = player?.name || String(data.get("childName") || "").trim();
+  const requestType = String(data.get("requestType") || "delete");
+  const details = String(data.get("details") || "").trim();
+
+  if (!childName) {
+    toast("Add the child name for the data request");
+    return;
+  }
+
+  const requestId = `${runtime.user.uid}_${requestType}_${Date.now()}`;
+  await runtime.modules.setDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "dataRequests", requestId), {
+    parentUid: runtime.user.uid,
+    parentName: state.session.parentName || "",
+    email: state.session.email || "",
+    playerId: player?.id || "",
+    playerTeamId: player?.teamId || "",
+    childName,
+    requestType,
+    details,
+    status: "pending",
+    createdAt: runtime.modules.serverTimestamp(),
+    updatedAt: runtime.modules.serverTimestamp(),
+  }, { merge: true });
+  await loadLiveStateFromFirebase();
+  toast("Data request sent");
+}
+
 async function createAccessRequest({ childName, relation, parentName, email }) {
   if (!childName) {
     toast("Add the child name for the request");
@@ -2411,6 +2624,20 @@ async function createAccessRequest({ childName, relation, parentName, email }) {
     createdAt: runtime.modules.serverTimestamp(),
     updatedAt: runtime.modules.serverTimestamp(),
   }, { merge: true });
+}
+
+async function resolveDataRequest(requestId) {
+  if (!requireCoach() || !requestId) return;
+  const runtime = await ensureFirebase();
+  await runtime.modules.setDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "dataRequests", requestId), {
+    status: "resolved",
+    reviewedBy: state.session.userId,
+    reviewedAt: runtime.modules.serverTimestamp(),
+    updatedAt: runtime.modules.serverTimestamp(),
+  }, { merge: true });
+  state.dataRequests = state.dataRequests.map((request) => request.id === requestId ? { ...request, status: "resolved" } : request);
+  render();
+  toast("Data request marked resolved");
 }
 
 async function changePassword(data) {
@@ -2775,28 +3002,32 @@ async function loadLiveStateFromFirebase() {
     state.messages = announcements.sort(sortByCreatedAtDesc);
 
     if (hasCoachAccess(role)) {
-      const [players, parentLinks, accessRequests, notifications, users] = await Promise.all([
+      const [players, parentLinks, accessRequests, notifications, users, dataRequests] = await Promise.all([
         loadDocs("players"),
         loadDocs("parentLinks"),
         loadDocs("accessRequests"),
         loadDocs("notifications"),
         loadDocs("users"),
+        loadDocs("dataRequests"),
       ]);
       state.players = players.sort((a, b) => a.name.localeCompare(b.name));
       state.parentLinks = parentLinks;
       state.accessRequests = accessRequests.sort(sortByCreatedAtDesc);
       state.notifications = notifications.sort(sortByCreatedAtDesc);
       state.users = users;
+      state.dataRequests = dataRequests.sort(sortByCreatedAtDesc);
     } else {
       const uid = runtime.user.uid;
-      const [parentLinks, accessRequests, notifications] = await Promise.all([
+      const [parentLinks, accessRequests, notifications, dataRequests] = await Promise.all([
         loadDocsWhere("parentLinks", "parentUid", "==", uid),
         loadDocsWhere("accessRequests", "parentUid", "==", uid),
         loadDocsWhere("notifications", "userId", "==", uid),
+        loadDocsWhere("dataRequests", "parentUid", "==", uid),
       ]);
       state.parentLinks = parentLinks;
       state.accessRequests = accessRequests.sort(sortByCreatedAtDesc);
       state.notifications = notifications.sort(sortByCreatedAtDesc);
+      state.dataRequests = dataRequests.sort(sortByCreatedAtDesc);
       state.players = await loadApprovedPlayerDocs(parentLinks);
     }
 
@@ -2966,6 +3197,9 @@ async function startLiveSubscriptions() {
       const current = items.find((item) => item.id === state.session.userId);
       if (current) state.session.canSwitchPortal = Boolean(current.canSwitchPortal);
     });
+    watchCollection("dataRequests", (items) => {
+      state.dataRequests = items.sort(sortByCreatedAtDesc);
+    });
   } else {
     const uid = state.session.userId;
     watchQuery(runtime.modules.query(
@@ -2979,6 +3213,12 @@ async function startLiveSubscriptions() {
       runtime.modules.where("parentUid", "==", uid),
     ), (items) => {
       state.accessRequests = items.sort(sortByCreatedAtDesc);
+    });
+    watchQuery(runtime.modules.query(
+      runtime.modules.collection(runtime.db, "clubs", clubId, "dataRequests"),
+      runtime.modules.where("parentUid", "==", uid),
+    ), (items) => {
+      state.dataRequests = items.sort(sortByCreatedAtDesc);
     });
     watchQuery(runtime.modules.query(
       runtime.modules.collection(runtime.db, "clubs", clubId, "parentLinks"),

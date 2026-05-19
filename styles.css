@@ -187,6 +187,20 @@ a {
   font-weight: 850;
 }
 
+.privacy-preview {
+  grid-column: 1 / -1;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.66);
+}
+
+.privacy-preview summary {
+  color: var(--red-900);
+  font-weight: 950;
+  cursor: pointer;
+}
+
 .loading-card {
   min-height: 360px;
   align-content: center;
@@ -1277,6 +1291,42 @@ button:disabled {
   background: var(--paper-2);
   color: var(--red-900);
   font-weight: 850;
+}
+
+.privacy-panel {
+  align-self: start;
+}
+
+.privacy-copy {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.privacy-copy h4 {
+  margin: 12px 0 0;
+  color: var(--red-900);
+  font-size: 1rem;
+}
+
+.privacy-copy p,
+.privacy-copy ul {
+  margin: 0;
+}
+
+.privacy-copy ul {
+  padding-left: 20px;
+}
+
+.privacy-copy li + li {
+  margin-top: 4px;
+}
+
+.privacy-copy a {
+  color: var(--red-800);
+  font-weight: 900;
 }
 
 .link-box {

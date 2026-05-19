@@ -101,6 +101,15 @@ service cloud.firestore {
         allow update, delete: if isCoach(clubId);
       }
 
+      match /dataRequests/{requestId} {
+        allow read: if isCoach(clubId) || (signedIn() && resource.data.parentUid == request.auth.uid);
+        allow create: if isParent(clubId)
+          && request.resource.data.parentUid == request.auth.uid
+          && request.resource.data.status == "pending"
+          && request.resource.data.keys().hasOnly(["parentUid", "parentName", "email", "playerId", "playerTeamId", "childName", "requestType", "details", "status", "createdAt", "updatedAt"]);
+        allow update, delete: if isCoach(clubId);
+      }
+
       match /announcements/{announcementId} {
         allow read: if signedIn();
         allow create, update, delete: if isCoach(clubId);
