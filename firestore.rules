@@ -44,12 +44,12 @@ service cloud.firestore {
         allow read: if isCoach(clubId) || ownUserDoc(userId);
         allow create: if ownUserDoc(userId)
           && request.resource.data.role == "parent"
-          && request.resource.data.keys().hasOnly(["role", "name", "email", "phone", "consentAcceptedAt", "messageReadAt", "createdAt", "updatedAt"]);
+          && request.resource.data.keys().hasOnly(["role", "name", "email", "phone", "consentAcceptedAt", "messageReadAt", "canSwitchPortal", "createdAt", "updatedAt"]);
         allow update: if isCoach(clubId)
           || (ownUserDoc(userId)
             && resource.data.role == "parent"
             && request.resource.data.role == "parent"
-            && request.resource.data.keys().hasOnly(["role", "name", "email", "phone", "consentAcceptedAt", "messageReadAt", "createdAt", "updatedAt"]));
+            && request.resource.data.keys().hasOnly(["role", "name", "email", "phone", "consentAcceptedAt", "messageReadAt", "canSwitchPortal", "createdAt", "updatedAt"]));
         allow delete: if isCoach(clubId);
       }
 

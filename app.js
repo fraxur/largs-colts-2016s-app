@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-2";
+const appVersion = "4.0-live-rollout-3";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -96,6 +96,7 @@ const defaultState = {
     parentName: "",
     coachName: "",
     selectedPlayerId: "p1",
+    canSwitchPortal: false,
   },
   route: "home",
   authRole: "parent",
@@ -115,6 +116,7 @@ const defaultState = {
   attendance: {},
   notifications: [],
   messages: [],
+  users: [],
   messageReadAt: "",
 };
 
@@ -226,6 +228,7 @@ function loadState() {
     accessRequests: [],
     notifications: [],
     messages: [],
+    users: [],
     session: { ...defaultState.session },
   });
 }
@@ -243,6 +246,7 @@ function normalizeState(saved) {
   merged.events = merged.events || [];
   merged.messages = merged.messages || [];
   merged.notifications = merged.notifications || [];
+  merged.users = merged.users || [];
   merged.messageReadAt = merged.messageReadAt || "";
   merged.selectedEventId = merged.selectedEventId || merged.events[0]?.id || "";
   if (!merged.events.some((event) => event.id === merged.selectedEventId)) {
@@ -892,6 +896,7 @@ function shellView() {
 
 function accountControls() {
   const isCoach = hasCoachAccess();
+  const canSwitch = Boolean(state.session.canSwitchPortal);
   const displayName = isCoach
     ? state.session.coachName || state.session.email || "Coach"
     : state.session.parentName || state.session.email || "Parent";
@@ -901,9 +906,9 @@ function accountControls() {
         <strong>${escapeHtml(displayName)}</strong>
         <small>${isCoach ? "Coach" : "Parent"}</small>
       </span>
-      <button class="secondary-button account-button" type="button" data-action="switch-account" data-role="${isCoach ? "parent" : "coach"}">
+      ${canSwitch ? `<button class="secondary-button account-button" type="button" data-action="switch-account" data-role="${isCoach ? "parent" : "coach"}">
         ${isCoach ? "Parent login" : "Coach login"}
-      </button>
+      </button>` : ""}
       <button class="secondary-button account-button" type="button" data-action="sign-out">Log out</button>
     </div>
   `;
@@ -1699,6 +1704,7 @@ function accessRequestRow(request) {
 
 function coachAccessView() {
   const requests = state.accessRequests;
+  const appUsers = state.users.slice().sort((a, b) => (a.name || a.email || "").localeCompare(b.name || b.email || ""));
   return `
     <section class="content-grid two-col">
       <article class="panel" data-tour="access-queue">
@@ -1710,6 +1716,18 @@ function coachAccessView() {
         </div>
         <div class="request-list">
           ${requests.map((request) => coachRequestRow(request)).join("")}
+        </div>
+      </article>
+      <article class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Dual account switch</p>
+            <h3>Parent and coach accounts</h3>
+          </div>
+        </div>
+        <p class="muted">Turn this on only for known coaches who also need a parent account shortcut. Normal parents will only see Log out.</p>
+        <div class="request-list">
+          ${appUsers.length ? appUsers.map(userSwitchRow).join("") : '<p class="muted">No user accounts loaded yet.</p>'}
         </div>
       </article>
       <article class="panel">
@@ -1737,6 +1755,23 @@ function coachAccessView() {
         </div>
       </article>
     </section>
+  `;
+}
+
+function userSwitchRow(user) {
+  return `
+    <div class="person-row compact">
+      <div>
+        <strong>${escapeHtml(user.name || user.email || "Unnamed account")}</strong>
+        <p>${escapeHtml(user.email || "")} - ${escapeHtml(user.role || "no role")}</p>
+      </div>
+      <div class="inline-actions">
+        <span class="status-pill ${user.canSwitchPortal ? "good" : "warn"}">${user.canSwitchPortal ? "Switch on" : "Switch off"}</span>
+        <button class="tiny-button" type="button" data-action="toggle-dual-user" data-user-id="${escapeHtml(user.id)}" data-enabled="${user.canSwitchPortal ? "false" : "true"}">
+          ${user.canSwitchPortal ? "Disable" : "Enable"}
+        </button>
+      </div>
+    </div>
   `;
 }
 
@@ -2089,6 +2124,11 @@ document.addEventListener("click", async (event) => {
     return;
   }
 
+  if (action === "toggle-dual-user") {
+    await toggleDualUser(target.dataset.userId, target.dataset.enabled === "true");
+    return;
+  }
+
   if (action === "copy-link") {
     copyText(target.dataset.copy);
     return;
@@ -2250,6 +2290,7 @@ async function handleFirebaseCoachLogin(email, password) {
       parentName: "",
       coachName: profile.name || "Coach",
       selectedPlayerId: "",
+      canSwitchPortal: Boolean(profile.canSwitchPortal),
     };
     state.messageReadAt = profile.messageReadAt || "";
     await loadLiveStateFromFirebase();
@@ -2299,6 +2340,7 @@ async function handleFirebaseParentLogin({ email, password, parentName, childNam
       parentName: profile.name || parentName,
       coachName: "",
       selectedPlayerId: "",
+      canSwitchPortal: Boolean(profile.canSwitchPortal),
     };
     state.messageReadAt = profile.messageReadAt || "";
     await loadLiveStateFromFirebase();
@@ -2432,6 +2474,19 @@ async function reviewRequest(requestId, status) {
   }
   await loadLiveStateFromFirebase();
   toast(`Request ${status}`);
+}
+
+async function toggleDualUser(userId, enabled) {
+  if (!requireCoach() || !userId) return;
+  const runtime = await ensureFirebase();
+  await runtime.modules.setDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "users", userId), {
+    canSwitchPortal: enabled,
+    updatedAt: runtime.modules.serverTimestamp(),
+  }, { merge: true });
+  state.users = state.users.map((user) => user.id === userId ? { ...user, canSwitchPortal: enabled } : user);
+  if (state.session.userId === userId) state.session.canSwitchPortal = enabled;
+  render();
+  toast(enabled ? "Dual switch enabled" : "Dual switch disabled");
 }
 
 function scheduleAvailabilitySave(playerId) {
@@ -2720,16 +2775,18 @@ async function loadLiveStateFromFirebase() {
     state.messages = announcements.sort(sortByCreatedAtDesc);
 
     if (hasCoachAccess(role)) {
-      const [players, parentLinks, accessRequests, notifications] = await Promise.all([
+      const [players, parentLinks, accessRequests, notifications, users] = await Promise.all([
         loadDocs("players"),
         loadDocs("parentLinks"),
         loadDocs("accessRequests"),
         loadDocs("notifications"),
+        loadDocs("users"),
       ]);
       state.players = players.sort((a, b) => a.name.localeCompare(b.name));
       state.parentLinks = parentLinks;
       state.accessRequests = accessRequests.sort(sortByCreatedAtDesc);
       state.notifications = notifications.sort(sortByCreatedAtDesc);
+      state.users = users;
     } else {
       const uid = runtime.user.uid;
       const [parentLinks, accessRequests, notifications] = await Promise.all([
@@ -2903,6 +2960,11 @@ async function startLiveSubscriptions() {
     });
     watchCollection("notifications", (items) => {
       state.notifications = items.sort(sortByCreatedAtDesc);
+    });
+    watchCollection("users", (items) => {
+      state.users = items;
+      const current = items.find((item) => item.id === state.session.userId);
+      if (current) state.session.canSwitchPortal = Boolean(current.canSwitchPortal);
     });
   } else {
     const uid = state.session.userId;
@@ -3172,6 +3234,7 @@ async function bootApp() {
           parentName: role === "parent" ? profile.name || user.email || "Parent" : "",
           coachName: ["coach", "admin"].includes(role) ? profile.name || "Coach" : "",
           selectedPlayerId: state.session.selectedPlayerId || "",
+          canSwitchPortal: Boolean(profile.canSwitchPortal),
         };
         state.messageReadAt = profile.messageReadAt || "";
         state.route = ["coach", "admin"].includes(role) ? state.route || "home" : state.route || "home";
