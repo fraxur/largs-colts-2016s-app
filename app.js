@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-6";
+const appVersion = "4.0-live-rollout-7";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -32,7 +32,7 @@ const coachRoles = ["coach", "admin"];
 const coaches = [
   { id: "carl", name: "Carl", teamId: "all", role: "Coach", phone: "07999696043", email: "" },
   { id: "faroque", name: "Faroque", teamId: "all", role: "Coach", phone: "07791199936", email: "" },
-  { id: "ed", name: "Edward Dowds", teamId: "all", role: "Coach", phone: "07881 597600", email: "" },
+  { id: "ed", name: "Edward Dowds", teamId: "all", role: "Coach", phone: "07881597600", email: "" },
   { id: "martin", name: "Martin", teamId: "all", role: "Coach", phone: "07904718672", email: "" },
   { id: "gordy", name: "Gordy", teamId: "all", role: "Coach", phone: "07984645328", email: "" },
 ];
@@ -1664,11 +1664,13 @@ function coachCard(coach) {
 }
 
 function formatPhone(phone) {
-  return phone.replace(/^(\d{5})(\d{3})(\d{3})$/, "$1 $2 $3");
+  const digits = String(phone || "").replace(/\D/g, "");
+  return digits.length === 11 ? digits.replace(/^(\d{5})(\d{3})(\d{3})$/, "$1 $2 $3") : phone;
 }
 
 function phoneHref(phone) {
-  return `+44${phone.replace(/^0/, "")}`;
+  const digits = String(phone || "").replace(/\D/g, "");
+  return digits.startsWith("0") ? `+44${digits.slice(1)}` : digits;
 }
 
 function accessView() {
