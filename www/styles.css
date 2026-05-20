@@ -823,6 +823,16 @@ button:disabled {
   margin: 0;
 }
 
+.schedule-controls {
+  display: grid;
+  gap: 10px;
+  min-width: min(100%, 620px);
+}
+
+.schedule-period {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .compact-field {
   min-width: min(100%, 420px);
 }
@@ -977,7 +987,7 @@ button:disabled {
 
 .event-card {
   display: grid;
-  grid-template-columns: 76px minmax(0, 1fr) auto;
+  grid-template-columns: 76px minmax(0, 1fr) minmax(210px, 250px);
   gap: 16px;
   align-items: center;
   padding: 16px;
@@ -1013,15 +1023,21 @@ button:disabled {
 .summary-strip,
 .choice-row,
 .inline-actions,
-.event-actions {
+.event-actions,
+.event-badges {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
 
 .event-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: stretch;
-  flex-direction: column;
+}
+
+.event-badges {
+  justify-content: flex-end;
 }
 
 .event-actions .secondary-button,
@@ -1029,6 +1045,41 @@ button:disabled {
   min-height: 38px;
   padding: 0 12px;
   white-space: nowrap;
+}
+
+.directions-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.direction-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.direction-actions .secondary-button,
+.direction-actions .secondary-link {
+  min-height: 42px;
+}
+
+.result-fields {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 12px;
+  background: #fffafa;
+}
+
+.result-fields[hidden] {
+  display: none;
+}
+
+.score-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
 }
 
 .coach-guide-hint {
@@ -1556,7 +1607,9 @@ button:disabled {
   .team-board,
   .venue-grid,
   .venue-media-grid,
-  .lift-fields {
+  .lift-fields,
+  .direction-actions,
+  .score-fields {
     grid-template-columns: 1fr;
   }
 
@@ -1613,7 +1666,9 @@ button:disabled {
   .hero-actions,
   .toolbar,
   .summary-strip,
-  .auth-actions {
+  .auth-actions,
+  .direction-actions,
+  .score-fields {
     align-items: stretch;
     flex-direction: column;
   }
@@ -1639,13 +1694,17 @@ button:disabled {
     width: 100%;
   }
 
+  .schedule-controls {
+    width: 100%;
+  }
+
   .event-card {
     grid-template-columns: 64px minmax(0, 1fr);
   }
 
   .event-actions {
     grid-column: 1 / -1;
-    flex-direction: row;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .date-tile {

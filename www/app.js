@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-4";
+const appVersion = "4.0-live-rollout-6";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -101,6 +101,7 @@ const defaultState = {
   route: "home",
   authRole: "parent",
   scheduleFilter: "all",
+  schedulePeriod: "upcoming",
   selectedEventId: "e1",
   coachGuide: {
     active: false,
@@ -256,6 +257,7 @@ function normalizeState(saved) {
     merged.selectedEventId = merged.events[0]?.id || "";
   }
   merged.scheduleFilter = merged.scheduleFilter || "all";
+  merged.schedulePeriod = merged.schedulePeriod || "upcoming";
   merged.coachGuide = {
     ...defaultState.coachGuide,
     ...(saved.coachGuide || {}),
@@ -270,6 +272,9 @@ function normalizeState(saved) {
     event.meetTime = event.meetTime || "";
     event.finishTime = event.finishTime || suggestFinishTime(event.datetime, event.type);
     event.kit = event.kit || (event.type === "Fixture" ? "Home kit" : "");
+    event.homeScore = event.homeScore ?? "";
+    event.awayScore = event.awayScore ?? "";
+    event.resultNotes = event.resultNotes || "";
     merged.availability[event.id] = merged.availability[event.id] || {};
     getPlayersForEvent(event, merged.players).forEach((player) => {
       merged.availability[event.id][player.id] = defaultAvailabilityEntry(merged.availability[event.id][player.id]);
@@ -467,6 +472,26 @@ function dateTile(value) {
     day: new Intl.DateTimeFormat("en-GB", { day: "2-digit" }).format(date),
     month: new Intl.DateTimeFormat("en-GB", { month: "short" }).format(date),
   };
+}
+
+function eventEndDate(event) {
+  const datePart = dateValue(event.datetime);
+  const endTime = event.finishTime || timeValue(event.datetime);
+  const value = datePart && endTime ? `${datePart}T${endTime}` : event.datetime;
+  const end = new Date(value);
+  return Number.isNaN(end.getTime()) ? new Date(event.datetime) : end;
+}
+
+function isPastEvent(event) {
+  return eventEndDate(event) < new Date();
+}
+
+function resultSummary(event) {
+  if (event.type !== "Fixture") return "";
+  const hasHome = event.homeScore !== "" && event.homeScore != null;
+  const hasAway = event.awayScore !== "" && event.awayScore != null;
+  if (hasHome && hasAway) return `Result ${event.homeScore}-${event.awayScore}`;
+  return isPastEvent(event) ? "Result pending" : "";
 }
 
 function statusText(status) {
@@ -1121,25 +1146,38 @@ function messageCard() {
 
 function scheduleView() {
   const childTeamIds = new Set(approvedPlayers().map((player) => player.teamId));
-  const visibleEvents = state.events
+  const period = state.schedulePeriod || "upcoming";
+  const allVisibleEvents = state.events
     .filter((event) => hasCoachAccess() || event.teamId === "all" || childTeamIds.has(event.teamId))
-    .filter((event) => state.scheduleFilter === "all" || event.teamId === state.scheduleFilter || event.teamId === "all")
-    .sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
+    .filter((event) => state.scheduleFilter === "all" || event.teamId === state.scheduleFilter || event.teamId === "all");
+  const upcomingCount = allVisibleEvents.filter((event) => !isPastEvent(event)).length;
+  const pastCount = allVisibleEvents.filter(isPastEvent).length;
+  const visibleEvents = allVisibleEvents
+    .filter((event) => period === "past" ? isPastEvent(event) : !isPastEvent(event))
+    .sort((a, b) => period === "past"
+      ? eventEndDate(b) - eventEndDate(a)
+      : eventEndDate(a) - eventEndDate(b));
 
   return `
     <section class="toolbar" data-tour="schedule-toolbar">
+      <div class="schedule-controls">
+        <div class="segmented light schedule-period">
+          <button type="button" class="${period === "upcoming" ? "active" : ""}" data-action="set-schedule-period" data-period="upcoming">Upcoming (${upcomingCount})</button>
+          <button type="button" class="${period === "past" ? "active" : ""}" data-action="set-schedule-period" data-period="past">Past (${pastCount})</button>
+        </div>
       ${hasCoachAccess() ? `<div class="segmented light">
         ${["all", ...teams.map((team) => team.id)].map((id) => `
           <button type="button" class="${state.scheduleFilter === id ? "active" : ""}" data-action="set-schedule-filter" data-team-id="${id}">
             ${id === "all" ? "All" : teamName(id)}
           </button>
         `).join("")}
-      </div>` : "<div></div>"}
+      </div>` : ""}
+      </div>
       ${hasCoachAccess() ? '<button class="primary-button" type="button" data-modal="event">Add fixture/training</button>' : ""}
     </section>
     ${isCoachGuide() ? '<aside class="coach-guide-hint" data-tour="away-support">Away destination adds venue name and address fields, so map buttons still work for places like Bellfield Estate.</aside>' : ""}
     <div class="event-list" data-tour="event-list">
-      ${visibleEvents.length ? visibleEvents.map(eventCard).join("") : '<article class="panel"><h3>No events to show yet</h3><p class="muted">Once fixtures or training are added in Firestore they will appear here.</p></article>'}
+      ${visibleEvents.length ? visibleEvents.map(eventCard).join("") : `<article class="panel"><h3>No ${period === "past" ? "past" : "upcoming"} events to show</h3><p class="muted">${period === "past" ? "Completed fixtures and older training will appear here automatically." : "Once new fixtures or training are added they will appear here."}</p></article>`}
     </div>
   `;
 }
@@ -1148,6 +1186,9 @@ function eventCard(event) {
   const tile = dateTile(event.datetime);
   const counts = availabilityCounts(event.id);
   const venue = eventVenue(event);
+  const past = isPastEvent(event);
+  const result = resultSummary(event);
+  const openLabel = hasCoachAccess() ? "Responses" : "Respond";
   const coachActions = hasCoachAccess()
     ? `
       <button class="secondary-button" type="button" data-modal="edit-event" data-event-id="${event.id}">Edit</button>
@@ -1163,7 +1204,10 @@ function eventCard(event) {
             <p class="eyebrow">${escapeHtml(event.type)}</p>
             <h3>${escapeHtml(event.title)}</h3>
           </div>
-          <span class="team-pill ${event.teamId}">${teamName(event.teamId)}</span>
+          <div class="event-badges">
+            <span class="team-pill ${event.teamId}">${teamName(event.teamId)}</span>
+            ${past ? '<span class="status-pill warn">Archived</span>' : ""}
+          </div>
         </div>
         <p>${formatDate(event.datetime)}${event.finishTime ? ` to ${escapeHtml(event.finishTime)}` : ""} at ${escapeHtml(venue.name)}</p>
         <p>Pitch: ${escapeHtml(venue.address)}${event.meetTime ? ` - Report ${escapeHtml(event.meetTime)}` : ""}</p>
@@ -1173,13 +1217,15 @@ function eventCard(event) {
           <span>${counts.unavailable} unavailable</span>
           <span>${counts.unknown} no reply</span>
           ${event.type === "Fixture" ? `<span>${counts.snacks} snacks</span><span>${counts.liftSeats} lift seats</span>` : ""}
+          ${result ? `<span>${escapeHtml(result)}</span>` : ""}
+          ${event.resultNotes ? `<span>${escapeHtml(event.resultNotes)}</span>` : ""}
           ${event.kit ? `<span>${escapeHtml(event.kit)}</span>` : ""}
           ${event.notes ? `<span>${escapeHtml(event.notes)}</span>` : ""}
         </div>
       </div>
       <div class="event-actions">
-        <button class="secondary-button" type="button" data-action="focus-event" data-event-id="${event.id}">Open</button>
-        ${venueMapActions(venue)}
+        <button class="secondary-button" type="button" data-action="focus-event" data-event-id="${event.id}">${openLabel}</button>
+        <button class="secondary-button" type="button" data-modal="directions" data-event-id="${event.id}">Directions</button>
         ${coachActions}
       </div>
     </article>
@@ -1255,7 +1301,7 @@ function parentAvailabilityCard(event, child, childInEvent) {
       <p class="muted">Pitch: ${escapeHtml(venue.address)}</p>
       ${venue.parkingAddress ? `<p class="muted">Parking: ${escapeHtml(venue.parkingAddress)}</p>` : ""}
       <div class="choice-row">
-        ${venueMapActions(venue)}
+        <button class="secondary-button" type="button" data-modal="directions" data-event-id="${event.id}">Directions</button>
       </div>
       <div class="choice-row">
         <button class="available-button" type="button" data-action="set-availability" data-status="available">Available</button>
@@ -2026,9 +2072,13 @@ function installView() {
           <span>Home, 3G, Barrfields and typed away venues loaded</span>
           <span>Google Maps and Apple Maps buttons added</span>
           <span>Venue page includes pitch, parking and photo spaces</span>
+          <span>Upcoming and past event archive added</span>
+          <span>Fixture result fields added for completed matches</span>
+          <span>Cleaner fixture cards with directions tucked into one button</span>
           <span>Parents can offer snacks and lifts on fixture availability</span>
           <span>Privacy notice and parent data request process added</span>
           <span>Coach contacts added with call and text links</span>
+          <span>App icons and red splash screen ready for mobile wrapping</span>
           <span>Capacitor config ready for iOS and Android wrapping</span>
         </div>
       </article>
@@ -2052,11 +2102,36 @@ function modalView() {
 function modalContent(type) {
   if (type === "event") return eventModal();
   if (type === "edit-event") return eventModal(state.modal.eventId);
+  if (type === "directions") return directionsModal(state.modal.eventId);
   if (type === "message") return messageModal();
   if (type === "player") return playerModal();
   if (type === "move-player") return movePlayerModal(state.modal.playerId);
   if (type === "edit-player") return editPlayerModal(state.modal.playerId);
   return "";
+}
+
+function directionsModal(eventId = "") {
+  const event = state.events.find((item) => item.id === eventId);
+  const venue = event ? eventVenue(event) : venues[0];
+  return `
+    <p class="eyebrow">Matchday directions</p>
+    <h2 id="modal-title">${escapeHtml(event?.title || venue.name)}</h2>
+    <div class="directions-panel">
+      <div class="venue-location">
+        <strong>Pitch</strong>
+        <span>${escapeHtml(venue.address)}</span>
+      </div>
+      ${venue.parkingAddress ? `
+        <div class="venue-location">
+          <strong>Parking</strong>
+          <span>${escapeHtml(venue.parkingAddress)}</span>
+        </div>
+      ` : ""}
+      <div class="direction-actions">
+        ${venueMapActions(venue)}
+      </div>
+    </div>
+  `;
 }
 
 function eventModal(eventId = "") {
@@ -2073,12 +2148,15 @@ function eventModal(eventId = "") {
   const finishTime = event?.finishTime || suggestFinishTime(event?.datetime || combineDateTime(date || "2026-05-16", startTime), type);
   const meetTime = event?.meetTime || "";
   const kit = event?.kit || "Home kit";
+  const homeScore = event?.homeScore ?? "";
+  const awayScore = event?.awayScore ?? "";
+  const resultNotes = event?.resultNotes || "";
   return `
     <p class="eyebrow">Coach action</p>
     <h2 id="modal-title">${editing ? "Edit fixture/training" : "Add fixture/training"}</h2>
     <form class="stacked-form" data-form="${editing ? "edit-event" : "event"}">
       ${editing ? `<input type="hidden" name="eventId" value="${escapeHtml(event.id)}">` : ""}
-      <label class="field"><span>Type</span><select name="type"><option ${type === "Fixture" ? "selected" : ""}>Fixture</option><option ${type === "Training" ? "selected" : ""}>Training</option></select></label>
+      <label class="field"><span>Type</span><select name="type" data-action="event-type-choice"><option ${type === "Fixture" ? "selected" : ""}>Fixture</option><option ${type === "Training" ? "selected" : ""}>Training</option></select></label>
       <label class="field"><span>Team</span><select name="teamId"><option value="all" ${teamId === "all" ? "selected" : ""}>All teams</option>${teams.map((team) => `<option value="${team.id}" ${team.id === teamId ? "selected" : ""}>${team.name}</option>`).join("")}</select></label>
       <label class="field"><span>Opponent or title</span><input name="opponent" required value="${escapeHtml(opponent)}" placeholder="Kilwinning Rangers"></label>
       <label class="field"><span>Date</span><input name="date" type="date" required value="${escapeHtml(date)}"></label>
@@ -2090,6 +2168,14 @@ function eventModal(eventId = "") {
       <div class="away-fields" data-away-fields ${isAway ? "" : "hidden"}>
         <label class="field"><span>Away venue name</span><input name="customVenue" value="${escapeHtml(isAway ? venue.name : "")}" placeholder="Bellfield Estate"></label>
         <label class="field"><span>Away address</span><input name="customAddress" value="${escapeHtml(isAway ? venue.address : "")}" placeholder="Bellfield Estate, Kilmarnock KA1 3XG"></label>
+      </div>
+      <div class="result-fields" data-result-fields ${type === "Fixture" ? "" : "hidden"}>
+        <p class="eyebrow">Result after match</p>
+        <div class="score-fields">
+          <label class="field"><span>Largs score</span><input name="homeScore" type="number" min="0" inputmode="numeric" value="${escapeHtml(homeScore)}" placeholder="0"></label>
+          <label class="field"><span>Opposition score</span><input name="awayScore" type="number" min="0" inputmode="numeric" value="${escapeHtml(awayScore)}" placeholder="0"></label>
+        </div>
+        <label class="field"><span>Result notes</span><input name="resultNotes" value="${escapeHtml(resultNotes)}" placeholder="Optional match note"></label>
       </div>
       <label class="field"><span>Notes</span><input name="notes" value="${escapeHtml(event?.notes || "")}" placeholder="Home kit, bring water"></label>
       <button class="primary-button" type="submit">${editing ? "Save changes" : "Add fixture/training"}</button>
@@ -2157,6 +2243,7 @@ function editPlayerModal(playerId) {
 
 function bindFormDefaults() {
   toggleAwayFields();
+  toggleResultFields();
 }
 
 function toggleAwayFields() {
@@ -2164,6 +2251,13 @@ function toggleAwayFields() {
   const awayFields = $('[data-away-fields]');
   if (!venueChoice || !awayFields) return;
   awayFields.hidden = venueChoice.value !== "away-custom";
+}
+
+function toggleResultFields() {
+  const typeChoice = $('[data-action="event-type-choice"]');
+  const resultFields = $('[data-result-fields]');
+  if (!typeChoice || !resultFields) return;
+  resultFields.hidden = typeChoice.value !== "Fixture";
 }
 
 document.addEventListener("click", async (event) => {
@@ -2240,6 +2334,13 @@ document.addEventListener("click", async (event) => {
 
   if (action === "set-schedule-filter") {
     state.scheduleFilter = target.dataset.teamId;
+    saveState();
+    render();
+    return;
+  }
+
+  if (action === "set-schedule-period") {
+    state.schedulePeriod = target.dataset.period || "upcoming";
     saveState();
     render();
     return;
@@ -2336,6 +2437,10 @@ document.addEventListener("change", async (event) => {
   }
   if (target.dataset.action === "venue-choice") {
     toggleAwayFields();
+    return;
+  }
+  if (target.dataset.action === "event-type-choice") {
+    toggleResultFields();
     return;
   }
   if (["snack-volunteer", "lift-offer", "lift-seats"].includes(target.dataset.action)) {
@@ -2782,6 +2887,9 @@ function eventDataFromForm(data, id = uid("event")) {
     parkingAddress: venue.parkingAddress || "",
     meetTime: data.get("meetTime"),
     kit: type === "Fixture" ? data.get("kit") : "",
+    homeScore: type === "Fixture" ? String(data.get("homeScore") || "").trim() : "",
+    awayScore: type === "Fixture" ? String(data.get("awayScore") || "").trim() : "",
+    resultNotes: type === "Fixture" ? String(data.get("resultNotes") || "").trim() : "",
     notes: data.get("notes"),
   };
 }
