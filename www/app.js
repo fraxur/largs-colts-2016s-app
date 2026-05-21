@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-7";
+const appVersion = "4.0-live-rollout-9";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -93,6 +93,7 @@ const defaultState = {
     role: "",
     userId: "",
     email: "",
+    phone: "",
     parentName: "",
     coachName: "",
     selectedPlayerId: "p1",
@@ -119,6 +120,8 @@ const defaultState = {
   notifications: [],
   messages: [],
   users: [],
+  coachContacts: [],
+  venues: [],
   messageReadAt: "",
 };
 
@@ -251,6 +254,8 @@ function normalizeState(saved) {
   merged.notifications = merged.notifications || [];
   merged.dataRequests = merged.dataRequests || [];
   merged.users = merged.users || [];
+  merged.coachContacts = merged.coachContacts || [];
+  merged.venues = merged.venues || [];
   merged.messageReadAt = merged.messageReadAt || "";
   merged.selectedEventId = merged.selectedEventId || merged.events[0]?.id || "";
   if (!merged.events.some((event) => event.id === merged.selectedEventId)) {
@@ -346,8 +351,26 @@ function teamName(teamId) {
   return teamById(teamId).name;
 }
 
+function appVenues() {
+  const merged = new Map(venues.map((venue) => [venue.id, { ...venue }]));
+  (state.venues || []).forEach((venue) => {
+    if (!venue?.id) return;
+    merged.set(venue.id, { ...(merged.get(venue.id) || {}), ...venue });
+  });
+  return Array.from(merged.values());
+}
+
+function appCoachContacts() {
+  const merged = new Map(coaches.map((coach) => [coach.id, { ...coach }]));
+  (state.coachContacts || []).forEach((coach) => {
+    if (!coach?.id) return;
+    merged.set(coach.id, { ...(merged.get(coach.id) || {}), ...coach });
+  });
+  return Array.from(merged.values());
+}
+
 function venueById(venueId) {
-  return venues.find((venue) => venue.id === venueId) || venues[0];
+  return appVenues().find((venue) => venue.id === venueId) || appVenues()[0] || venues[0];
 }
 
 function venueIdFromName(name = "") {
@@ -356,7 +379,7 @@ function venueIdFromName(name = "") {
 }
 
 function eventVenue(event) {
-  const knownVenue = venues.find((venue) => venue.id === event.venueId);
+  const knownVenue = appVenues().find((venue) => venue.id === event.venueId);
   if (knownVenue && knownVenue.id !== "away-custom") return knownVenue;
 
   if (event.venueId === "away-custom" || event.address) {
@@ -849,6 +872,7 @@ function parentLoginView() {
       </label>
       <div class="auth-actions">
         <button class="primary-button" type="submit">Sign in or request access</button>
+        <button class="secondary-button" type="button" data-action="reset-password">Forgot password</button>
       </div>
       <details class="privacy-preview">
         <summary>Privacy notice</summary>
@@ -871,6 +895,7 @@ function coachLoginView() {
       </label>
       <div class="auth-actions">
         <button class="primary-button" type="submit">Sign in</button>
+        <button class="secondary-button" type="button" data-action="reset-password">Forgot password</button>
       </div>
       <p class="live-build-note">Build ${appVersion} uses live Firebase Auth, Firestore and push notifications.</p>
     </form>
@@ -965,9 +990,12 @@ function navRoutes(pendingOnly = false) {
     { id: "privacy", label: "Privacy" },
     { id: "install", label: "Install" },
   ];
-  const parentRoutes = coachRoutes.filter((item) => item.id !== "squads");
+  const parentRoutes = [
+    ...coachRoutes.filter((item) => item.id !== "squads"),
+    { id: "guide", label: "Guide" },
+  ];
   const base = hasCoachAccess() ? coachRoutes : parentRoutes;
-  return pendingOnly ? base.filter((item) => ["access", "privacy", "install"].includes(item.id)) : base;
+  return pendingOnly ? base.filter((item) => ["access", "privacy", "install", "guide"].includes(item.id)) : base;
 }
 
 function navItem(item, route, compact = false) {
@@ -992,6 +1020,7 @@ function pageTitle(route) {
     access: "Access",
     privacy: "Privacy",
     install: "Mobile Test",
+    guide: "Parent Guide",
   }[route] || "Dashboard";
 }
 
@@ -1018,7 +1047,7 @@ function pendingBanner() {
 
 function pageView(route) {
   const pendingOnly = state.session.role === "parent" && !approvedPlayers().length;
-  if (pendingOnly && !["privacy", "install"].includes(route)) return accessView();
+  if (pendingOnly && !["privacy", "install", "guide"].includes(route)) return accessView();
   if (!hasCoachAccess() && route === "squads") return homeView();
   return {
     home: homeView,
@@ -1032,6 +1061,7 @@ function pageView(route) {
     access: accessView,
     privacy: privacyView,
     install: installView,
+    guide: guideView,
   }[route]?.() || homeView();
 }
 
@@ -1534,6 +1564,7 @@ function messagesView() {
 }
 
 function coachesView() {
+  const contacts = appCoachContacts();
   return `
     <section class="content-grid two-col">
       <article class="panel">
@@ -1544,7 +1575,7 @@ function coachesView() {
           </div>
         </div>
         <div class="coach-grid" data-tour="coach-contacts">
-          ${coaches.map(coachCard).join("")}
+          ${contacts.map(coachCard).join("")}
         </div>
       </article>
       <article class="panel">
@@ -1566,7 +1597,7 @@ function coachesView() {
 }
 
 function venuesView() {
-  const fixedVenues = venues.filter((venue) => venue.id !== "away-custom");
+  const fixedVenues = appVenues().filter((venue) => venue.id !== "away-custom");
   return `
     <section class="toolbar">
       <div>
@@ -1616,6 +1647,7 @@ function venueCard(venue) {
       </div>
       <div class="choice-row venue-actions">
         ${venueMapActions(venue)}
+        ${hasCoachAccess() ? `<button class="secondary-button" type="button" data-modal="edit-venue" data-venue-id="${escapeHtml(venue.id)}">Edit venue</button>` : ""}
       </div>
     </article>
   `;
@@ -1657,6 +1689,7 @@ function coachCard(coach) {
         <div class="contact-actions">
           <a class="primary-button" href="tel:${tel}">Call</a>
           <a class="secondary-link" href="sms:${tel}">Text</a>
+          ${hasCoachAccess() ? `<button class="secondary-button" type="button" data-modal="edit-coach" data-coach-id="${escapeHtml(coach.id)}">Edit</button>` : ""}
         </div>
       </div>
     </article>
@@ -1692,6 +1725,7 @@ function parentAccessView() {
         ${approved.length ? approved.map((link) => accessLinkRow(link)).join("") : '<p class="muted">No verified child links yet.</p>'}
         ${pending.length ? `<div class="divider"></div>${pending.map((request) => accessRequestRow(request)).join("")}` : ""}
       </article>
+      ${parentProfileCard()}
       <article class="panel">
         <div class="panel-title">
           <div>
@@ -1736,6 +1770,36 @@ function parentAccessView() {
         </form>
       </article>
     </section>
+  `;
+}
+
+function parentProfileCard() {
+  return `
+    <article class="panel">
+      <div class="panel-title">
+        <div>
+          <p class="eyebrow">Your contact details</p>
+          <h3>Parent profile</h3>
+        </div>
+        <span class="status-pill good">Self-edit</span>
+      </div>
+      <p class="muted">Keep your phone number current so coaches can contact you if plans change.</p>
+      <form class="stacked-form" data-form="parent-profile">
+        <label class="field">
+          <span>Name</span>
+          <input name="parentName" autocomplete="name" required value="${escapeHtml(state.session.parentName || "")}">
+        </label>
+        <label class="field">
+          <span>Phone number</span>
+          <input name="phone" type="tel" autocomplete="tel" value="${escapeHtml(formatPhone(state.session.phone || ""))}" placeholder="07123 456 789">
+        </label>
+        <label class="field">
+          <span>Email</span>
+          <input value="${escapeHtml(state.session.email || "")}" disabled>
+        </label>
+        <button class="primary-button" type="submit">Save contact details</button>
+      </form>
+    </article>
   `;
 }
 
@@ -1857,6 +1921,7 @@ function coachRequestRow(request) {
           <button class="tiny-button approve" type="button" data-action="review-request" data-request-id="${request.id}" data-status="approved">Approve</button>
           <button class="tiny-button reject" type="button" data-action="review-request" data-request-id="${request.id}" data-status="rejected">Reject</button>
         ` : ""}
+        <button class="tiny-button reject" type="button" data-action="delete-access-request" data-request-id="${escapeHtml(request.id)}">Delete</button>
       </div>
     </div>
   `;
@@ -2016,8 +2081,47 @@ function dataRequestRow(request) {
       <div class="inline-actions">
         <span class="status-pill ${request.status === "resolved" ? "good" : "warn"}">${request.status === "resolved" ? "Resolved" : "Pending"}</span>
         ${hasCoachAccess() && request.status !== "resolved" ? `<button class="tiny-button approve" type="button" data-action="resolve-data-request" data-request-id="${escapeHtml(request.id)}">Mark resolved</button>` : ""}
+        ${hasCoachAccess() ? `<button class="tiny-button reject" type="button" data-action="delete-data-request" data-request-id="${escapeHtml(request.id)}">Delete</button>` : ""}
       </div>
     </div>
+  `;
+}
+
+function guideView() {
+  return `
+    <section class="content-grid two-col">
+      <article class="panel parent-guide-panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">How to use the app</p>
+            <h3>Parent quick start</h3>
+          </div>
+          <span class="status-pill good">Parent guide</span>
+        </div>
+        <div class="guide-steps">
+          <div><strong>1. Sign in</strong><p>Use your own email and password. If you forget it, use the Forgot password button on the sign-in screen.</p></div>
+          <div><strong>2. Request your child</strong><p>Ask for access to your child once. A coach checks the request before player details appear.</p></div>
+          <div><strong>3. Mark availability</strong><p>Open Availability, choose the event, then tap Available or Unavailable. For fixtures you can also offer snacks or lifts.</p></div>
+          <div><strong>4. Check venues</strong><p>Use Schedule or Venues for pitch, parking, Google Maps and Apple Maps links.</p></div>
+          <div><strong>5. Read messages</strong><p>The message badge clears after you open Messages. Parent alerts for attendance and collection also appear there.</p></div>
+          <div><strong>6. Keep details current</strong><p>Use Access to update your own name and phone number, or Privacy to request a correction or removal of data.</p></div>
+        </div>
+      </article>
+      <article class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Need help?</p>
+            <h3>Support and privacy</h3>
+          </div>
+        </div>
+        <div class="check-list">
+          <span>For app support, contact ${escapeHtml(supportEmail)}.</span>
+          <span>Only approved coaches and team admins can see child records.</span>
+          <span>Parents only see linked children approved by a coach.</span>
+          <span>You can request data removal or corrections from the Privacy page.</span>
+        </div>
+      </article>
+    </section>
   `;
 }
 
@@ -2057,6 +2161,23 @@ function installView() {
       <article class="panel">
         <div class="panel-title">
           <div>
+            <p class="eyebrow">Before parent rollout</p>
+            <h3>Firebase hardening</h3>
+          </div>
+          <span class="status-pill warn">Owner checks</span>
+        </div>
+        <div class="check-list">
+          <span>Budget alerts set in Google Cloud Billing</span>
+          <span>Latest Firestore rules deployed</span>
+          <span>Only coaches/admins can write players, fixtures, venues and protected records</span>
+          <span>Old test access requests and data requests cleared</span>
+          <span>App Check reviewed before wide parent rollout</span>
+          <span>Service account files kept off GitHub</span>
+        </div>
+      </article>
+      <article class="panel">
+        <div class="panel-title">
+          <div>
             <p class="eyebrow">Release status</p>
             <h3>Parent test build</h3>
           </div>
@@ -2079,6 +2200,12 @@ function installView() {
           <span>Cleaner fixture cards with directions tucked into one button</span>
           <span>Parents can offer snacks and lifts on fixture availability</span>
           <span>Privacy notice and parent data request process added</span>
+          <span>Parent self-edit added for name and phone number</span>
+          <span>Forgot password reset added to coach and parent sign-in</span>
+          <span>Parent how-to-use guide added</span>
+          <span>Coach contacts can now be updated in the app</span>
+          <span>Venues, pitch pins, parking pins and photo paths can now be updated in the app</span>
+          <span>Firestore rules tightened for parent-safe writes</span>
           <span>Coach contacts added with call and text links</span>
           <span>App icons and red splash screen ready for mobile wrapping</span>
           <span>Capacitor config ready for iOS and Android wrapping</span>
@@ -2109,12 +2236,14 @@ function modalContent(type) {
   if (type === "player") return playerModal();
   if (type === "move-player") return movePlayerModal(state.modal.playerId);
   if (type === "edit-player") return editPlayerModal(state.modal.playerId);
+  if (type === "edit-coach") return editCoachModal(state.modal.coachId);
+  if (type === "edit-venue") return editVenueModal(state.modal.venueId);
   return "";
 }
 
 function directionsModal(eventId = "") {
   const event = state.events.find((item) => item.id === eventId);
-  const venue = event ? eventVenue(event) : venues[0];
+  const venue = event ? eventVenue(event) : venueById("bowencraig");
   return `
     <p class="eyebrow">Matchday directions</p>
     <h2 id="modal-title">${escapeHtml(event?.title || venue.name)}</h2>
@@ -2139,7 +2268,8 @@ function directionsModal(eventId = "") {
 function eventModal(eventId = "") {
   const event = state.events.find((item) => item.id === eventId);
   const editing = Boolean(event);
-  const venue = event ? eventVenue(event) : venues[0];
+  const venueChoices = appVenues();
+  const venue = event ? eventVenue(event) : venueChoices[0];
   const selectedVenueId = event?.venueId || venue.id;
   const isAway = selectedVenueId === "away-custom";
   const type = event?.type || "Fixture";
@@ -2166,7 +2296,7 @@ function eventModal(eventId = "") {
       <label class="field"><span>Finish time</span><select name="finishTime">${timeOptions(finishTime)}</select></label>
       <label class="field"><span>Report time</span><select name="meetTime">${timeOptions(meetTime, true)}</select></label>
       <label class="field"><span>Kit</span><select name="kit">${kitOptions.map((option) => `<option value="${option}" ${option === kit ? "selected" : ""}>${option}</option>`).join("")}</select></label>
-      <label class="field"><span>Venue</span><select name="venueId" data-action="venue-choice">${venues.map((item) => `<option value="${item.id}" ${item.id === selectedVenueId ? "selected" : ""}>${item.name}</option>`).join("")}</select></label>
+      <label class="field"><span>Venue</span><select name="venueId" data-action="venue-choice">${venueChoices.map((item) => `<option value="${item.id}" ${item.id === selectedVenueId ? "selected" : ""}>${item.name}</option>`).join("")}</select></label>
       <div class="away-fields" data-away-fields ${isAway ? "" : "hidden"}>
         <label class="field"><span>Away venue name</span><input name="customVenue" value="${escapeHtml(isAway ? venue.name : "")}" placeholder="Bellfield Estate"></label>
         <label class="field"><span>Away address</span><input name="customAddress" value="${escapeHtml(isAway ? venue.address : "")}" placeholder="Bellfield Estate, Kilmarnock KA1 3XG"></label>
@@ -2243,6 +2373,42 @@ function editPlayerModal(playerId) {
   `;
 }
 
+function editCoachModal(coachId) {
+  const coach = appCoachContacts().find((item) => item.id === coachId) || appCoachContacts()[0] || {};
+  return `
+    <p class="eyebrow">Coach admin</p>
+    <h2 id="modal-title">Edit coach contact</h2>
+    <form class="stacked-form" data-form="edit-coach">
+      <input type="hidden" name="coachId" value="${escapeHtml(coach.id || coachId || "")}">
+      <label class="field"><span>Name</span><input name="name" required value="${escapeHtml(coach.name || "")}"></label>
+      <label class="field"><span>Team</span><select name="teamId"><option value="all" ${coach.teamId === "all" ? "selected" : ""}>All teams</option>${teams.map((team) => `<option value="${team.id}" ${team.id === coach.teamId ? "selected" : ""}>${team.name}</option>`).join("")}</select></label>
+      <label class="field"><span>Role</span><input name="role" required value="${escapeHtml(coach.role || "Coach")}"></label>
+      <label class="field"><span>Phone</span><input name="phone" type="tel" value="${escapeHtml(formatPhone(coach.phone || ""))}" placeholder="07123 456 789"></label>
+      <label class="field"><span>Email</span><input name="email" type="email" value="${escapeHtml(coach.email || "")}" placeholder="Optional"></label>
+      <button class="primary-button" type="submit">Save coach contact</button>
+    </form>
+  `;
+}
+
+function editVenueModal(venueId) {
+  const venue = venueById(venueId);
+  return `
+    <p class="eyebrow">Venue admin</p>
+    <h2 id="modal-title">Edit venue</h2>
+    <form class="stacked-form" data-form="edit-venue">
+      <input type="hidden" name="venueId" value="${escapeHtml(venue.id || venueId || "")}">
+      <label class="field"><span>Name</span><input name="name" required value="${escapeHtml(venue.name || "")}"></label>
+      <label class="field"><span>Pitch address or map pin</span><input name="address" required value="${escapeHtml(venue.address || "")}"></label>
+      <label class="field"><span>Parking address or map pin</span><input name="parkingAddress" value="${escapeHtml(venue.parkingAddress || "")}"></label>
+      <label class="field"><span>Surface</span><input name="surface" value="${escapeHtml(venue.surface || "")}" placeholder="Grass pitch"></label>
+      <label class="field"><span>Notes</span><textarea name="notes" rows="3" placeholder="Useful parent information">${escapeHtml(venue.notes || "")}</textarea></label>
+      <label class="field"><span>Pitch photo path or URL</span><input name="pitchImage" value="${escapeHtml(venue.pitchImage || "")}" placeholder="assets/venues/bowencraig-pitch.jpg"></label>
+      <label class="field"><span>Parking photo path or URL</span><input name="parkingImage" value="${escapeHtml(venue.parkingImage || "")}" placeholder="assets/venues/bowencraig-parking.jpg"></label>
+      <button class="primary-button" type="submit">Save venue</button>
+    </form>
+  `;
+}
+
 function bindFormDefaults() {
   toggleAwayFields();
   toggleResultFields();
@@ -2287,7 +2453,13 @@ document.addEventListener("click", async (event) => {
   }
 
   if (target.dataset.modal) {
-    state.modal = { type: target.dataset.modal, playerId: target.dataset.playerId, eventId: target.dataset.eventId };
+    state.modal = {
+      type: target.dataset.modal,
+      playerId: target.dataset.playerId,
+      eventId: target.dataset.eventId,
+      coachId: target.dataset.coachId,
+      venueId: target.dataset.venueId,
+    };
     render();
     return;
   }
@@ -2306,6 +2478,11 @@ document.addEventListener("click", async (event) => {
 
   if (action === "sign-out") {
     await signOutLive();
+    return;
+  }
+
+  if (action === "reset-password") {
+    await sendPasswordReset(target);
     return;
   }
 
@@ -2412,6 +2589,16 @@ document.addEventListener("click", async (event) => {
     return;
   }
 
+  if (action === "delete-access-request") {
+    await deleteAccessRequest(target.dataset.requestId);
+    return;
+  }
+
+  if (action === "delete-data-request") {
+    await deleteDataRequest(target.dataset.requestId);
+    return;
+  }
+
   if (action === "copy-link") {
     copyText(target.dataset.copy);
     return;
@@ -2515,6 +2702,7 @@ document.addEventListener("submit", async (event) => {
     if (form.dataset.form === "parent-login") await handleParentLogin(data);
     if (form.dataset.form === "coach-login") await handleCoachLogin(data);
     if (form.dataset.form === "request-access") await requestAccess(data);
+    if (form.dataset.form === "parent-profile") await updateParentProfile(data);
     if (form.dataset.form === "data-request") await submitDataRequest(data);
     if (form.dataset.form === "change-password") await changePassword(data);
     if (form.dataset.form === "event") await addEvent(data);
@@ -2523,6 +2711,8 @@ document.addEventListener("submit", async (event) => {
     if (form.dataset.form === "player") await addPlayer(data);
     if (form.dataset.form === "move-player") await movePlayer(data);
     if (form.dataset.form === "edit-player") await editPlayer(data);
+    if (form.dataset.form === "edit-coach") await editCoach(data);
+    if (form.dataset.form === "edit-venue") await editVenue(data);
     saveState();
     render();
   } catch (error) {
@@ -2530,6 +2720,27 @@ document.addEventListener("submit", async (event) => {
     showError(error?.code ? authErrorMessage(error) : "That action could not be completed. Check Firebase permissions and try again.");
   }
 });
+
+async function sendPasswordReset(target) {
+  if (!backendConfig.enabled) {
+    showError("Firebase is not enabled yet. Add the Firebase config before password reset can work.");
+    return;
+  }
+  const form = target.closest("form");
+  const email = String(form?.elements?.email?.value || "").trim();
+  if (!email) {
+    toast("Type your email first, then tap Forgot password");
+    return;
+  }
+  try {
+    const runtime = await ensureFirebase();
+    await runtime.modules.sendPasswordResetEmail(runtime.auth, email);
+    toast("Password reset email sent");
+  } catch (error) {
+    console.error(error);
+    showError(authErrorMessage(error));
+  }
+}
 
 async function handleParentLogin(data) {
   const parentName = String(data.get("parentName") || "").trim();
@@ -2575,6 +2786,7 @@ async function handleFirebaseCoachLogin(email, password) {
       role: "coach",
       userId: credential.user.uid,
       email,
+      phone: profile.phone || "",
       parentName: "",
       coachName: profile.name || "Coach",
       selectedPlayerId: "",
@@ -2625,6 +2837,7 @@ async function handleFirebaseParentLogin({ email, password, parentName, childNam
       role: "parent",
       userId: credential.user.uid,
       email,
+      phone: profile.phone || "",
       parentName: profile.name || parentName,
       coachName: "",
       selectedPlayerId: "",
@@ -2678,6 +2891,26 @@ async function requestAccess(data) {
   });
   await loadLiveStateFromFirebase();
   toast("Access request sent");
+}
+
+async function updateParentProfile(data) {
+  if (!state.session.loggedIn || hasCoachAccess()) return;
+  const runtime = await ensureFirebase();
+  const parentName = String(data.get("parentName") || "").trim();
+  const phone = String(data.get("phone") || "").replace(/\D/g, "");
+  if (!parentName) {
+    toast("Add your name before saving");
+    return;
+  }
+  await runtime.modules.setDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "users", runtime.user.uid), {
+    name: parentName,
+    phone,
+    email: state.session.email || runtime.user.email || "",
+    updatedAt: runtime.modules.serverTimestamp(),
+  }, { merge: true });
+  state.session.parentName = parentName;
+  state.session.phone = phone;
+  toast("Contact details saved");
 }
 
 async function submitDataRequest(data) {
@@ -2745,6 +2978,26 @@ async function resolveDataRequest(requestId) {
   state.dataRequests = state.dataRequests.map((request) => request.id === requestId ? { ...request, status: "resolved" } : request);
   render();
   toast("Data request marked resolved");
+}
+
+async function deleteAccessRequest(requestId) {
+  if (!requireCoach() || !requestId) return;
+  const confirmed = window.confirm("Delete this parent access request? Use this for old test requests or duplicates.");
+  if (!confirmed) return;
+  await deleteLiveDocument("accessRequests", requestId);
+  state.accessRequests = state.accessRequests.filter((request) => request.id !== requestId);
+  render();
+  toast("Access request deleted");
+}
+
+async function deleteDataRequest(requestId) {
+  if (!requireCoach() || !requestId) return;
+  const confirmed = window.confirm("Delete this data request? Only remove it after it has been dealt with or if it was test data.");
+  if (!confirmed) return;
+  await deleteLiveDocument("dataRequests", requestId);
+  state.dataRequests = state.dataRequests.filter((request) => request.id !== requestId);
+  render();
+  toast("Data request deleted");
 }
 
 async function changePassword(data) {
@@ -3035,6 +3288,50 @@ async function editPlayer(data) {
   toast("Player updated");
 }
 
+async function editCoach(data) {
+  if (!requireCoach()) return;
+  const coachId = String(data.get("coachId") || "").trim();
+  if (!coachId) return;
+  const updated = {
+    id: coachId,
+    name: String(data.get("name") || "").trim(),
+    teamId: String(data.get("teamId") || "all"),
+    role: String(data.get("role") || "Coach").trim(),
+    phone: String(data.get("phone") || "").replace(/\D/g, ""),
+    email: String(data.get("email") || "").trim(),
+  };
+  await saveLiveDocument("coachContacts", coachId, updated);
+  state.coachContacts = [
+    ...state.coachContacts.filter((coach) => coach.id !== coachId),
+    updated,
+  ];
+  delete state.modal;
+  toast("Coach contact saved");
+}
+
+async function editVenue(data) {
+  if (!requireCoach()) return;
+  const venueId = String(data.get("venueId") || "").trim();
+  if (!venueId) return;
+  const updated = {
+    id: venueId,
+    name: String(data.get("name") || "").trim(),
+    address: String(data.get("address") || "").trim(),
+    parkingAddress: String(data.get("parkingAddress") || "").trim(),
+    surface: String(data.get("surface") || "").trim(),
+    notes: String(data.get("notes") || "").trim(),
+    pitchImage: String(data.get("pitchImage") || "").trim(),
+    parkingImage: String(data.get("parkingImage") || "").trim(),
+  };
+  await saveLiveDocument("venues", venueId, updated);
+  state.venues = [
+    ...state.venues.filter((venue) => venue.id !== venueId),
+    updated,
+  ];
+  delete state.modal;
+  toast("Venue saved");
+}
+
 async function ensureFirebase() {
   if (!backendConfig.enabled) {
     throw new Error("Firebase config is not enabled yet.");
@@ -3098,11 +3395,13 @@ async function loadLiveStateFromFirebase() {
   try {
     const runtime = await ensureFirebase();
     const role = state.session.role;
-    const [squadDocs, teamDocs, events, announcements] = await Promise.all([
+    const [squadDocs, teamDocs, events, announcements, venueDocs, coachContactDocs] = await Promise.all([
       loadDocs("squads"),
       loadDocs("teams"),
       loadDocs("events"),
       loadDocs("announcements"),
+      loadDocs("venues"),
+      loadDocs("coachContacts"),
     ]);
 
     const squadSource = squadDocs.length ? squadDocs : teamDocs;
@@ -3110,6 +3409,8 @@ async function loadLiveStateFromFirebase() {
     liveTeams = state.teams;
     state.events = events.sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
     state.messages = announcements.sort(sortByCreatedAtDesc);
+    state.venues = venueDocs;
+    state.coachContacts = coachContactDocs;
 
     if (hasCoachAccess(role)) {
       const [players, parentLinks, accessRequests, notifications, users, dataRequests] = await Promise.all([
@@ -3287,6 +3588,12 @@ async function startLiveSubscriptions() {
     }
     await loadEventSubcollections();
     startEventDataSubscriptions(runtime);
+  });
+  watchCollection("venues", (items) => {
+    state.venues = items;
+  });
+  watchCollection("coachContacts", (items) => {
+    state.coachContacts = items;
   });
 
   if (hasCoachAccess()) {
@@ -3581,6 +3888,7 @@ async function bootApp() {
           role,
           userId: user.uid,
           email: user.email || "",
+          phone: profile.phone || "",
           parentName: role === "parent" ? profile.name || user.email || "Parent" : "",
           coachName: ["coach", "admin"].includes(role) ? profile.name || "Coach" : "",
           selectedPlayerId: state.session.selectedPlayerId || "",

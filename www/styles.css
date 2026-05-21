@@ -980,7 +980,7 @@ button:disabled {
 
 .contact-actions {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
   gap: 8px;
   margin-top: 12px;
 }
@@ -1342,6 +1342,32 @@ button:disabled {
   background: var(--paper-2);
   color: var(--red-900);
   font-weight: 850;
+}
+
+.guide-steps {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.guide-steps div {
+  display: grid;
+  gap: 4px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: #fffafa;
+}
+
+.guide-steps strong {
+  color: var(--red-900);
+  font-weight: 950;
+}
+
+.guide-steps p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.42;
 }
 
 .privacy-panel {

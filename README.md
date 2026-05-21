@@ -77,3 +77,7 @@ npm run cap:sync
 ```
 
 See `MOBILE-TESTING.md` for the coach/phone testing path.
+
+## Rollout Hardening
+
+Before opening the app to all parents, work through `ROLLOUT-HARDENING-CHECKLIST.md`. It covers budget alerts, Firestore rules, App Check, test request cleanup, service account safety, and the last coach/parent checks.

@@ -36,6 +36,14 @@ service cloud.firestore {
       return signedIn() && request.auth.uid == userId;
     }
 
+    function parentCreateUserKeys() {
+      return request.resource.data.keys().hasOnly(["role", "name", "email", "phone", "consentAcceptedAt", "messageReadAt", "createdAt", "updatedAt"]);
+    }
+
+    function parentUpdateUserKeys() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(["name", "email", "phone", "consentAcceptedAt", "messageReadAt", "updatedAt"]);
+    }
+
     match /clubs/{clubId} {
       allow read: if signedIn();
       allow create, update, delete: if isCoach(clubId);
@@ -44,12 +52,12 @@ service cloud.firestore {
         allow read: if isCoach(clubId) || ownUserDoc(userId);
         allow create: if ownUserDoc(userId)
           && request.resource.data.role == "parent"
-          && request.resource.data.keys().hasOnly(["role", "name", "email", "phone", "consentAcceptedAt", "messageReadAt", "canSwitchPortal", "createdAt", "updatedAt"]);
+          && parentCreateUserKeys();
         allow update: if isCoach(clubId)
           || (ownUserDoc(userId)
             && resource.data.role == "parent"
             && request.resource.data.role == "parent"
-            && request.resource.data.keys().hasOnly(["role", "name", "email", "phone", "consentAcceptedAt", "messageReadAt", "canSwitchPortal", "createdAt", "updatedAt"]));
+            && parentUpdateUserKeys());
         allow delete: if isCoach(clubId);
       }
 
@@ -73,6 +81,16 @@ service cloud.firestore {
         allow create, update, delete: if isCoach(clubId);
       }
 
+      match /venues/{venueId} {
+        allow read: if signedIn();
+        allow create, update, delete: if isCoach(clubId);
+      }
+
+      match /coachContacts/{coachId} {
+        allow read: if signedIn();
+        allow create, update, delete: if isCoach(clubId);
+      }
+
       match /attendance/{eventId}/players/{playerId} {
         allow read: if isCoach(clubId) || approvedFor(clubId, playerId);
         allow create, update, delete: if isCoach(clubId);
@@ -83,6 +101,8 @@ service cloud.firestore {
         allow create, update: if isCoach(clubId)
           || (approvedFor(clubId, playerId)
             && request.resource.data.playerId == playerId
+            && request.resource.data.eventId == eventId
+            && request.resource.data.updatedBy == request.auth.uid
             && request.resource.data.keys().hasOnly(["playerId", "eventId", "status", "note", "snacks", "liftOffer", "liftSeats", "liftFrom", "updatedBy", "createdAt", "updatedAt"]));
         allow delete: if isCoach(clubId);
       }
@@ -97,7 +117,8 @@ service cloud.firestore {
         allow create: if isParent(clubId)
           && request.resource.data.parentUid == request.auth.uid
           && request.resource.data.status == "pending"
-          && request.resource.data.consent == true;
+          && request.resource.data.consent == true
+          && request.resource.data.keys().hasOnly(["parentUid", "parentName", "email", "childName", "relation", "status", "consent", "playerId", "playerTeamId", "createdAt", "updatedAt"]);
         allow update, delete: if isCoach(clubId);
       }
 
@@ -106,6 +127,7 @@ service cloud.firestore {
         allow create: if isParent(clubId)
           && request.resource.data.parentUid == request.auth.uid
           && request.resource.data.status == "pending"
+          && request.resource.data.requestType in ["delete", "access", "correct", "concern"]
           && request.resource.data.keys().hasOnly(["parentUid", "parentName", "email", "playerId", "playerTeamId", "childName", "requestType", "details", "status", "createdAt", "updatedAt"]);
         allow update, delete: if isCoach(clubId);
       }
@@ -127,7 +149,9 @@ service cloud.firestore {
 
       match /notificationTokens/{tokenId} {
         allow read: if isCoach(clubId) || (signedIn() && resource.data.userId == request.auth.uid);
-        allow create, update: if signedIn() && request.resource.data.userId == request.auth.uid;
+        allow create, update: if signedIn()
+          && request.resource.data.userId == request.auth.uid
+          && request.resource.data.keys().hasOnly(["token", "platform", "userId", "role", "createdAt", "updatedAt"]);
         allow delete: if isCoach(clubId) || (signedIn() && resource.data.userId == request.auth.uid);
       }
     }
