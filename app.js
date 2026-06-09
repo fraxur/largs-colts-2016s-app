@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-11";
+const appVersion = "4.0-live-rollout-12";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -21,6 +21,7 @@ let liveTeams = [];
 let liveUnsubscribers = [];
 let eventDataUnsubscribers = [];
 let builderPointerDrag = null;
+let suppressBuilderClickUntil = 0;
 
 const teams = [
   { id: "orange", name: "Orange", colour: "#f97316" },
@@ -174,7 +175,6 @@ const defaultState = {
     teamFilter: "all",
     levelFilter: "all",
     selectedPlayerId: "",
-    editMode: false,
     customSlots: {
       "7": {},
       "9": {},
@@ -257,6 +257,33 @@ function shortLabelForPosition(position = "") {
     Striker: "ST",
   };
   return labels[position] || position.split(" ").map((part) => part[0]).join("").slice(0, 4).toUpperCase() || "POS";
+}
+
+function pitchPositionFromPoint(x, y) {
+  if (y >= 84 && x >= 35 && x <= 65) return "Goalkeeper";
+  if (y >= 68) {
+    if (x < 38) return "Left Back";
+    if (x > 62) return "Right Back";
+    return "Centre Back";
+  }
+  if (y >= 54) {
+    if (x < 24) return "Left Wing Back";
+    if (x > 76) return "Right Wing Back";
+    return "Defensive Midfielder";
+  }
+  if (y >= 36) {
+    if (x < 30) return "Left Winger";
+    if (x > 70) return "Right Winger";
+    return "Centre Midfield";
+  }
+  if (y >= 20) {
+    if (x < 30) return "Left Winger";
+    if (x > 70) return "Right Winger";
+    return "Attacking Midfielder";
+  }
+  if (x < 30) return "Left Winger";
+  if (x > 70) return "Right Winger";
+  return "Striker";
 }
 
 function starterSlots(format = state.squadBuilder.format) {
@@ -1782,7 +1809,7 @@ function squadBuilderView() {
   const definition = formationDefinition(format);
   const selections = builderSelections(format);
   const pool = builderPlayerPool();
-  const editMode = Boolean(state.squadBuilder.editMode);
+  const selectedPlayer = activePlayers().find((player) => player.id === state.squadBuilder.selectedPlayerId);
   return `
     <section class="toolbar builder-toolbar">
       <div>
@@ -1792,8 +1819,7 @@ function squadBuilderView() {
       <div class="choice-row">
         ${Object.keys(formationDefinitions).map((item) => `<button class="secondary-button ${format === item ? "active-filter" : ""}" type="button" data-action="set-builder-format" data-format="${item}">${formationDefinitions[item].label}</button>`).join("")}
         <button class="secondary-button" type="button" data-action="auto-fill-builder">Auto fill</button>
-        <button class="secondary-button ${editMode ? "active-filter" : ""}" type="button" data-action="toggle-builder-edit">${editMode ? "Done editing shape" : "Edit formation shape"}</button>
-        ${editMode ? '<button class="secondary-button" type="button" data-action="reset-builder-layout">Reset positions</button>' : ""}
+        <button class="secondary-button" type="button" data-action="reset-builder-layout">Reset positions</button>
         <button class="secondary-button danger-button" type="button" data-action="reset-builder">Reset</button>
       </div>
     </section>
@@ -1808,17 +1834,20 @@ function squadBuilderView() {
       </div>
     </section>
     <section class="squad-builder-layout">
-      <article class="panel formation-panel ${editMode ? "editing" : ""}">
+      <article class="panel formation-panel shape-live">
         <div class="panel-title">
           <div>
             <p class="eyebrow">${definition.slots.length} starters and 2 subs</p>
             <h3>Formation board</h3>
           </div>
-          ${editMode ? '<span class="status-pill warn">Drag markers to move them</span>' : state.squadBuilder.selectedPlayerId ? `<span class="status-pill good">Selected: ${escapeHtml(activePlayers().find((player) => player.id === state.squadBuilder.selectedPlayerId)?.name || "Player")}</span>` : ""}
+          <div class="builder-board-status">
+            ${selectedPlayer ? `<span class="status-pill good">Selected: ${escapeHtml(selectedPlayer.name)}</span>` : ""}
+            <span class="status-pill warn">Drag markers to change roles</span>
+          </div>
         </div>
-        ${editMode ? '<p class="muted builder-hint">Drag a position marker around the pitch, or use Edit on the marker to rename its role.</p>' : ""}
+        <p class="muted builder-hint">Drag any marker to reshape the team. Its role updates from the pitch zone automatically, or use Edit for a manual role.</p>
         <div class="formation-pitch formation-${format}" data-builder-pitch>
-          ${starterSlots(format).map((slot) => formationSlot(slot, selections[slot.id], { editable: editMode })).join("")}
+          ${starterSlots(format).map((slot) => formationSlot(slot, selections[slot.id], { editable: true })).join("")}
         </div>
         <div class="formation-bench" data-builder-bench>
           <div>
@@ -3021,16 +3050,8 @@ document.addEventListener("click", async (event) => {
   }
 
   if (action === "assign-builder-slot") {
-    if (state.squadBuilder.editMode) return;
+    if (Date.now() < suppressBuilderClickUntil) return;
     assignBuilderSlot(target.dataset.builderSlot, state.squadBuilder.selectedPlayerId);
-    return;
-  }
-
-  if (action === "toggle-builder-edit") {
-    state.squadBuilder.editMode = !state.squadBuilder.editMode;
-    state.squadBuilder.selectedPlayerId = "";
-    saveState();
-    render();
     return;
   }
 
@@ -3084,14 +3105,14 @@ document.addEventListener("dragstart", (event) => {
 });
 
 document.addEventListener("dragover", (event) => {
-  if (!state.squadBuilder.editMode && event.target.closest("[data-builder-slot]")) {
+  if (event.target.closest("[data-builder-slot]")) {
     event.preventDefault();
   }
 });
 
 document.addEventListener("drop", (event) => {
   const slot = event.target.closest("[data-builder-slot]");
-  if (!slot || !hasCoachAccess() || state.squadBuilder.editMode) return;
+  if (!slot || !hasCoachAccess()) return;
   event.preventDefault();
   const playerId = event.dataTransfer?.getData("playerId") || event.dataTransfer?.getData("text/plain") || state.squadBuilder.selectedPlayerId;
   assignBuilderSlot(slot.dataset.builderSlot, playerId);
@@ -3099,7 +3120,7 @@ document.addEventListener("drop", (event) => {
 
 document.addEventListener("pointerdown", (event) => {
   const marker = event.target.closest("[data-formation-drag]");
-  if (!marker || !hasCoachAccess() || !state.squadBuilder.editMode || event.target.closest("button")) return;
+  if (!marker || !hasCoachAccess() || event.target.closest("button")) return;
   const pitch = marker.closest("[data-builder-pitch]");
   if (!pitch) return;
   builderPointerDrag = {
@@ -3107,14 +3128,19 @@ document.addEventListener("pointerdown", (event) => {
     pitch,
     pointerId: event.pointerId,
     slotId: marker.dataset.formationDrag,
+    startX: event.clientX,
+    startY: event.clientY,
+    moved: false,
   };
-  marker.classList.add("dragging");
   marker.setPointerCapture?.(event.pointerId);
-  event.preventDefault();
 });
 
 document.addEventListener("pointermove", (event) => {
   if (!builderPointerDrag) return;
+  const distance = Math.hypot(event.clientX - builderPointerDrag.startX, event.clientY - builderPointerDrag.startY);
+  if (!builderPointerDrag.moved && distance < 6) return;
+  builderPointerDrag.moved = true;
+  builderPointerDrag.marker.classList.add("dragging");
   const point = pitchPointFromEvent(event, builderPointerDrag.pitch);
   builderPointerDrag.marker.style.left = `${point.x}%`;
   builderPointerDrag.marker.style.top = `${point.y}%`;
@@ -3123,9 +3149,12 @@ document.addEventListener("pointermove", (event) => {
 
 document.addEventListener("pointerup", (event) => {
   if (!builderPointerDrag) return;
-  const point = pitchPointFromEvent(event, builderPointerDrag.pitch);
   builderPointerDrag.marker.releasePointerCapture?.(builderPointerDrag.pointerId);
-  moveBuilderSlot(builderPointerDrag.slotId, point.x, point.y);
+  if (builderPointerDrag.moved) {
+    const point = pitchPointFromEvent(event, builderPointerDrag.pitch);
+    suppressBuilderClickUntil = Date.now() + 500;
+    moveBuilderSlot(builderPointerDrag.slotId, point.x, point.y);
+  }
   builderPointerDrag = null;
 });
 
@@ -3897,10 +3926,15 @@ function moveBuilderSlot(slotId, x, y) {
   const baseSlot = formationDefinition().slots.find((slot) => slot.id === slotId);
   if (!baseSlot) return;
   const overrides = formationSlotOverrides();
+  const previous = overrides[slotId] || {};
+  const previousPosition = playerPositions.includes(previous.position) ? previous.position : baseSlot.position;
+  const nextPosition = pitchPositionFromPoint(x, y);
   overrides[slotId] = {
-    ...(overrides[slotId] || {}),
+    ...previous,
     x,
     y,
+    position: nextPosition,
+    label: nextPosition === previousPosition && previous.label ? previous.label : shortLabelForPosition(nextPosition),
   };
   saveState();
   render();
