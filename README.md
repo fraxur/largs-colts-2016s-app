@@ -9,6 +9,8 @@ Private Firebase-backed team app for Largs Colts 2016s coaches and verified pare
 - Parent access request and coach approval flow
 - Parents only see children approved through `parentLinks`
 - Coaches can manage players, teams, fixtures, training, attendance, availability and announcements
+- Coaches have a private player development page for level, band, foot and playable positions
+- Coaches have a private 7-a-side and 9-a-side squad builder using those development records
 - Attendance writes trigger push notifications through Firebase Cloud Functions
 - Announcements are stored in Firestore and trigger parent push notifications
 - Teams, players, events, availability and attendance can be seeded into Firestore

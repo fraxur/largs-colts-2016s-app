@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-9";
+const appVersion = "4.0-live-rollout-10";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -81,6 +81,51 @@ const venues = [
 ];
 
 const kitOptions = ["Home kit", "Away kit"];
+const developmentLevels = ["Developmental", "Intermediate", "Advanced"];
+const developmentBands = ["Low", "Mid", "High"];
+const footOptions = ["Not set", "Right", "Left", "Both"];
+const playerPositions = [
+  "Goalkeeper",
+  "Left Back",
+  "Centre Back",
+  "Right Back",
+  "Left Wing Back",
+  "Right Wing Back",
+  "Defensive Midfielder",
+  "Centre Midfield",
+  "Attacking Midfielder",
+  "Left Winger",
+  "Right Winger",
+  "Striker",
+];
+const formationDefinitions = {
+  "7": {
+    label: "7-a-side",
+    slots: [
+      { id: "gk", label: "GK", position: "Goalkeeper", x: 50, y: 86 },
+      { id: "lb", label: "LB", position: "Left Back", x: 30, y: 66 },
+      { id: "rb", label: "RB", position: "Right Back", x: 70, y: 66 },
+      { id: "lw", label: "LW", position: "Left Winger", x: 22, y: 40 },
+      { id: "cm", label: "CM", position: "Centre Midfield", x: 50, y: 43 },
+      { id: "rw", label: "RW", position: "Right Winger", x: 78, y: 40 },
+      { id: "st", label: "ST", position: "Striker", x: 50, y: 18 },
+    ],
+  },
+  "9": {
+    label: "9-a-side",
+    slots: [
+      { id: "gk", label: "GK", position: "Goalkeeper", x: 50, y: 88 },
+      { id: "lb", label: "LB", position: "Left Back", x: 22, y: 68 },
+      { id: "cb", label: "CB", position: "Centre Back", x: 50, y: 70 },
+      { id: "rb", label: "RB", position: "Right Back", x: 78, y: 68 },
+      { id: "lm", label: "LM", position: "Left Winger", x: 18, y: 44 },
+      { id: "cm", label: "CM", position: "Centre Midfield", x: 50, y: 46 },
+      { id: "rm", label: "RM", position: "Right Winger", x: 82, y: 44 },
+      { id: "am", label: "AM", position: "Attacking Midfielder", x: 50, y: 28 },
+      { id: "st", label: "ST", position: "Striker", x: 50, y: 13 },
+    ],
+  },
+};
 const leavers = ["Caleb", "Robyn", "Alexander", "Harry Smith"];
 const placeholderParent = "Parent Placeholder";
 const placeholderPhone = "07000 000000";
@@ -122,6 +167,17 @@ const defaultState = {
   users: [],
   coachContacts: [],
   venues: [],
+  playerDevelopment: {},
+  squadBuilder: {
+    format: "7",
+    teamFilter: "all",
+    levelFilter: "all",
+    selectedPlayerId: "",
+    selections: {
+      "7": {},
+      "9": {},
+    },
+  },
   messageReadAt: "",
 };
 
@@ -135,6 +191,55 @@ function defaultAvailabilityEntry(entry = {}) {
     liftFrom: "",
     ...entry,
   };
+}
+
+function defaultDevelopmentRecord(playerId = "", record = {}) {
+  return {
+    id: playerId || record.id || "",
+    playerId: playerId || record.playerId || record.id || "",
+    level: developmentLevels.includes(record.level) ? record.level : "Developmental",
+    band: developmentBands.includes(record.band) ? record.band : "Mid",
+    foot: footOptions.includes(record.foot) ? record.foot : "Not set",
+    positions: Array.isArray(record.positions) ? record.positions.filter((position) => playerPositions.includes(position)) : [],
+    notes: record.notes || "",
+  };
+}
+
+function developmentFor(playerId) {
+  return defaultDevelopmentRecord(playerId, state.playerDevelopment?.[playerId] || {});
+}
+
+function developmentLabel(record) {
+  const safe = defaultDevelopmentRecord(record.playerId, record);
+  return `${safe.band} ${safe.level}`;
+}
+
+function developmentClass(record) {
+  return defaultDevelopmentRecord(record.playerId, record).level.toLowerCase();
+}
+
+function developmentScore(record) {
+  const safe = defaultDevelopmentRecord(record.playerId, record);
+  const levelScore = { Developmental: 0, Intermediate: 3, Advanced: 6 }[safe.level] || 0;
+  const bandScore = { Low: 0, Mid: 1, High: 2 }[safe.band] || 1;
+  return levelScore + bandScore;
+}
+
+function formationDefinition(format = state.squadBuilder.format) {
+  return formationDefinitions[format] || formationDefinitions["7"];
+}
+
+function allBuilderSlots(format = state.squadBuilder.format) {
+  return [
+    ...formationDefinition(format).slots,
+    { id: "sub1", label: "SUB 1", position: "Substitute", isSub: true, x: 25, y: 96 },
+    { id: "sub2", label: "SUB 2", position: "Substitute", isSub: true, x: 75, y: 96 },
+  ];
+}
+
+function builderSelections(format = state.squadBuilder.format) {
+  state.squadBuilder.selections[format] = state.squadBuilder.selections[format] || {};
+  return state.squadBuilder.selections[format];
 }
 
 const coachGuideSteps = [
@@ -256,6 +361,15 @@ function normalizeState(saved) {
   merged.users = merged.users || [];
   merged.coachContacts = merged.coachContacts || [];
   merged.venues = merged.venues || [];
+  merged.playerDevelopment = merged.playerDevelopment || {};
+  merged.squadBuilder = {
+    ...defaultState.squadBuilder,
+    ...(saved.squadBuilder || {}),
+    selections: {
+      ...defaultState.squadBuilder.selections,
+      ...(saved.squadBuilder?.selections || {}),
+    },
+  };
   merged.messageReadAt = merged.messageReadAt || "";
   merged.selectedEventId = merged.selectedEventId || merged.events[0]?.id || "";
   if (!merged.events.some((event) => event.id === merged.selectedEventId)) {
@@ -983,6 +1097,8 @@ function navRoutes(pendingOnly = false) {
     { id: "availability", label: "Availability" },
     { id: "attendance", label: "Attendance" },
     { id: "squads", label: "Teams" },
+    { id: "development", label: "Development" },
+    { id: "squad-builder", label: "Builder" },
     { id: "messages", label: "Messages" },
     { id: "coaches", label: "Coaches" },
     { id: "venues", label: "Venues" },
@@ -991,7 +1107,7 @@ function navRoutes(pendingOnly = false) {
     { id: "install", label: "Install" },
   ];
   const parentRoutes = [
-    ...coachRoutes.filter((item) => item.id !== "squads"),
+    ...coachRoutes.filter((item) => !["squads", "development", "squad-builder"].includes(item.id)),
     { id: "guide", label: "Guide" },
   ];
   const base = hasCoachAccess() ? coachRoutes : parentRoutes;
@@ -1014,6 +1130,8 @@ function pageTitle(route) {
     availability: "Availability",
     attendance: "Attendance",
     squads: "Teams",
+    development: "Player Development",
+    "squad-builder": "Squad Builder",
     messages: "Messages",
     coaches: "Coaches",
     venues: "Venues",
@@ -1048,13 +1166,15 @@ function pendingBanner() {
 function pageView(route) {
   const pendingOnly = state.session.role === "parent" && !approvedPlayers().length;
   if (pendingOnly && !["privacy", "install", "guide"].includes(route)) return accessView();
-  if (!hasCoachAccess() && route === "squads") return homeView();
+  if (!hasCoachAccess() && ["squads", "development", "squad-builder"].includes(route)) return homeView();
   return {
     home: homeView,
     schedule: scheduleView,
     availability: availabilityView,
     attendance: attendanceView,
     squads: squadsView,
+    development: developmentView,
+    "squad-builder": squadBuilderView,
     messages: messagesView,
     coaches: coachesView,
     venues: venuesView,
@@ -1524,6 +1644,173 @@ function teamColumn(team) {
         </div>
       `).join("")}
     </article>
+  `;
+}
+
+function developmentView() {
+  if (!hasCoachAccess()) return homeView();
+  const players = activePlayers().slice().sort((a, b) => teamName(a.teamId).localeCompare(teamName(b.teamId)) || a.name.localeCompare(b.name));
+  const levelCounts = developmentLevels.map((level) => ({
+    level,
+    count: players.filter((player) => developmentFor(player.id).level === level).length,
+  }));
+  return `
+    <section class="toolbar">
+      <div>
+        <p class="eyebrow">Coach only</p>
+        <h2 class="section-heading">Player development</h2>
+      </div>
+      <button class="primary-button" type="button" data-route-target="squad-builder">Open squad builder</button>
+    </section>
+    <section class="metric-grid development-summary">
+      ${levelCounts.map((item) => `<article><strong>${item.count}</strong><span>${escapeHtml(item.level)}</span></article>`).join("")}
+    </section>
+    <section class="development-grid">
+      ${players.map(developmentCard).join("")}
+    </section>
+  `;
+}
+
+function developmentCard(player) {
+  const record = developmentFor(player.id);
+  return `
+    <article class="development-card">
+      <form class="stacked-form" data-form="development-player">
+        <input type="hidden" name="playerId" value="${escapeHtml(player.id)}">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">${teamName(player.teamId)}</p>
+            <h3>${escapeHtml(player.name)}</h3>
+          </div>
+          <span class="level-pill ${developmentClass(record)}">${escapeHtml(developmentLabel(record))}</span>
+        </div>
+        <div class="development-fields">
+          <label class="field">
+            <span>Level</span>
+            <select name="level">${developmentLevels.map((level) => `<option value="${level}" ${record.level === level ? "selected" : ""}>${level}</option>`).join("")}</select>
+          </label>
+          <label class="field">
+            <span>Band</span>
+            <select name="band">${developmentBands.map((band) => `<option value="${band}" ${record.band === band ? "selected" : ""}>${band}</option>`).join("")}</select>
+          </label>
+          <label class="field">
+            <span>Strongest foot</span>
+            <select name="foot">${footOptions.map((foot) => `<option value="${foot}" ${record.foot === foot ? "selected" : ""}>${foot}</option>`).join("")}</select>
+          </label>
+        </div>
+        <fieldset class="position-checks">
+          <legend>Positions</legend>
+          ${playerPositions.map((position) => `
+            <label>
+              <input type="checkbox" name="positions" value="${escapeHtml(position)}" ${record.positions.includes(position) ? "checked" : ""}>
+              <span>${escapeHtml(position)}</span>
+            </label>
+          `).join("")}
+        </fieldset>
+        <label class="field">
+          <span>Coach note</span>
+          <textarea name="notes" rows="3" placeholder="Optional private coach note">${escapeHtml(record.notes || "")}</textarea>
+        </label>
+        <button class="primary-button" type="submit">Save development</button>
+      </form>
+    </article>
+  `;
+}
+
+function squadBuilderView() {
+  if (!hasCoachAccess()) return homeView();
+  const format = state.squadBuilder.format || "7";
+  const definition = formationDefinition(format);
+  const selections = builderSelections(format);
+  const pool = builderPlayerPool();
+  return `
+    <section class="toolbar builder-toolbar">
+      <div>
+        <p class="eyebrow">Coach only</p>
+        <h2 class="section-heading">${definition.label} squad builder</h2>
+      </div>
+      <div class="choice-row">
+        ${Object.keys(formationDefinitions).map((item) => `<button class="secondary-button ${format === item ? "active-filter" : ""}" type="button" data-action="set-builder-format" data-format="${item}">${formationDefinitions[item].label}</button>`).join("")}
+        <button class="secondary-button" type="button" data-action="auto-fill-builder">Auto fill</button>
+        <button class="secondary-button danger-button" type="button" data-action="reset-builder">Reset</button>
+      </div>
+    </section>
+    <section class="builder-filters">
+      <div class="segmented light">
+        <button type="button" class="${state.squadBuilder.teamFilter === "all" ? "active" : ""}" data-action="set-builder-team" data-team-id="all">All</button>
+        ${teams.map((team) => `<button type="button" class="${state.squadBuilder.teamFilter === team.id ? "active" : ""}" data-action="set-builder-team" data-team-id="${team.id}">${team.name}</button>`).join("")}
+      </div>
+      <div class="segmented light">
+        <button type="button" class="${state.squadBuilder.levelFilter === "all" ? "active" : ""}" data-action="set-builder-level" data-level="all">All levels</button>
+        ${developmentLevels.map((level) => `<button type="button" class="${state.squadBuilder.levelFilter === level ? "active" : ""}" data-action="set-builder-level" data-level="${level}">${level}</button>`).join("")}
+      </div>
+    </section>
+    <section class="squad-builder-layout">
+      <article class="panel formation-panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">${definition.slots.length} starters and 2 subs</p>
+            <h3>Formation board</h3>
+          </div>
+          ${state.squadBuilder.selectedPlayerId ? `<span class="status-pill good">Selected: ${escapeHtml(activePlayers().find((player) => player.id === state.squadBuilder.selectedPlayerId)?.name || "Player")}</span>` : ""}
+        </div>
+        <div class="formation-pitch formation-${format}" data-builder-pitch>
+          ${allBuilderSlots(format).map((slot) => formationSlot(slot, selections[slot.id])).join("")}
+        </div>
+      </article>
+      <article class="panel player-pool-panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Player pool</p>
+            <h3>${pool.length} available</h3>
+          </div>
+        </div>
+        <div class="builder-player-pool">
+          ${pool.length ? pool.map(builderPlayerCard).join("") : '<p class="muted">No players match the selected filters.</p>'}
+        </div>
+      </article>
+    </section>
+  `;
+}
+
+function builderPlayerPool() {
+  const selected = new Set(Object.values(builderSelections()).filter(Boolean));
+  return activePlayers()
+    .filter((player) => state.squadBuilder.teamFilter === "all" || player.teamId === state.squadBuilder.teamFilter)
+    .filter((player) => {
+      const record = developmentFor(player.id);
+      return state.squadBuilder.levelFilter === "all" || record.level === state.squadBuilder.levelFilter;
+    })
+    .sort((a, b) => developmentScore(developmentFor(b.id)) - developmentScore(developmentFor(a.id)) || a.name.localeCompare(b.name))
+    .map((player) => ({ ...player, alreadyPicked: selected.has(player.id) }));
+}
+
+function builderPlayerCard(player) {
+  const record = developmentFor(player.id);
+  const selected = state.squadBuilder.selectedPlayerId === player.id;
+  return `
+    <button class="builder-player-card ${selected ? "selected" : ""} ${player.alreadyPicked ? "picked" : ""}" type="button" draggable="true" data-action="select-builder-player" data-player-id="${escapeHtml(player.id)}" data-player-drag="${escapeHtml(player.id)}">
+      <strong>${escapeHtml(player.name)}</strong>
+      <span>${teamName(player.teamId)} - ${escapeHtml(developmentLabel(record))}</span>
+      <small>${escapeHtml(record.foot === "Not set" ? "Foot not set" : `${record.foot} foot`)}</small>
+      <em>${record.positions.length ? escapeHtml(record.positions.join(", ")) : "No positions set"}</em>
+    </button>
+  `;
+}
+
+function formationSlot(slot, playerId) {
+  const player = activePlayers().find((item) => item.id === playerId);
+  const record = player ? developmentFor(player.id) : null;
+  const match = !player || slot.isSub || record.positions.includes(slot.position);
+  return `
+    <div class="formation-slot ${slot.isSub ? "sub-slot" : ""} ${player ? "filled" : ""} ${match ? "" : "position-warning"}" style="left:${slot.x}%; top:${slot.y}%;" data-builder-slot="${escapeHtml(slot.id)}" data-position="${escapeHtml(slot.position)}" data-action="assign-builder-slot">
+      <span class="slot-label">${escapeHtml(slot.label)}</span>
+      <strong>${player ? escapeHtml(player.name) : escapeHtml(slot.position)}</strong>
+      ${player ? `
+        <small>${escapeHtml(developmentLabel(record))}</small>
+        <button class="slot-clear" type="button" data-action="clear-builder-slot" data-slot-id="${escapeHtml(slot.id)}" aria-label="Clear ${escapeHtml(slot.label)}">x</button>
+      ` : ""}
+    </div>
   `;
 }
 
@@ -2205,6 +2492,8 @@ function installView() {
           <span>Parent how-to-use guide added</span>
           <span>Coach contacts can now be updated in the app</span>
           <span>Venues, pitch pins, parking pins and photo paths can now be updated in the app</span>
+          <span>Coach-only player development ratings added</span>
+          <span>Coach-only 7-a-side and 9-a-side squad builder added</span>
           <span>Firestore rules tightened for parent-safe writes</span>
           <span>Coach contacts added with call and text links</span>
           <span>App icons and red splash screen ready for mobile wrapping</span>
@@ -2599,6 +2888,55 @@ document.addEventListener("click", async (event) => {
     return;
   }
 
+  if (action === "set-builder-format") {
+    state.squadBuilder.format = target.dataset.format || "7";
+    state.squadBuilder.selectedPlayerId = "";
+    saveState();
+    render();
+    return;
+  }
+
+  if (action === "set-builder-team") {
+    state.squadBuilder.teamFilter = target.dataset.teamId || "all";
+    saveState();
+    render();
+    return;
+  }
+
+  if (action === "set-builder-level") {
+    state.squadBuilder.levelFilter = target.dataset.level || "all";
+    saveState();
+    render();
+    return;
+  }
+
+  if (action === "select-builder-player") {
+    state.squadBuilder.selectedPlayerId = target.dataset.playerId || "";
+    saveState();
+    render();
+    return;
+  }
+
+  if (action === "assign-builder-slot") {
+    assignBuilderSlot(target.dataset.builderSlot, state.squadBuilder.selectedPlayerId);
+    return;
+  }
+
+  if (action === "clear-builder-slot") {
+    clearBuilderSlot(target.dataset.slotId);
+    return;
+  }
+
+  if (action === "reset-builder") {
+    resetBuilder();
+    return;
+  }
+
+  if (action === "auto-fill-builder") {
+    autoFillBuilder();
+    return;
+  }
+
   if (action === "copy-link") {
     copyText(target.dataset.copy);
     return;
@@ -2608,6 +2946,29 @@ document.addEventListener("click", async (event) => {
     enablePushNotifications();
     return;
   }
+});
+
+document.addEventListener("dragstart", (event) => {
+  const target = event.target.closest("[data-player-drag]");
+  if (!target || !hasCoachAccess()) return;
+  const playerId = target.dataset.playerDrag;
+  state.squadBuilder.selectedPlayerId = playerId;
+  event.dataTransfer?.setData("text/plain", playerId);
+  event.dataTransfer?.setData("playerId", playerId);
+});
+
+document.addEventListener("dragover", (event) => {
+  if (event.target.closest("[data-builder-slot]")) {
+    event.preventDefault();
+  }
+});
+
+document.addEventListener("drop", (event) => {
+  const slot = event.target.closest("[data-builder-slot]");
+  if (!slot || !hasCoachAccess()) return;
+  event.preventDefault();
+  const playerId = event.dataTransfer?.getData("playerId") || event.dataTransfer?.getData("text/plain") || state.squadBuilder.selectedPlayerId;
+  assignBuilderSlot(slot.dataset.builderSlot, playerId);
 });
 
 document.addEventListener("change", async (event) => {
@@ -2713,6 +3074,7 @@ document.addEventListener("submit", async (event) => {
     if (form.dataset.form === "edit-player") await editPlayer(data);
     if (form.dataset.form === "edit-coach") await editCoach(data);
     if (form.dataset.form === "edit-venue") await editVenue(data);
+    if (form.dataset.form === "development-player") await savePlayerDevelopment(data);
     saveState();
     render();
   } catch (error) {
@@ -3332,6 +3694,97 @@ async function editVenue(data) {
   toast("Venue saved");
 }
 
+async function savePlayerDevelopment(data) {
+  if (!requireCoach()) return;
+  const playerId = String(data.get("playerId") || "").trim();
+  const player = activePlayers().find((item) => item.id === playerId);
+  if (!player) return;
+  const record = defaultDevelopmentRecord(playerId, {
+    level: String(data.get("level") || "Developmental"),
+    band: String(data.get("band") || "Mid"),
+    foot: String(data.get("foot") || "Not set"),
+    positions: data.getAll("positions").map(String),
+    notes: String(data.get("notes") || "").trim(),
+  });
+  const payload = {
+    ...record,
+    playerName: player.name,
+    teamId: player.teamId,
+    reviewedBy: state.session.userId,
+    reviewedByName: state.session.coachName || "Coach",
+  };
+  await saveLiveDocument("playerDevelopment", playerId, payload);
+  state.playerDevelopment[playerId] = payload;
+  toast("Development record saved");
+}
+
+function assignBuilderSlot(slotId, playerId) {
+  if (!requireCoach() || !slotId || !playerId) return;
+  const player = activePlayers().find((item) => item.id === playerId);
+  if (!player) return;
+  const selections = builderSelections();
+  Object.keys(selections).forEach((key) => {
+    if (selections[key] === playerId) delete selections[key];
+  });
+  selections[slotId] = playerId;
+  state.squadBuilder.selectedPlayerId = "";
+  saveState();
+  render();
+}
+
+function clearBuilderSlot(slotId) {
+  if (!requireCoach() || !slotId) return;
+  delete builderSelections()[slotId];
+  saveState();
+  render();
+}
+
+function resetBuilder() {
+  if (!requireCoach()) return;
+  const confirmed = window.confirm("Clear this formation board?");
+  if (!confirmed) return;
+  state.squadBuilder.selections[state.squadBuilder.format] = {};
+  state.squadBuilder.selectedPlayerId = "";
+  saveState();
+  render();
+}
+
+function autoFillBuilder() {
+  if (!requireCoach()) return;
+  const selections = {};
+  const used = new Set();
+  const players = activePlayers()
+    .filter((player) => state.squadBuilder.teamFilter === "all" || player.teamId === state.squadBuilder.teamFilter)
+    .filter((player) => {
+      const record = developmentFor(player.id);
+      return state.squadBuilder.levelFilter === "all" || record.level === state.squadBuilder.levelFilter;
+    });
+
+  allBuilderSlots().forEach((slot) => {
+    const candidate = players
+      .filter((player) => !used.has(player.id))
+      .map((player) => {
+        const record = developmentFor(player.id);
+        const positionMatch = slot.isSub || record.positions.includes(slot.position);
+        return {
+          player,
+          score: developmentScore(record) + (positionMatch ? 100 : 0) + (record.positions.length ? 5 : 0),
+        };
+      })
+      .sort((a, b) => b.score - a.score || a.player.name.localeCompare(b.player.name))[0]?.player;
+    if (candidate) {
+      selections[slot.id] = candidate.id;
+      used.add(candidate.id);
+    }
+  });
+
+  state.squadBuilder.selections[state.squadBuilder.format] = selections;
+  state.squadBuilder.selectedPlayerId = "";
+  saveState();
+  render();
+  toast("Formation filled");
+}
+
 async function ensureFirebase() {
   if (!backendConfig.enabled) {
     throw new Error("Firebase config is not enabled yet.");
@@ -3413,13 +3866,14 @@ async function loadLiveStateFromFirebase() {
     state.coachContacts = coachContactDocs;
 
     if (hasCoachAccess(role)) {
-      const [players, parentLinks, accessRequests, notifications, users, dataRequests] = await Promise.all([
+      const [players, parentLinks, accessRequests, notifications, users, dataRequests, playerDevelopment] = await Promise.all([
         loadDocs("players"),
         loadDocs("parentLinks"),
         loadDocs("accessRequests"),
         loadDocs("notifications"),
         loadDocs("users"),
         loadDocs("dataRequests"),
+        loadDocs("playerDevelopment"),
       ]);
       state.players = players.sort((a, b) => a.name.localeCompare(b.name));
       state.parentLinks = parentLinks;
@@ -3427,6 +3881,7 @@ async function loadLiveStateFromFirebase() {
       state.notifications = notifications.sort(sortByCreatedAtDesc);
       state.users = users;
       state.dataRequests = dataRequests.sort(sortByCreatedAtDesc);
+      state.playerDevelopment = Object.fromEntries(playerDevelopment.map((record) => [record.playerId || record.id, defaultDevelopmentRecord(record.playerId || record.id, record)]));
     } else {
       const uid = runtime.user.uid;
       const [parentLinks, accessRequests, notifications, dataRequests] = await Promise.all([
@@ -3440,6 +3895,7 @@ async function loadLiveStateFromFirebase() {
       state.notifications = notifications.sort(sortByCreatedAtDesc);
       state.dataRequests = dataRequests.sort(sortByCreatedAtDesc);
       state.players = await loadApprovedPlayerDocs(parentLinks);
+      state.playerDevelopment = {};
     }
 
     await loadEventSubcollections();
@@ -3616,6 +4072,9 @@ async function startLiveSubscriptions() {
     });
     watchCollection("dataRequests", (items) => {
       state.dataRequests = items.sort(sortByCreatedAtDesc);
+    });
+    watchCollection("playerDevelopment", (items) => {
+      state.playerDevelopment = Object.fromEntries(items.map((record) => [record.playerId || record.id, defaultDevelopmentRecord(record.playerId || record.id, record)]));
     });
   } else {
     const uid = state.session.userId;

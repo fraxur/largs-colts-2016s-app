@@ -44,6 +44,10 @@ service cloud.firestore {
       return request.resource.data.diff(resource.data).affectedKeys().hasOnly(["name", "email", "phone", "consentAcceptedAt", "messageReadAt", "updatedAt"]);
     }
 
+    function playerDevelopmentKeys() {
+      return request.resource.data.keys().hasOnly(["playerId", "id", "playerName", "teamId", "level", "band", "foot", "positions", "notes", "reviewedBy", "reviewedByName", "createdAt", "updatedAt"]);
+    }
+
     match /clubs/{clubId} {
       allow read: if signedIn();
       allow create, update, delete: if isCoach(clubId);
@@ -74,6 +78,17 @@ service cloud.firestore {
       match /players/{playerId} {
         allow read: if isCoach(clubId) || approvedFor(clubId, playerId);
         allow create, update, delete: if isCoach(clubId);
+      }
+
+      match /playerDevelopment/{playerId} {
+        allow read: if isCoach(clubId);
+        allow create, update: if isCoach(clubId)
+          && request.resource.data.playerId == playerId
+          && request.resource.data.level in ["Developmental", "Intermediate", "Advanced"]
+          && request.resource.data.band in ["Low", "Mid", "High"]
+          && request.resource.data.foot in ["Not set", "Right", "Left", "Both"]
+          && playerDevelopmentKeys();
+        allow delete: if isCoach(clubId);
       }
 
       match /events/{eventId} {
