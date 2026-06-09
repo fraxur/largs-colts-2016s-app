@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-10";
+const appVersion = "4.0-live-rollout-11";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -20,6 +20,7 @@ const clubId = "largs-colts-2016s";
 let liveTeams = [];
 let liveUnsubscribers = [];
 let eventDataUnsubscribers = [];
+let builderPointerDrag = null;
 
 const teams = [
   { id: "orange", name: "Orange", colour: "#f97316" },
@@ -173,6 +174,11 @@ const defaultState = {
     teamFilter: "all",
     levelFilter: "all",
     selectedPlayerId: "",
+    editMode: false,
+    customSlots: {
+      "7": {},
+      "9": {},
+    },
     selections: {
       "7": {},
       "9": {},
@@ -229,11 +235,60 @@ function formationDefinition(format = state.squadBuilder.format) {
   return formationDefinitions[format] || formationDefinitions["7"];
 }
 
+function formationSlotOverrides(format = state.squadBuilder.format) {
+  state.squadBuilder.customSlots = state.squadBuilder.customSlots || { "7": {}, "9": {} };
+  state.squadBuilder.customSlots[format] = state.squadBuilder.customSlots[format] || {};
+  return state.squadBuilder.customSlots[format];
+}
+
+function shortLabelForPosition(position = "") {
+  const labels = {
+    Goalkeeper: "GK",
+    "Left Back": "LB",
+    "Centre Back": "CB",
+    "Right Back": "RB",
+    "Left Wing Back": "LWB",
+    "Right Wing Back": "RWB",
+    "Defensive Midfielder": "DM",
+    "Centre Midfield": "CM",
+    "Attacking Midfielder": "AM",
+    "Left Winger": "LW",
+    "Right Winger": "RW",
+    Striker: "ST",
+  };
+  return labels[position] || position.split(" ").map((part) => part[0]).join("").slice(0, 4).toUpperCase() || "POS";
+}
+
+function starterSlots(format = state.squadBuilder.format) {
+  const overrides = formationSlotOverrides(format);
+  return formationDefinition(format).slots.map((slot) => {
+    const custom = overrides[slot.id] || {};
+    const x = Number(custom.x);
+    const y = Number(custom.y);
+    return {
+      ...slot,
+      ...custom,
+      id: slot.id,
+      isSub: false,
+      position: playerPositions.includes(custom.position) ? custom.position : slot.position,
+      label: String(custom.label || slot.label || shortLabelForPosition(custom.position || slot.position)).slice(0, 8),
+      x: Number.isFinite(x) ? x : slot.x,
+      y: Number.isFinite(y) ? y : slot.y,
+    };
+  });
+}
+
+function substituteSlots() {
+  return [
+    { id: "sub1", label: "SUB 1", position: "Substitute", isSub: true },
+    { id: "sub2", label: "SUB 2", position: "Substitute", isSub: true },
+  ];
+}
+
 function allBuilderSlots(format = state.squadBuilder.format) {
   return [
-    ...formationDefinition(format).slots,
-    { id: "sub1", label: "SUB 1", position: "Substitute", isSub: true, x: 25, y: 96 },
-    { id: "sub2", label: "SUB 2", position: "Substitute", isSub: true, x: 75, y: 96 },
+    ...starterSlots(format),
+    ...substituteSlots(),
   ];
 }
 
@@ -365,6 +420,10 @@ function normalizeState(saved) {
   merged.squadBuilder = {
     ...defaultState.squadBuilder,
     ...(saved.squadBuilder || {}),
+    customSlots: {
+      ...defaultState.squadBuilder.customSlots,
+      ...(saved.squadBuilder?.customSlots || {}),
+    },
     selections: {
       ...defaultState.squadBuilder.selections,
       ...(saved.squadBuilder?.selections || {}),
@@ -1723,6 +1782,7 @@ function squadBuilderView() {
   const definition = formationDefinition(format);
   const selections = builderSelections(format);
   const pool = builderPlayerPool();
+  const editMode = Boolean(state.squadBuilder.editMode);
   return `
     <section class="toolbar builder-toolbar">
       <div>
@@ -1732,6 +1792,8 @@ function squadBuilderView() {
       <div class="choice-row">
         ${Object.keys(formationDefinitions).map((item) => `<button class="secondary-button ${format === item ? "active-filter" : ""}" type="button" data-action="set-builder-format" data-format="${item}">${formationDefinitions[item].label}</button>`).join("")}
         <button class="secondary-button" type="button" data-action="auto-fill-builder">Auto fill</button>
+        <button class="secondary-button ${editMode ? "active-filter" : ""}" type="button" data-action="toggle-builder-edit">${editMode ? "Done editing shape" : "Edit formation shape"}</button>
+        ${editMode ? '<button class="secondary-button" type="button" data-action="reset-builder-layout">Reset positions</button>' : ""}
         <button class="secondary-button danger-button" type="button" data-action="reset-builder">Reset</button>
       </div>
     </section>
@@ -1746,16 +1808,24 @@ function squadBuilderView() {
       </div>
     </section>
     <section class="squad-builder-layout">
-      <article class="panel formation-panel">
+      <article class="panel formation-panel ${editMode ? "editing" : ""}">
         <div class="panel-title">
           <div>
             <p class="eyebrow">${definition.slots.length} starters and 2 subs</p>
             <h3>Formation board</h3>
           </div>
-          ${state.squadBuilder.selectedPlayerId ? `<span class="status-pill good">Selected: ${escapeHtml(activePlayers().find((player) => player.id === state.squadBuilder.selectedPlayerId)?.name || "Player")}</span>` : ""}
+          ${editMode ? '<span class="status-pill warn">Drag markers to move them</span>' : state.squadBuilder.selectedPlayerId ? `<span class="status-pill good">Selected: ${escapeHtml(activePlayers().find((player) => player.id === state.squadBuilder.selectedPlayerId)?.name || "Player")}</span>` : ""}
         </div>
+        ${editMode ? '<p class="muted builder-hint">Drag a position marker around the pitch, or use Edit on the marker to rename its role.</p>' : ""}
         <div class="formation-pitch formation-${format}" data-builder-pitch>
-          ${allBuilderSlots(format).map((slot) => formationSlot(slot, selections[slot.id])).join("")}
+          ${starterSlots(format).map((slot) => formationSlot(slot, selections[slot.id], { editable: editMode })).join("")}
+        </div>
+        <div class="formation-bench" data-builder-bench>
+          <div>
+            <p class="eyebrow">Bench</p>
+            <h4>Substitutes</h4>
+          </div>
+          ${substituteSlots().map((slot) => formationSlot(slot, selections[slot.id])).join("")}
         </div>
       </article>
       <article class="panel player-pool-panel">
@@ -1798,18 +1868,22 @@ function builderPlayerCard(player) {
   `;
 }
 
-function formationSlot(slot, playerId) {
+function formationSlot(slot, playerId, options = {}) {
   const player = activePlayers().find((item) => item.id === playerId);
   const record = player ? developmentFor(player.id) : null;
   const match = !player || slot.isSub || record.positions.includes(slot.position);
+  const editable = Boolean(options.editable && !slot.isSub);
+  const style = slot.isSub ? "" : `style="left:${slot.x}%; top:${slot.y}%;"`;
+  const dragMarker = editable ? `data-formation-drag="${escapeHtml(slot.id)}"` : "";
   return `
-    <div class="formation-slot ${slot.isSub ? "sub-slot" : ""} ${player ? "filled" : ""} ${match ? "" : "position-warning"}" style="left:${slot.x}%; top:${slot.y}%;" data-builder-slot="${escapeHtml(slot.id)}" data-position="${escapeHtml(slot.position)}" data-action="assign-builder-slot">
+    <div class="formation-slot ${slot.isSub ? "sub-slot" : ""} ${editable ? "editable-slot" : ""} ${player ? "filled" : ""} ${match ? "" : "position-warning"}" ${style} data-builder-slot="${escapeHtml(slot.id)}" data-position="${escapeHtml(slot.position)}" data-action="assign-builder-slot" ${dragMarker}>
       <span class="slot-label">${escapeHtml(slot.label)}</span>
       <strong>${player ? escapeHtml(player.name) : escapeHtml(slot.position)}</strong>
-      ${player ? `
-        <small>${escapeHtml(developmentLabel(record))}</small>
-        <button class="slot-clear" type="button" data-action="clear-builder-slot" data-slot-id="${escapeHtml(slot.id)}" aria-label="Clear ${escapeHtml(slot.label)}">x</button>
-      ` : ""}
+      ${player ? `<small>${escapeHtml(developmentLabel(record))}</small>` : editable ? '<small>Drag to move</small>' : ""}
+      <div class="slot-actions">
+        ${editable ? `<button class="slot-edit" type="button" data-action="edit-builder-slot" data-slot-id="${escapeHtml(slot.id)}">Edit</button>` : ""}
+        ${player ? `<button class="slot-clear" type="button" data-action="clear-builder-slot" data-slot-id="${escapeHtml(slot.id)}" aria-label="Clear ${escapeHtml(slot.label)}">x</button>` : ""}
+      </div>
     </div>
   `;
 }
@@ -2527,7 +2601,36 @@ function modalContent(type) {
   if (type === "edit-player") return editPlayerModal(state.modal.playerId);
   if (type === "edit-coach") return editCoachModal(state.modal.coachId);
   if (type === "edit-venue") return editVenueModal(state.modal.venueId);
+  if (type === "edit-builder-slot") return editBuilderSlotModal(state.modal.slotId);
   return "";
+}
+
+function editBuilderSlotModal(slotId = "") {
+  const slot = starterSlots().find((item) => item.id === slotId);
+  if (!slot) {
+    return `
+      <p class="eyebrow">Formation marker</p>
+      <h2 id="modal-title">Position not found</h2>
+      <p class="muted">Close this and try the formation board again.</p>
+    `;
+  }
+  return `
+    <p class="eyebrow">Formation marker</p>
+    <h2 id="modal-title">Edit ${escapeHtml(slot.label)}</h2>
+    <form class="stacked-form" data-form="edit-builder-slot">
+      <input type="hidden" name="slotId" value="${escapeHtml(slot.id)}">
+      <label class="field">
+        <span>Role</span>
+        <select name="position">${playerPositions.map((position) => `<option value="${escapeHtml(position)}" ${position === slot.position ? "selected" : ""}>${escapeHtml(position)}</option>`).join("")}</select>
+      </label>
+      <label class="field">
+        <span>Short label</span>
+        <input name="label" maxlength="8" value="${escapeHtml(slot.label)}" placeholder="${escapeHtml(shortLabelForPosition(slot.position))}">
+      </label>
+      <p class="muted">The role is used by Auto fill to match suitable players. The short label is what appears on the pitch marker.</p>
+      <button class="primary-button" type="submit">Save position</button>
+    </form>
+  `;
 }
 
 function directionsModal(eventId = "") {
@@ -2918,7 +3021,30 @@ document.addEventListener("click", async (event) => {
   }
 
   if (action === "assign-builder-slot") {
+    if (state.squadBuilder.editMode) return;
     assignBuilderSlot(target.dataset.builderSlot, state.squadBuilder.selectedPlayerId);
+    return;
+  }
+
+  if (action === "toggle-builder-edit") {
+    state.squadBuilder.editMode = !state.squadBuilder.editMode;
+    state.squadBuilder.selectedPlayerId = "";
+    saveState();
+    render();
+    return;
+  }
+
+  if (action === "edit-builder-slot") {
+    state.modal = {
+      type: "edit-builder-slot",
+      slotId: target.dataset.slotId,
+    };
+    render();
+    return;
+  }
+
+  if (action === "reset-builder-layout") {
+    resetBuilderLayout();
     return;
   }
 
@@ -2958,17 +3084,54 @@ document.addEventListener("dragstart", (event) => {
 });
 
 document.addEventListener("dragover", (event) => {
-  if (event.target.closest("[data-builder-slot]")) {
+  if (!state.squadBuilder.editMode && event.target.closest("[data-builder-slot]")) {
     event.preventDefault();
   }
 });
 
 document.addEventListener("drop", (event) => {
   const slot = event.target.closest("[data-builder-slot]");
-  if (!slot || !hasCoachAccess()) return;
+  if (!slot || !hasCoachAccess() || state.squadBuilder.editMode) return;
   event.preventDefault();
   const playerId = event.dataTransfer?.getData("playerId") || event.dataTransfer?.getData("text/plain") || state.squadBuilder.selectedPlayerId;
   assignBuilderSlot(slot.dataset.builderSlot, playerId);
+});
+
+document.addEventListener("pointerdown", (event) => {
+  const marker = event.target.closest("[data-formation-drag]");
+  if (!marker || !hasCoachAccess() || !state.squadBuilder.editMode || event.target.closest("button")) return;
+  const pitch = marker.closest("[data-builder-pitch]");
+  if (!pitch) return;
+  builderPointerDrag = {
+    marker,
+    pitch,
+    pointerId: event.pointerId,
+    slotId: marker.dataset.formationDrag,
+  };
+  marker.classList.add("dragging");
+  marker.setPointerCapture?.(event.pointerId);
+  event.preventDefault();
+});
+
+document.addEventListener("pointermove", (event) => {
+  if (!builderPointerDrag) return;
+  const point = pitchPointFromEvent(event, builderPointerDrag.pitch);
+  builderPointerDrag.marker.style.left = `${point.x}%`;
+  builderPointerDrag.marker.style.top = `${point.y}%`;
+  event.preventDefault();
+});
+
+document.addEventListener("pointerup", (event) => {
+  if (!builderPointerDrag) return;
+  const point = pitchPointFromEvent(event, builderPointerDrag.pitch);
+  builderPointerDrag.marker.releasePointerCapture?.(builderPointerDrag.pointerId);
+  moveBuilderSlot(builderPointerDrag.slotId, point.x, point.y);
+  builderPointerDrag = null;
+});
+
+document.addEventListener("pointercancel", () => {
+  builderPointerDrag = null;
+  render();
 });
 
 document.addEventListener("change", async (event) => {
@@ -3075,6 +3238,7 @@ document.addEventListener("submit", async (event) => {
     if (form.dataset.form === "edit-coach") await editCoach(data);
     if (form.dataset.form === "edit-venue") await editVenue(data);
     if (form.dataset.form === "development-player") await savePlayerDevelopment(data);
+    if (form.dataset.form === "edit-builder-slot") saveBuilderSlotEdit(data);
     saveState();
     render();
   } catch (error) {
@@ -3718,6 +3882,49 @@ async function savePlayerDevelopment(data) {
   toast("Development record saved");
 }
 
+function pitchPointFromEvent(event, pitch) {
+  const rect = pitch.getBoundingClientRect();
+  const rawX = ((event.clientX - rect.left) / rect.width) * 100;
+  const rawY = ((event.clientY - rect.top) / rect.height) * 100;
+  return {
+    x: Math.round(Math.min(92, Math.max(8, rawX)) * 10) / 10,
+    y: Math.round(Math.min(92, Math.max(8, rawY)) * 10) / 10,
+  };
+}
+
+function moveBuilderSlot(slotId, x, y) {
+  if (!hasCoachAccess() || !slotId) return;
+  const baseSlot = formationDefinition().slots.find((slot) => slot.id === slotId);
+  if (!baseSlot) return;
+  const overrides = formationSlotOverrides();
+  overrides[slotId] = {
+    ...(overrides[slotId] || {}),
+    x,
+    y,
+  };
+  saveState();
+  render();
+}
+
+function saveBuilderSlotEdit(data) {
+  if (!requireCoach()) return;
+  const slotId = String(data.get("slotId") || "");
+  const position = String(data.get("position") || "");
+  const baseSlot = formationDefinition().slots.find((slot) => slot.id === slotId);
+  if (!baseSlot || !playerPositions.includes(position)) return;
+  const label = String(data.get("label") || shortLabelForPosition(position)).trim().toUpperCase().slice(0, 8);
+  const overrides = formationSlotOverrides();
+  overrides[slotId] = {
+    ...(overrides[slotId] || {}),
+    position,
+    label: label || shortLabelForPosition(position),
+  };
+  delete state.modal;
+  saveState();
+  render();
+  toast("Formation position updated");
+}
+
 function assignBuilderSlot(slotId, playerId) {
   if (!requireCoach() || !slotId || !playerId) return;
   const player = activePlayers().find((item) => item.id === playerId);
@@ -3747,6 +3954,16 @@ function resetBuilder() {
   state.squadBuilder.selectedPlayerId = "";
   saveState();
   render();
+}
+
+function resetBuilderLayout() {
+  if (!requireCoach()) return;
+  const confirmed = window.confirm("Reset the marker positions and role labels for this formation?");
+  if (!confirmed) return;
+  state.squadBuilder.customSlots[state.squadBuilder.format] = {};
+  saveState();
+  render();
+  toast("Formation shape reset");
 }
 
 function autoFillBuilder() {
