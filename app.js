@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-12";
+const appVersion = "4.0-live-rollout-13";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -21,13 +21,15 @@ let liveTeams = [];
 let liveUnsubscribers = [];
 let eventDataUnsubscribers = [];
 let builderPointerDrag = null;
+let builderArrowDraft = null;
 let suppressBuilderClickUntil = 0;
 
+const unassignedTeam = { id: "unassigned", name: "Unassigned", colour: "#6b7280" };
 const teams = [
-  { id: "orange", name: "Orange", colour: "#f97316" },
-  { id: "blue", name: "Blue", colour: "#2563eb" },
-  { id: "yellow", name: "Yellow", colour: "#eab308" },
+  { id: "team1", name: "Team 1", colour: "#850008" },
+  { id: "team2", name: "Team 2", colour: "#d3a84a" },
 ];
+const legacyTeamIds = new Set(["orange", "blue", "yellow", "", null, undefined]);
 liveTeams = teams;
 const coachRoles = ["coach", "admin"];
 
@@ -175,6 +177,11 @@ const defaultState = {
     teamFilter: "all",
     levelFilter: "all",
     selectedPlayerId: "",
+    arrowMode: false,
+    arrows: {
+      "7": [],
+      "9": [],
+    },
     customSlots: {
       "7": {},
       "9": {},
@@ -324,6 +331,12 @@ function builderSelections(format = state.squadBuilder.format) {
   return state.squadBuilder.selections[format];
 }
 
+function builderArrows(format = state.squadBuilder.format) {
+  state.squadBuilder.arrows = state.squadBuilder.arrows || { "7": [], "9": [] };
+  state.squadBuilder.arrows[format] = state.squadBuilder.arrows[format] || [];
+  return state.squadBuilder.arrows[format];
+}
+
 const coachGuideSteps = [
   {
     route: "home",
@@ -341,13 +354,13 @@ const coachGuideSteps = [
     route: "schedule",
     target: "schedule-toolbar",
     title: "Fixtures and training",
-    body: "Use the team filters to show All, Orange, Blue or Yellow. The add button lets a coach add either a fixture or training session.",
+    body: "Use the team filters to show All, Team 1 or Team 2. The add button lets a coach add either a fixture or training session.",
   },
   {
     route: "schedule",
     target: "event-list",
-    title: "Weekend matches",
-    body: "The coach can see the Blue home match and the Yellow away match, including kick-off time, report time, venue, map buttons and the Remove button for test fixtures.",
+    title: "Fixture cards",
+    body: "Fixture cards show kick-off time, report time, venue, map buttons and the Remove button for fixtures that need cleared.",
   },
   {
     route: "schedule",
@@ -373,13 +386,13 @@ const coachGuideSteps = [
     route: "squads",
     target: "team-board",
     title: "Teams and squads",
-    body: "The team board lists Orange, Blue and Yellow. Coaches can add a player, edit parent contact placeholders, or move a player between team colours.",
+    body: "The team board lists Unassigned, Team 1 and Team 2. Coaches can add a player, edit parent contact placeholders, or move a player when squads are agreed.",
   },
   {
     route: "messages",
     target: "messages-panel",
     title: "Coach messages",
-    body: "Messages can go to all parents or a selected colour group. In the real rollout this area links naturally to push notifications.",
+    body: "Messages can go to all parents or a selected team. In the real rollout this area links naturally to push notifications.",
   },
   {
     route: "coaches",
@@ -433,8 +446,10 @@ function normalizeState(saved) {
     session: { ...defaultState.session, ...(saved.session || {}) },
   };
 
-  merged.players = (merged.players || []).filter((player) => !leavers.includes(player.name));
-  merged.teams = merged.teams?.length ? merged.teams : teams;
+  merged.players = (merged.players || [])
+    .filter((player) => !leavers.includes(player.name))
+    .map(normalizePlayerRecord);
+  merged.teams = normalizeLiveTeams(merged.teams?.length ? merged.teams : teams);
   liveTeams = merged.teams;
   merged.events = merged.events || [];
   merged.messages = merged.messages || [];
@@ -451,6 +466,10 @@ function normalizeState(saved) {
       ...defaultState.squadBuilder.customSlots,
       ...(saved.squadBuilder?.customSlots || {}),
     },
+    arrows: {
+      ...defaultState.squadBuilder.arrows,
+      ...(saved.squadBuilder?.arrows || {}),
+    },
     selections: {
       ...defaultState.squadBuilder.selections,
       ...(saved.squadBuilder?.selections || {}),
@@ -462,6 +481,9 @@ function normalizeState(saved) {
     merged.selectedEventId = merged.events[0]?.id || "";
   }
   merged.scheduleFilter = merged.scheduleFilter || "all";
+  if (merged.scheduleFilter !== "all" && !eventTeamOptions().some((team) => team.id === merged.scheduleFilter)) {
+    merged.scheduleFilter = "all";
+  }
   merged.schedulePeriod = merged.schedulePeriod || "upcoming";
   merged.coachGuide = {
     ...defaultState.coachGuide,
@@ -470,6 +492,8 @@ function normalizeState(saved) {
   if (merged.coachGuide.step >= coachGuideSteps.length) {
     merged.coachGuide.step = coachGuideSteps.length - 1;
   }
+  merged.squadBuilder.teamFilter = normalizeTeamId(merged.squadBuilder.teamFilter);
+  if (!["all", ...filterTeamOptions().map((team) => team.id)].includes(merged.squadBuilder.teamFilter)) merged.squadBuilder.teamFilter = "all";
 
   merged.events.forEach((event) => {
     event.venueId = event.venueId || venueIdFromName(event.venue);
@@ -542,9 +566,57 @@ function sameName(a, b) {
   return String(a || "").trim().toLowerCase() === String(b || "").trim().toLowerCase();
 }
 
+function normalizeTeamId(teamId) {
+  if (teamId === "all") return "all";
+  if (teams.some((team) => team.id === teamId)) return teamId;
+  if (teamId === "unassigned" || legacyTeamIds.has(teamId)) return "unassigned";
+  return "unassigned";
+}
+
+function normalizeEventTeamId(teamId) {
+  if (teamId === "all") return "all";
+  if (teams.some((team) => team.id === teamId)) return teamId;
+  return "all";
+}
+
+function normalizePlayerRecord(player) {
+  return {
+    ...player,
+    teamId: normalizeTeamId(player.teamId),
+  };
+}
+
+function appTeams() {
+  return normalizeLiveTeams(liveTeams);
+}
+
+function normalizeLiveTeams(items = []) {
+  const liveById = new Map((items || []).filter((team) => teams.some((item) => item.id === team.id)).map((team) => [team.id, team]));
+  return teams.map((team) => ({
+    ...team,
+    ...(liveById.get(team.id) || {}),
+    id: team.id,
+    name: liveById.get(team.id)?.name || team.name,
+    colour: liveById.get(team.id)?.colour || team.colour,
+  }));
+}
+
+function playerTeamOptions() {
+  return [unassignedTeam, ...appTeams()];
+}
+
+function eventTeamOptions() {
+  return appTeams();
+}
+
+function filterTeamOptions() {
+  return [unassignedTeam, ...appTeams()];
+}
+
 function teamById(teamId) {
   if (teamId === "all") return { id: "all", name: "All teams", colour: "#850008" };
-  return (liveTeams.length ? liveTeams : teams).find((team) => team.id === teamId) || teams[0];
+  if (normalizeTeamId(teamId) === "unassigned") return unassignedTeam;
+  return appTeams().find((team) => team.id === teamId) || unassignedTeam;
 }
 
 function teamName(teamId) {
@@ -668,8 +740,9 @@ function venueMapActions(venue) {
 }
 
 function getPlayersForEvent(event, players = activePlayers()) {
-  if (event.teamId === "all") return players;
-  return players.filter((player) => player.teamId === event.teamId);
+  const eventTeamId = normalizeTeamId(event.teamId);
+  if (eventTeamId === "all") return players;
+  return players.filter((player) => normalizeTeamId(player.teamId) === eventTeamId);
 }
 
 function formatDate(value) {
@@ -772,7 +845,7 @@ function alertTimestamp(alert) {
 
 function visibleMessagesForUser() {
   const child = currentPlayer();
-  return state.messages.filter((message) => hasCoachAccess() || message.teamId === "all" || message.teamId === child?.teamId);
+  return state.messages.filter((message) => hasCoachAccess() || message.teamId === "all" || normalizeTeamId(message.teamId) === normalizeTeamId(child?.teamId));
 }
 
 function visibleParentNotificationsForUser() {
@@ -1184,7 +1257,7 @@ function navRoutes(pendingOnly = false) {
     { id: "attendance", label: "Attendance" },
     { id: "squads", label: "Teams" },
     { id: "development", label: "Development" },
-    { id: "squad-builder", label: "Builder" },
+    { id: "squad-builder", label: "Whiteboard" },
     { id: "messages", label: "Messages" },
     { id: "coaches", label: "Coaches" },
     { id: "venues", label: "Venues" },
@@ -1217,7 +1290,7 @@ function pageTitle(route) {
     attendance: "Attendance",
     squads: "Teams",
     development: "Player Development",
-    "squad-builder": "Squad Builder",
+    "squad-builder": "Squad Whiteboard",
     messages: "Messages",
     coaches: "Coaches",
     venues: "Venues",
@@ -1333,7 +1406,7 @@ function linkedChildCard(child) {
           <p class="eyebrow">Linked child</p>
           <h3>${escapeHtml(child.name)}</h3>
         </div>
-        <span class="team-pill ${child.teamId}">${teamName(child.teamId)}</span>
+        <span class="team-pill ${normalizeTeamId(child.teamId)}">${teamName(child.teamId)}</span>
       </div>
       <dl class="info-list">
         <div><dt>Role</dt><dd>${escapeHtml(child.role)}</dd></div>
@@ -1381,11 +1454,11 @@ function messageCard() {
 }
 
 function scheduleView() {
-  const childTeamIds = new Set(approvedPlayers().map((player) => player.teamId));
+  const childTeamIds = new Set(approvedPlayers().map((player) => normalizeTeamId(player.teamId)));
   const period = state.schedulePeriod || "upcoming";
   const allVisibleEvents = state.events
-    .filter((event) => hasCoachAccess() || event.teamId === "all" || childTeamIds.has(event.teamId))
-    .filter((event) => state.scheduleFilter === "all" || event.teamId === state.scheduleFilter || event.teamId === "all");
+    .filter((event) => hasCoachAccess() || event.teamId === "all" || childTeamIds.has(normalizeTeamId(event.teamId)))
+    .filter((event) => state.scheduleFilter === "all" || normalizeTeamId(event.teamId) === normalizeTeamId(state.scheduleFilter) || event.teamId === "all");
   const upcomingCount = allVisibleEvents.filter((event) => !isPastEvent(event)).length;
   const pastCount = allVisibleEvents.filter(isPastEvent).length;
   const visibleEvents = allVisibleEvents
@@ -1402,7 +1475,7 @@ function scheduleView() {
           <button type="button" class="${period === "past" ? "active" : ""}" data-action="set-schedule-period" data-period="past">Past (${pastCount})</button>
         </div>
       ${hasCoachAccess() ? `<div class="segmented light">
-        ${["all", ...teams.map((team) => team.id)].map((id) => `
+        ${["all", ...eventTeamOptions().map((team) => team.id)].map((id) => `
           <button type="button" class="${state.scheduleFilter === id ? "active" : ""}" data-action="set-schedule-filter" data-team-id="${id}">
             ${id === "all" ? "All" : teamName(id)}
           </button>
@@ -1441,7 +1514,7 @@ function eventCard(event) {
             <h3>${escapeHtml(event.title)}</h3>
           </div>
           <div class="event-badges">
-            <span class="team-pill ${event.teamId}">${teamName(event.teamId)}</span>
+            <span class="team-pill ${normalizeTeamId(event.teamId)}">${teamName(event.teamId)}</span>
             ${past ? '<span class="status-pill warn">Archived</span>' : ""}
           </div>
         </div>
@@ -1698,13 +1771,13 @@ function squadsView() {
       ${hasCoachAccess() ? '<button class="primary-button" type="button" data-modal="player">Add player</button>' : ""}
     </section>
     <div class="team-board" data-tour="team-board">
-      ${teams.map(teamColumn).join("")}
+      ${playerTeamOptions().map(teamColumn).join("")}
     </div>
   `;
 }
 
 function teamColumn(team) {
-  const players = activePlayers().filter((player) => player.teamId === team.id);
+  const players = activePlayers().filter((player) => normalizeTeamId(player.teamId) === team.id);
   return `
     <article class="team-column">
       <div class="panel-title">
@@ -1746,7 +1819,7 @@ function developmentView() {
         <p class="eyebrow">Coach only</p>
         <h2 class="section-heading">Player development</h2>
       </div>
-      <button class="primary-button" type="button" data-route-target="squad-builder">Open squad builder</button>
+      <button class="primary-button" type="button" data-route-target="squad-builder">Open squad whiteboard</button>
     </section>
     <section class="metric-grid development-summary">
       ${levelCounts.map((item) => `<article><strong>${item.count}</strong><span>${escapeHtml(item.level)}</span></article>`).join("")}
@@ -1814,11 +1887,14 @@ function squadBuilderView() {
     <section class="toolbar builder-toolbar">
       <div>
         <p class="eyebrow">Coach only</p>
-        <h2 class="section-heading">${definition.label} squad builder</h2>
+        <h2 class="section-heading">${definition.label} squad whiteboard</h2>
       </div>
       <div class="choice-row">
         ${Object.keys(formationDefinitions).map((item) => `<button class="secondary-button ${format === item ? "active-filter" : ""}" type="button" data-action="set-builder-format" data-format="${item}">${formationDefinitions[item].label}</button>`).join("")}
         <button class="secondary-button" type="button" data-action="auto-fill-builder">Auto fill</button>
+        <button class="secondary-button ${state.squadBuilder.arrowMode ? "active-filter" : ""}" type="button" data-action="toggle-whiteboard-arrows">${state.squadBuilder.arrowMode ? "Stop arrows" : "Draw arrows"}</button>
+        <button class="secondary-button" type="button" data-action="undo-whiteboard-arrow">Undo arrow</button>
+        <button class="secondary-button" type="button" data-action="clear-whiteboard-arrows">Clear arrows</button>
         <button class="secondary-button" type="button" data-action="reset-builder-layout">Reset positions</button>
         <button class="secondary-button danger-button" type="button" data-action="reset-builder">Reset</button>
       </div>
@@ -1826,7 +1902,7 @@ function squadBuilderView() {
     <section class="builder-filters">
       <div class="segmented light">
         <button type="button" class="${state.squadBuilder.teamFilter === "all" ? "active" : ""}" data-action="set-builder-team" data-team-id="all">All</button>
-        ${teams.map((team) => `<button type="button" class="${state.squadBuilder.teamFilter === team.id ? "active" : ""}" data-action="set-builder-team" data-team-id="${team.id}">${team.name}</button>`).join("")}
+        ${filterTeamOptions().map((team) => `<button type="button" class="${state.squadBuilder.teamFilter === team.id ? "active" : ""}" data-action="set-builder-team" data-team-id="${team.id}">${team.name}</button>`).join("")}
       </div>
       <div class="segmented light">
         <button type="button" class="${state.squadBuilder.levelFilter === "all" ? "active" : ""}" data-action="set-builder-level" data-level="all">All levels</button>
@@ -1843,10 +1919,12 @@ function squadBuilderView() {
           <div class="builder-board-status">
             ${selectedPlayer ? `<span class="status-pill good">Selected: ${escapeHtml(selectedPlayer.name)}</span>` : ""}
             <span class="status-pill warn">Drag markers to change roles</span>
+            ${state.squadBuilder.arrowMode ? '<span class="status-pill good">Arrow drawing on</span>' : ""}
           </div>
         </div>
-        <p class="muted builder-hint">Drag any marker to reshape the team. Its role updates from the pitch zone automatically, or use Edit for a manual role.</p>
+        <p class="muted builder-hint">Drag any marker to reshape the team. Turn on Draw arrows to sketch player movement for a quick whiteboard plan.</p>
         <div class="formation-pitch formation-${format}" data-builder-pitch>
+          ${formationArrowLayer(format)}
           ${starterSlots(format).map((slot) => formationSlot(slot, selections[slot.id], { editable: true })).join("")}
         </div>
         <div class="formation-bench" data-builder-bench>
@@ -1875,7 +1953,7 @@ function squadBuilderView() {
 function builderPlayerPool() {
   const selected = new Set(Object.values(builderSelections()).filter(Boolean));
   return activePlayers()
-    .filter((player) => state.squadBuilder.teamFilter === "all" || player.teamId === state.squadBuilder.teamFilter)
+    .filter((player) => state.squadBuilder.teamFilter === "all" || normalizeTeamId(player.teamId) === normalizeTeamId(state.squadBuilder.teamFilter))
     .filter((player) => {
       const record = developmentFor(player.id);
       return state.squadBuilder.levelFilter === "all" || record.level === state.squadBuilder.levelFilter;
@@ -1914,6 +1992,29 @@ function formationSlot(slot, playerId, options = {}) {
         ${player ? `<button class="slot-clear" type="button" data-action="clear-builder-slot" data-slot-id="${escapeHtml(slot.id)}" aria-label="Clear ${escapeHtml(slot.label)}">x</button>` : ""}
       </div>
     </div>
+  `;
+}
+
+function formationArrowLayer(format) {
+  const arrows = builderArrows(format);
+  return `
+    <svg class="formation-arrows" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+      <defs>
+        <marker id="whiteboard-arrow-head" markerWidth="5" markerHeight="5" refX="4.2" refY="2.5" orient="auto" markerUnits="strokeWidth">
+          <path d="M0,0 L5,2.5 L0,5 Z"></path>
+        </marker>
+      </defs>
+      ${arrows.map((arrow) => `
+        <line
+          x1="${Number(arrow.x1) || 0}"
+          y1="${Number(arrow.y1) || 0}"
+          x2="${Number(arrow.x2) || 0}"
+          y2="${Number(arrow.y2) || 0}"
+          marker-end="url(#whiteboard-arrow-head)"
+        ></line>
+      `).join("")}
+      <line data-draft-arrow hidden marker-end="url(#whiteboard-arrow-head)"></line>
+    </svg>
   `;
 }
 
@@ -2596,7 +2697,7 @@ function installView() {
           <span>Coach contacts can now be updated in the app</span>
           <span>Venues, pitch pins, parking pins and photo paths can now be updated in the app</span>
           <span>Coach-only player development ratings added</span>
-          <span>Coach-only 7-a-side and 9-a-side squad builder added</span>
+          <span>Coach-only 7-a-side and 9-a-side squad whiteboard added</span>
           <span>Firestore rules tightened for parent-safe writes</span>
           <span>Coach contacts added with call and text links</span>
           <span>App icons and red splash screen ready for mobile wrapping</span>
@@ -2694,7 +2795,7 @@ function eventModal(eventId = "") {
   const selectedVenueId = event?.venueId || venue.id;
   const isAway = selectedVenueId === "away-custom";
   const type = event?.type || "Fixture";
-  const teamId = event?.teamId || "all";
+  const teamId = normalizeEventTeamId(event?.teamId || "all");
   const opponent = type === "Fixture" ? event?.opponent || "" : event?.title || "";
   const date = dateValue(event?.datetime);
   const startTime = timeValue(event?.datetime) || "09:30";
@@ -2710,7 +2811,7 @@ function eventModal(eventId = "") {
     <form class="stacked-form" data-form="${editing ? "edit-event" : "event"}">
       ${editing ? `<input type="hidden" name="eventId" value="${escapeHtml(event.id)}">` : ""}
       <label class="field"><span>Type</span><select name="type" data-action="event-type-choice"><option ${type === "Fixture" ? "selected" : ""}>Fixture</option><option ${type === "Training" ? "selected" : ""}>Training</option></select></label>
-      <label class="field"><span>Team</span><select name="teamId"><option value="all" ${teamId === "all" ? "selected" : ""}>All teams</option>${teams.map((team) => `<option value="${team.id}" ${team.id === teamId ? "selected" : ""}>${team.name}</option>`).join("")}</select></label>
+      <label class="field"><span>Team</span><select name="teamId"><option value="all" ${teamId === "all" ? "selected" : ""}>All teams</option>${eventTeamOptions().map((team) => `<option value="${team.id}" ${team.id === normalizeTeamId(teamId) ? "selected" : ""}>${team.name}</option>`).join("")}</select></label>
       <label class="field"><span>Opponent or title</span><input name="opponent" required value="${escapeHtml(opponent)}" placeholder="Kilwinning Rangers"></label>
       <label class="field"><span>Date</span><input name="date" type="date" required value="${escapeHtml(date)}"></label>
       <label class="field"><span>Start time</span><select name="startTime">${timeOptions(startTime)}</select></label>
@@ -2741,7 +2842,7 @@ function messageModal() {
     <p class="eyebrow">Coach action</p>
     <h2 id="modal-title">Send message</h2>
     <form class="stacked-form" data-form="message">
-      <label class="field"><span>Send to</span><select name="teamId"><option value="all">All teams</option>${teams.map((team) => `<option value="${team.id}">${team.name}</option>`).join("")}</select></label>
+      <label class="field"><span>Send to</span><select name="teamId"><option value="all">All teams</option>${eventTeamOptions().map((team) => `<option value="${team.id}">${team.name}</option>`).join("")}</select></label>
       <label class="field"><span>Title</span><input name="title" required placeholder="Training update"></label>
       <label class="field"><span>Message</span><textarea name="body" rows="5" required placeholder="Message for parents"></textarea></label>
       <button class="primary-button" type="submit">Send message</button>
@@ -2755,7 +2856,7 @@ function playerModal() {
     <h2 id="modal-title">Add player</h2>
     <form class="stacked-form" data-form="player">
       <label class="field"><span>Name</span><input name="name" required placeholder="Player name"></label>
-      <label class="field"><span>Team</span><select name="teamId">${teams.map((team) => `<option value="${team.id}">${team.name}</option>`).join("")}</select></label>
+      <label class="field"><span>Team</span><select name="teamId">${playerTeamOptions().map((team) => `<option value="${team.id}" ${team.id === "unassigned" ? "selected" : ""}>${team.name}</option>`).join("")}</select></label>
       <label class="field"><span>Role</span><input name="role" required placeholder="Player"></label>
       <label class="field"><span>Parent name</span><input name="parentName" required placeholder="Parent Placeholder"></label>
       <label class="field"><span>Parent phone</span><input name="parentPhone" required placeholder="07000 000000"></label>
@@ -2771,7 +2872,7 @@ function movePlayerModal(playerId) {
     <h2 id="modal-title">Move ${escapeHtml(player?.name || "player")}</h2>
     <form class="stacked-form" data-form="move-player">
       <input type="hidden" name="playerId" value="${escapeHtml(playerId)}">
-      <label class="field"><span>Team</span><select name="teamId">${teams.map((team) => `<option value="${team.id}" ${team.id === player?.teamId ? "selected" : ""}>${team.name}</option>`).join("")}</select></label>
+      <label class="field"><span>Team</span><select name="teamId">${playerTeamOptions().map((team) => `<option value="${team.id}" ${team.id === normalizeTeamId(player?.teamId) ? "selected" : ""}>${team.name}</option>`).join("")}</select></label>
       <button class="primary-button" type="submit">Move player</button>
     </form>
   `;
@@ -2785,7 +2886,7 @@ function editPlayerModal(playerId) {
     <form class="stacked-form" data-form="edit-player">
       <input type="hidden" name="playerId" value="${escapeHtml(playerId)}">
       <label class="field"><span>Name</span><input name="name" required value="${escapeHtml(player?.name || "")}"></label>
-      <label class="field"><span>Team</span><select name="teamId">${teams.map((team) => `<option value="${team.id}" ${team.id === player?.teamId ? "selected" : ""}>${team.name}</option>`).join("")}</select></label>
+      <label class="field"><span>Team</span><select name="teamId">${playerTeamOptions().map((team) => `<option value="${team.id}" ${team.id === normalizeTeamId(player?.teamId) ? "selected" : ""}>${team.name}</option>`).join("")}</select></label>
       <label class="field"><span>Role</span><input name="role" required value="${escapeHtml(player?.role || "Player")}"></label>
       <label class="field"><span>Parent name</span><input name="parentName" required value="${escapeHtml(player?.parentName || placeholderParent)}"></label>
       <label class="field"><span>Parent phone</span><input name="parentPhone" required value="${escapeHtml(player?.parentPhone || placeholderPhone)}"></label>
@@ -2802,7 +2903,7 @@ function editCoachModal(coachId) {
     <form class="stacked-form" data-form="edit-coach">
       <input type="hidden" name="coachId" value="${escapeHtml(coach.id || coachId || "")}">
       <label class="field"><span>Name</span><input name="name" required value="${escapeHtml(coach.name || "")}"></label>
-      <label class="field"><span>Team</span><select name="teamId"><option value="all" ${coach.teamId === "all" ? "selected" : ""}>All teams</option>${teams.map((team) => `<option value="${team.id}" ${team.id === coach.teamId ? "selected" : ""}>${team.name}</option>`).join("")}</select></label>
+      <label class="field"><span>Team</span><select name="teamId"><option value="all" ${coach.teamId === "all" ? "selected" : ""}>All teams</option>${eventTeamOptions().map((team) => `<option value="${team.id}" ${team.id === normalizeTeamId(coach.teamId) ? "selected" : ""}>${team.name}</option>`).join("")}</select></label>
       <label class="field"><span>Role</span><input name="role" required value="${escapeHtml(coach.role || "Coach")}"></label>
       <label class="field"><span>Phone</span><input name="phone" type="tel" value="${escapeHtml(formatPhone(coach.phone || ""))}" placeholder="07123 456 789"></label>
       <label class="field"><span>Email</span><input name="email" type="email" value="${escapeHtml(coach.email || "")}" placeholder="Optional"></label>
@@ -3084,6 +3185,24 @@ document.addEventListener("click", async (event) => {
     return;
   }
 
+  if (action === "toggle-whiteboard-arrows") {
+    state.squadBuilder.arrowMode = !state.squadBuilder.arrowMode;
+    state.squadBuilder.selectedPlayerId = "";
+    saveState();
+    render();
+    return;
+  }
+
+  if (action === "undo-whiteboard-arrow") {
+    undoBuilderArrow();
+    return;
+  }
+
+  if (action === "clear-whiteboard-arrows") {
+    clearBuilderArrows();
+    return;
+  }
+
   if (action === "copy-link") {
     copyText(target.dataset.copy);
     return;
@@ -3119,6 +3238,12 @@ document.addEventListener("drop", (event) => {
 });
 
 document.addEventListener("pointerdown", (event) => {
+  const pitchForArrow = event.target.closest("[data-builder-pitch]");
+  if (pitchForArrow && state.squadBuilder.arrowMode && hasCoachAccess() && !event.target.closest("button")) {
+    startBuilderArrow(event, pitchForArrow);
+    return;
+  }
+
   const marker = event.target.closest("[data-formation-drag]");
   if (!marker || !hasCoachAccess() || event.target.closest("button")) return;
   const pitch = marker.closest("[data-builder-pitch]");
@@ -3136,6 +3261,12 @@ document.addEventListener("pointerdown", (event) => {
 });
 
 document.addEventListener("pointermove", (event) => {
+  if (builderArrowDraft) {
+    updateBuilderArrowDraft(event);
+    event.preventDefault();
+    return;
+  }
+
   if (!builderPointerDrag) return;
   const distance = Math.hypot(event.clientX - builderPointerDrag.startX, event.clientY - builderPointerDrag.startY);
   if (!builderPointerDrag.moved && distance < 6) return;
@@ -3148,6 +3279,11 @@ document.addEventListener("pointermove", (event) => {
 });
 
 document.addEventListener("pointerup", (event) => {
+  if (builderArrowDraft) {
+    finishBuilderArrow(event);
+    return;
+  }
+
   if (!builderPointerDrag) return;
   builderPointerDrag.marker.releasePointerCapture?.(builderPointerDrag.pointerId);
   if (builderPointerDrag.moved) {
@@ -3159,6 +3295,7 @@ document.addEventListener("pointerup", (event) => {
 });
 
 document.addEventListener("pointercancel", () => {
+  builderArrowDraft = null;
   builderPointerDrag = null;
   render();
 });
@@ -3590,7 +3727,7 @@ async function reviewRequest(requestId, status) {
       parentName: request.parentName,
       email: request.email || "",
       playerId: player.id,
-      playerTeamId: player.teamId,
+      playerTeamId: normalizeTeamId(player.teamId),
       relation: request.relation,
       status: "approved",
       consent: true,
@@ -3600,7 +3737,7 @@ async function reviewRequest(requestId, status) {
     batch.set(runtime.modules.doc(runtime.db, "clubs", clubId, "accessRequests", requestId), {
       status: "approved",
       playerId: player.id,
-      playerTeamId: player.teamId,
+      playerTeamId: normalizeTeamId(player.teamId),
       reviewedBy: state.session.userId,
       reviewedAt: runtime.modules.serverTimestamp(),
       updatedAt: runtime.modules.serverTimestamp(),
@@ -3680,7 +3817,7 @@ function eventVenueFromForm(data) {
 
 function eventDataFromForm(data, id = uid("event")) {
   const type = data.get("type");
-  const teamId = data.get("teamId");
+  const teamId = normalizeEventTeamId(data.get("teamId"));
   const opponent = String(data.get("opponent") || "").trim();
   const venue = eventVenueFromForm(data);
   return {
@@ -3782,7 +3919,7 @@ async function addMessage(data) {
     id: uid("msg"),
     title: data.get("title"),
     body: data.get("body"),
-    teamId: data.get("teamId"),
+    teamId: normalizeEventTeamId(data.get("teamId")),
     createdBy: state.session.userId,
   };
   await saveLiveDocument("announcements", message.id, message);
@@ -3796,7 +3933,7 @@ async function addPlayer(data) {
   const player = {
     id: uid("player"),
     name: data.get("name"),
-    teamId: data.get("teamId"),
+    teamId: normalizeTeamId(data.get("teamId")),
     role: data.get("role"),
     parentName: data.get("parentName"),
     parentPhone: data.get("parentPhone"),
@@ -3805,7 +3942,7 @@ async function addPlayer(data) {
   await saveLiveDocument("players", player.id, player);
   state.players.push(player);
   state.events.forEach((event) => {
-    if (event.teamId === "all" || event.teamId === player.teamId) {
+    if (event.teamId === "all" || normalizeTeamId(event.teamId) === normalizeTeamId(player.teamId)) {
       state.availability[event.id][player.id] = defaultAvailabilityEntry();
       state.attendance[event.id][player.id] = "unknown";
     }
@@ -3818,7 +3955,7 @@ async function movePlayer(data) {
   if (!requireCoach()) return;
   const player = activePlayers().find((item) => item.id === data.get("playerId"));
   if (!player) return;
-  const updated = { ...player, teamId: data.get("teamId") };
+  const updated = { ...player, teamId: normalizeTeamId(data.get("teamId")) };
   await saveLiveDocument("players", player.id, updated);
   Object.assign(player, updated);
   delete state.modal;
@@ -3832,7 +3969,7 @@ async function editPlayer(data) {
   const updated = {
     ...player,
     name: data.get("name"),
-    teamId: data.get("teamId"),
+    teamId: normalizeTeamId(data.get("teamId")),
     role: data.get("role"),
     parentName: data.get("parentName"),
     parentPhone: data.get("parentPhone"),
@@ -3850,7 +3987,7 @@ async function editCoach(data) {
   const updated = {
     id: coachId,
     name: String(data.get("name") || "").trim(),
-    teamId: String(data.get("teamId") || "all"),
+    teamId: normalizeEventTeamId(String(data.get("teamId") || "all")),
     role: String(data.get("role") || "Coach").trim(),
     phone: String(data.get("phone") || "").replace(/\D/g, ""),
     email: String(data.get("email") || "").trim(),
@@ -3919,6 +4056,57 @@ function pitchPointFromEvent(event, pitch) {
     x: Math.round(Math.min(92, Math.max(8, rawX)) * 10) / 10,
     y: Math.round(Math.min(92, Math.max(8, rawY)) * 10) / 10,
   };
+}
+
+function draftArrowLine() {
+  return builderArrowDraft?.pitch?.querySelector("[data-draft-arrow]");
+}
+
+function setDraftArrowLine(start, end) {
+  const line = draftArrowLine();
+  if (!line) return;
+  line.hidden = false;
+  line.setAttribute("x1", start.x);
+  line.setAttribute("y1", start.y);
+  line.setAttribute("x2", end.x);
+  line.setAttribute("y2", end.y);
+}
+
+function startBuilderArrow(event, pitch) {
+  const start = pitchPointFromEvent(event, pitch);
+  builderArrowDraft = {
+    pitch,
+    pointerId: event.pointerId,
+    start,
+  };
+  pitch.setPointerCapture?.(event.pointerId);
+  setDraftArrowLine(start, start);
+  event.preventDefault();
+}
+
+function updateBuilderArrowDraft(event) {
+  if (!builderArrowDraft) return;
+  const end = pitchPointFromEvent(event, builderArrowDraft.pitch);
+  setDraftArrowLine(builderArrowDraft.start, end);
+}
+
+function finishBuilderArrow(event) {
+  if (!builderArrowDraft) return;
+  const end = pitchPointFromEvent(event, builderArrowDraft.pitch);
+  const distance = Math.hypot(end.x - builderArrowDraft.start.x, end.y - builderArrowDraft.start.y);
+  builderArrowDraft.pitch.releasePointerCapture?.(builderArrowDraft.pointerId);
+  if (distance >= 4) {
+    builderArrows().push({
+      id: uid("arrow"),
+      x1: builderArrowDraft.start.x,
+      y1: builderArrowDraft.start.y,
+      x2: end.x,
+      y2: end.y,
+    });
+    saveState();
+  }
+  builderArrowDraft = null;
+  render();
 }
 
 function moveBuilderSlot(slotId, x, y) {
@@ -4000,12 +4188,34 @@ function resetBuilderLayout() {
   toast("Formation shape reset");
 }
 
+function undoBuilderArrow() {
+  if (!requireCoach()) return;
+  const arrows = builderArrows();
+  if (!arrows.length) return;
+  arrows.pop();
+  saveState();
+  render();
+  toast("Arrow removed");
+}
+
+function clearBuilderArrows() {
+  if (!requireCoach()) return;
+  const arrows = builderArrows();
+  if (!arrows.length) return;
+  const confirmed = window.confirm("Clear all arrows from this formation?");
+  if (!confirmed) return;
+  state.squadBuilder.arrows[state.squadBuilder.format] = [];
+  saveState();
+  render();
+  toast("Arrows cleared");
+}
+
 function autoFillBuilder() {
   if (!requireCoach()) return;
   const selections = {};
   const used = new Set();
   const players = activePlayers()
-    .filter((player) => state.squadBuilder.teamFilter === "all" || player.teamId === state.squadBuilder.teamFilter)
+    .filter((player) => state.squadBuilder.teamFilter === "all" || normalizeTeamId(player.teamId) === normalizeTeamId(state.squadBuilder.teamFilter))
     .filter((player) => {
       const record = developmentFor(player.id);
       return state.squadBuilder.levelFilter === "all" || record.level === state.squadBuilder.levelFilter;
@@ -4109,7 +4319,7 @@ async function loadLiveStateFromFirebase() {
     ]);
 
     const squadSource = squadDocs.length ? squadDocs : teamDocs;
-    state.teams = squadSource.length ? squadSource.sort((a, b) => (a.order || 0) - (b.order || 0)) : teams;
+    state.teams = normalizeLiveTeams(squadSource.length ? squadSource.sort((a, b) => (a.order || 0) - (b.order || 0)) : teams);
     liveTeams = state.teams;
     state.events = events.sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
     state.messages = announcements.sort(sortByCreatedAtDesc);
@@ -4126,7 +4336,7 @@ async function loadLiveStateFromFirebase() {
         loadDocs("dataRequests"),
         loadDocs("playerDevelopment"),
       ]);
-      state.players = players.sort((a, b) => a.name.localeCompare(b.name));
+      state.players = players.map(normalizePlayerRecord).sort((a, b) => a.name.localeCompare(b.name));
       state.parentLinks = parentLinks;
       state.accessRequests = accessRequests.sort(sortByCreatedAtDesc);
       state.notifications = notifications.sort(sortByCreatedAtDesc);
@@ -4179,7 +4389,7 @@ async function loadApprovedPlayerDocs(parentLinks) {
   const runtime = await ensureFirebase();
   const approved = parentLinks.filter((link) => link.status === "approved");
   const docs = await Promise.all(approved.map((link) => runtime.modules.getDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "players", link.playerId))));
-  return docs.filter((snap) => snap.exists()).map((snap) => ({ id: snap.id, ...snap.data() })).sort((a, b) => a.name.localeCompare(b.name));
+  return docs.filter((snap) => snap.exists()).map((snap) => normalizePlayerRecord({ id: snap.id, ...snap.data() })).sort((a, b) => a.name.localeCompare(b.name));
 }
 
 async function loadEventSubcollections() {
@@ -4285,7 +4495,7 @@ async function startLiveSubscriptions() {
   });
   watchCollection("squads", (items) => {
     if (!items.length) return;
-    state.teams = items.sort((a, b) => (a.order || 0) - (b.order || 0));
+    state.teams = normalizeLiveTeams(items.sort((a, b) => (a.order || 0) - (b.order || 0)));
     liveTeams = state.teams;
   });
   watchCollection("events", async (items) => {
@@ -4305,7 +4515,7 @@ async function startLiveSubscriptions() {
 
   if (hasCoachAccess()) {
     watchCollection("players", (items) => {
-      state.players = items.sort((a, b) => a.name.localeCompare(b.name));
+      state.players = items.map(normalizePlayerRecord).sort((a, b) => a.name.localeCompare(b.name));
     });
     watchCollection("accessRequests", (items) => {
       state.accessRequests = items.sort(sortByCreatedAtDesc);

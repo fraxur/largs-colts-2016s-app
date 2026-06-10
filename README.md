@@ -10,10 +10,10 @@ Private Firebase-backed team app for Largs Colts 2016s coaches and verified pare
 - Parents only see children approved through `parentLinks`
 - Coaches can manage players, teams, fixtures, training, attendance, availability and announcements
 - Coaches have a private player development page for level, band, foot and playable positions
-- Coaches have a private 7-a-side and 9-a-side squad builder using those development records
+- Coaches have a private 7-a-side and 9-a-side squad builder/whiteboard using those development records
 - Attendance writes trigger push notifications through Firebase Cloud Functions
 - Announcements are stored in Firestore and trigger parent push notifications
-- Teams, players, events, availability and attendance can be seeded into Firestore
+- Teams and players can be seeded into Firestore, with players starting as unassigned
 - PWA install support remains in place for browser testing
 - Capacitor config is ready for iOS and Android wrapping
 
@@ -45,14 +45,17 @@ npm run seed:firestore
 
 This seeds:
 
-- Orange, Blue and Yellow teams
-- Orange, Blue and Yellow squads
-- Full active player list
-- Blue and Yellow weekend fixtures
-- Tuesday and Wednesday training sessions
-- Empty attendance records
-- Empty availability records
+- Team 1 and Team 2
+- Full active player list, all marked as Unassigned
 - A welcome announcement
+
+It does not create fixtures or training sessions. Coaches can add new fixtures/training once the new team split is agreed.
+
+To reset the live Firestore data to Team 1/Team 2, mark all players as Unassigned, preserve development records, and remove all current fixtures/training plus their attendance/availability records, run:
+
+```powershell
+npm run reset:teams-events -- --yes
+```
 
 No sample parent accounts are created by the main seed. Parent test accounts should be created by the coaches using separate parent emails inside the app.
 

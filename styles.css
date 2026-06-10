@@ -14,9 +14,7 @@
   --good: #147a4c;
   --warn: #9a6400;
   --bad: #b42318;
-  --orange: #f97316;
-  --blue: #2563eb;
-  --yellow: #eab308;
+  --ability-blue: #2563eb;
   --shadow: 0 24px 70px rgba(77, 0, 4, 0.16);
   --small-shadow: 0 14px 36px rgba(77, 0, 4, 0.11);
   --bottom-safe: env(safe-area-inset-bottom, 0px);
@@ -1257,22 +1255,22 @@ button:disabled {
   color: var(--red-900);
 }
 
-.team-pill.orange,
-.team-dot.orange {
-  background: rgba(249, 115, 22, 0.16);
-  color: #9a3d00;
+.team-pill.team1,
+.team-dot.team1 {
+  background: rgba(133, 0, 8, 0.13);
+  color: var(--red-900);
 }
 
-.team-pill.blue,
-.team-dot.blue {
-  background: rgba(37, 99, 235, 0.14);
-  color: #17449e;
+.team-pill.team2,
+.team-dot.team2 {
+  background: rgba(211, 168, 74, 0.22);
+  color: #6c4700;
 }
 
-.team-pill.yellow,
-.team-dot.yellow {
-  background: rgba(234, 179, 8, 0.2);
-  color: #785800;
+.team-pill.unassigned,
+.team-dot.unassigned {
+  background: rgba(107, 114, 128, 0.16);
+  color: #4b5563;
 }
 
 .team-pill.all {
@@ -1287,7 +1285,7 @@ button:disabled {
 }
 
 .team-board {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .team-dot {
@@ -1548,7 +1546,7 @@ button:disabled {
 }
 
 .level-pill.intermediate {
-  background: var(--blue);
+  background: var(--ability-blue);
 }
 
 .level-pill.advanced {
@@ -1630,6 +1628,7 @@ button:disabled {
 .formation-panel.shape-live .formation-pitch {
   border-color: rgba(211, 168, 74, 0.92);
   box-shadow: inset 0 0 0 5px rgba(255, 255, 255, 0.18), 0 0 0 4px rgba(211, 168, 74, 0.16);
+  touch-action: none;
 }
 
 .builder-board-status {
@@ -1663,9 +1662,29 @@ button:disabled {
   border-bottom: 0;
 }
 
+.formation-arrows {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.formation-arrows line {
+  stroke: rgba(255, 255, 255, 0.92);
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.3));
+}
+
+.formation-arrows path {
+  fill: rgba(255, 255, 255, 0.92);
+}
+
 .formation-slot {
   position: absolute;
-  z-index: 1;
+  z-index: 2;
   display: grid;
   width: min(148px, 25vw);
   min-height: 82px;

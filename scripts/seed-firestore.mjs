@@ -14,48 +14,40 @@ const club = db.collection("clubs").doc(clubId);
 const now = FieldValue.serverTimestamp();
 
 const teams = [
-  { id: "orange", name: "Orange", colour: "#f97316", order: 1 },
-  { id: "blue", name: "Blue", colour: "#2563eb", order: 2 },
-  { id: "yellow", name: "Yellow", colour: "#eab308", order: 3 },
+  { id: "team1", name: "Team 1", colour: "#850008", order: 1 },
+  { id: "team2", name: "Team 2", colour: "#d3a84a", order: 2 },
 ];
 
 const players = [
-  player("p1", "Arthur Atkinson", "orange"),
-  player("p2", "Harry Riley", "orange"),
-  player("p3", "Jacob Hussain", "orange"),
-  player("p4", "Harris Beckwith", "orange"),
-  player("p5", "Jack Rossiter", "orange"),
-  player("p6", "Jack Craig", "orange"),
-  player("p7", "Murphy Auld", "orange"),
-  player("p8", "Oscar McGarvey", "orange"),
-  player("p9", "Fraser Clark", "orange"),
-  player("p10", "Grace Blacklock", "blue"),
-  player("p11", "Muir Balmforth", "blue"),
-  player("p12", "Leo Lazzerini", "blue"),
-  player("p13", "Kammy Cassidy", "blue"),
-  player("p14", "Brooklyn Fraser", "blue"),
-  player("p15", "Logan Fraser", "blue"),
-  player("p16", "Luke Dowds", "blue"),
-  player("p17", "Teddy Holland", "blue"),
-  player("p18", "Gianluca Greenwood", "blue"),
-  player("p19", "Luke McCready", "yellow"),
-  player("p20", "Ethan Maguire", "yellow"),
-  player("p21", "Brice Fergusson", "yellow"),
-  player("p22", "Luke McGowan", "yellow"),
-  player("p23", "Ethan Hughes", "yellow"),
-  player("p24", "Harris Jardine", "yellow"),
-  player("p25", "Lucas Reilly", "yellow"),
-  player("p26", "Jacob McShane", "yellow"),
+  player("p1", "Arthur Atkinson"),
+  player("p2", "Harry Riley"),
+  player("p3", "Jacob Hussain"),
+  player("p4", "Harris Beckwith"),
+  player("p5", "Jack Rossiter"),
+  player("p6", "Jack Craig"),
+  player("p7", "Murphy Auld"),
+  player("p8", "Oscar McGarvey"),
+  player("p9", "Fraser Clark"),
+  player("p10", "Grace Blacklock"),
+  player("p11", "Muir Balmforth"),
+  player("p12", "Leo Lazzerini"),
+  player("p13", "Kammy Cassidy"),
+  player("p14", "Brooklyn Fraser"),
+  player("p15", "Logan Fraser"),
+  player("p16", "Luke Dowds"),
+  player("p17", "Teddy Holland"),
+  player("p18", "Gianluca Greenwood"),
+  player("p19", "Luke McCready"),
+  player("p20", "Ethan Maguire"),
+  player("p21", "Brice Fergusson"),
+  player("p22", "Luke McGowan"),
+  player("p23", "Ethan Hughes"),
+  player("p24", "Harris Jardine"),
+  player("p25", "Lucas Reilly"),
+  player("p26", "Jacob McShane"),
 ];
 
-const events = [
-  fixture("e1", "Blue home match", "blue", "Opposition TBC", "2026-05-16T09:30", "10:45", "Bowencraig (Home pitch)", "bowencraig", "55.77946, -4.856398", "09:00", "Home kit", "Home match. Report for 9:00am."),
-  fixture("e2", "Yellow away to Bellfield", "yellow", "Bellfield", "2026-05-16T10:00", "11:15", "Bellfield Estate", "away-custom", "Bellfield Estate, Kilmarnock KA1 3XG", "09:30", "Away kit", "Grass pitch. Please report for 9:30am."),
-  training("t1", "2026-05-19T18:00"),
-  training("t2", "2026-05-20T18:00"),
-  training("t3", "2026-05-26T18:00"),
-  training("t4", "2026-05-27T18:00"),
-];
+const events = [];
 
 const announcements = [
   {
@@ -66,7 +58,7 @@ const announcements = [
   },
 ];
 
-function player(id, name, teamId) {
+function player(id, name, teamId = "unassigned") {
   return {
     id,
     name,
