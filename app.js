@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-13";
+const appVersion = "4.0-live-rollout-15";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -342,13 +342,13 @@ const coachGuideSteps = [
     route: "home",
     target: "dashboard-next",
     title: "Coach walkthrough start",
-    body: "The dashboard starts with the next event and gives coaches quick access to fixtures, availability, attendance and parent verification.",
+    body: "The dashboard starts with the next event and gives coaches quick access to fixtures, availability, the register and parent verification.",
   },
   {
     route: "home",
     target: "coach-tools",
     title: "Quick coach actions",
-    body: "These four buttons are the main coach shortcuts: add a fixture or training session, send a message, verify parents, and take attendance.",
+    body: "These four buttons are the main coach shortcuts: add a fixture or training session, send a message, verify parents, and take the register.",
   },
   {
     route: "schedule",
@@ -379,7 +379,7 @@ const coachGuideSteps = [
     route: "attendance",
     target: "attendance-grid",
     eventId: "t1",
-    title: "Attendance",
+    title: "Register",
     body: "This is where a coach marks players present, absent or collected. Present and collected also log the parent push/in-app notification that would be sent in the live system.",
   },
   {
@@ -1091,7 +1091,7 @@ function authView() {
           <div>
             <p class="eyebrow">Private team app</p>
             <h1>Largs Colts 2016s</h1>
-            <p>Fixtures, availability, attendance and verified parent access.</p>
+          <p>Fixtures, availability, register and verified parent access.</p>
           </div>
         </div>
 
@@ -1221,7 +1221,7 @@ function shellView() {
       </main>
 
       <nav class="bottom-nav" aria-label="Mobile navigation">
-        ${routes.map((item) => navItem(item, route, true)).join("")}
+        ${mobileNav(routes, route)}
       </nav>
     </div>
     ${modalView()}
@@ -1251,33 +1251,53 @@ function accountControls() {
 
 function navRoutes(pendingOnly = false) {
   const coachRoutes = [
-    { id: "home", label: "Home" },
-    { id: "schedule", label: "Schedule" },
-    { id: "availability", label: "Availability" },
-    { id: "attendance", label: "Attendance" },
-    { id: "squads", label: "Teams" },
-    { id: "development", label: "Development" },
-    { id: "squad-builder", label: "Whiteboard" },
-    { id: "messages", label: "Messages" },
-    { id: "coaches", label: "Coaches" },
-    { id: "venues", label: "Venues" },
-    { id: "access", label: "Access" },
-    { id: "privacy", label: "Privacy" },
-    { id: "install", label: "Install" },
+    { id: "home", label: "Home", mark: "H" },
+    { id: "schedule", label: "Schedule", mark: "S" },
+    { id: "availability", label: "Availability", mobileLabel: "Avail.", mark: "AV" },
+    { id: "attendance", label: "Register", mark: "R" },
+    { id: "squads", label: "Teams", mark: "T" },
+    { id: "development", label: "Development", mark: "D" },
+    { id: "squad-builder", label: "Whiteboard", mark: "WB" },
+    { id: "messages", label: "Messages", mark: "M" },
+    { id: "coaches", label: "Coaches", mark: "C" },
+    { id: "venues", label: "Venues", mark: "V" },
+    { id: "access", label: "Requests", mark: "RQ" },
+    { id: "privacy", label: "Privacy", mark: "P" },
+    { id: "install", label: "Install", mark: "I" },
   ];
   const parentRoutes = [
     ...coachRoutes.filter((item) => !["squads", "development", "squad-builder"].includes(item.id)),
-    { id: "guide", label: "Guide" },
+    { id: "guide", label: "Guide", mark: "G" },
   ];
   const base = hasCoachAccess() ? coachRoutes : parentRoutes;
   return pendingOnly ? base.filter((item) => ["access", "privacy", "install", "guide"].includes(item.id)) : base;
 }
 
 function navItem(item, route, compact = false) {
+  const label = compact ? item.mobileLabel || item.label : item.label;
   return `
     <button class="nav-link ${route === item.id ? "active" : ""}" type="button" data-route-target="${item.id}" data-tour="nav-${item.id}">
-      <span class="nav-mark">${item.label.slice(0, 1)}</span>
-      <span>${compact ? item.label.replace("Availability", "Avail.") : item.label}</span>
+      <span class="nav-mark">${escapeHtml(item.mark || item.label.slice(0, 1))}</span>
+      <span>${escapeHtml(label)}</span>
+    </button>
+  `;
+}
+
+function mobileNav(routes, route) {
+  if (routes.length <= 5) {
+    return routes.map((item) => navItem(item, route, true)).join("");
+  }
+  const primaryIds = hasCoachAccess()
+    ? ["home", "schedule", "availability", "attendance"]
+    : ["home", "schedule", "availability", "messages"];
+  const primary = primaryIds.map((id) => routes.find((item) => item.id === id)).filter(Boolean);
+  const hidden = routes.filter((item) => !primaryIds.includes(item.id));
+  const moreActive = hidden.some((item) => item.id === route);
+  return `
+    ${primary.map((item) => navItem(item, route, true)).join("")}
+    <button class="nav-link ${moreActive ? "active" : ""}" type="button" data-modal="mobile-nav" data-tour="nav-more">
+      <span class="nav-mark">+</span>
+      <span>More</span>
     </button>
   `;
 }
@@ -1287,7 +1307,7 @@ function pageTitle(route) {
     home: "Dashboard",
     schedule: "Fixtures",
     availability: "Availability",
-    attendance: "Attendance",
+    attendance: "Register",
     squads: "Teams",
     development: "Player Development",
     "squad-builder": "Squad Whiteboard",
@@ -1387,7 +1407,7 @@ function homeView() {
     <section class="metric-grid">
       <article><strong>${playerCount}</strong><span>${hasCoachAccess() ? "Active players" : "Linked children"}</span></article>
       <article><strong>${counts.available}</strong><span>Available next event</span></article>
-      <article><strong>${averageAttendance()}%</strong><span>Attendance average</span></article>
+      <article><strong>${averageAttendance()}%</strong><span>Register average</span></article>
       <button class="metric-card" type="button" data-route-target="access"><strong>${pendingCount}</strong><span>Pending requests</span></button>
     </section>
 
@@ -1410,7 +1430,7 @@ function linkedChildCard(child) {
       </div>
       <dl class="info-list">
         <div><dt>Role</dt><dd>${escapeHtml(child.role)}</dd></div>
-        <div><dt>Attendance</dt><dd>${attendancePercent(child.id)}%</dd></div>
+        <div><dt>Register</dt><dd>${attendancePercent(child.id)}%</dd></div>
         <div><dt>Access</dt><dd>Verified</dd></div>
       </dl>
     </article>
@@ -1430,7 +1450,7 @@ function coachOverviewCard() {
         <button type="button" data-modal="event">Add fixture</button>
         <button type="button" data-modal="message">Send message</button>
         <button type="button" data-route-target="access">Pending requests</button>
-        <button type="button" data-route-target="attendance">Take attendance</button>
+        <button type="button" data-route-target="attendance">Take register</button>
         <button type="button" data-route-target="venues">Venues</button>
       </div>
     </article>
@@ -1684,7 +1704,7 @@ function responseRow(event, player) {
 
 function attendanceView() {
   const event = state.events.find((item) => item.id === state.selectedEventId) || state.events[0];
-  if (!event) return emptyEventsView("Attendance");
+  if (!event) return emptyEventsView("Register");
   const eventPlayers = getPlayersForEvent(event);
   const child = currentPlayer();
   const players = hasCoachAccess()
@@ -2032,7 +2052,7 @@ function messagesView() {
         <article class="message-card parent-alert-message">
           <div class="panel-title">
             <div>
-              <p class="eyebrow">Attendance alert - ${escapeHtml(displayDate(alert.createdAt || alert.sentAt))}</p>
+              <p class="eyebrow">Register alert - ${escapeHtml(displayDate(alert.createdAt || alert.sentAt))}</p>
               <h3>${escapeHtml(alert.title)}</h3>
             </div>
           </div>
@@ -2594,7 +2614,7 @@ function guideView() {
           <div><strong>2. Request your child</strong><p>Ask for access to your child once. A coach checks the request before player details appear.</p></div>
           <div><strong>3. Mark availability</strong><p>Open Availability, choose the event, then tap Available or Unavailable. For fixtures you can also offer snacks or lifts.</p></div>
           <div><strong>4. Check venues</strong><p>Use Schedule or Venues for pitch, parking, Google Maps and Apple Maps links.</p></div>
-          <div><strong>5. Read messages</strong><p>The message badge clears after you open Messages. Parent alerts for attendance and collection also appear there.</p></div>
+          <div><strong>5. Read messages</strong><p>The message badge clears after you open Messages. Parent alerts for register updates and collection also appear there.</p></div>
           <div><strong>6. Keep details current</strong><p>Use Access to update your own name and phone number, or Privacy to request a correction or removal of data.</p></div>
         </div>
       </article>
@@ -2681,7 +2701,7 @@ function installView() {
           <span>Parents can change their Firebase password</span>
           <span>Full roster and teams seeded into Firestore</span>
           <span>Fixtures and training stored in Firestore</span>
-          <span>Availability and attendance stored per event in Firestore</span>
+          <span>Availability and register data stored per event in Firestore</span>
           <span>Announcements trigger parent push notifications</span>
           <span>Home, 3G, Barrfields and typed away venues loaded</span>
           <span>Google Maps and Apple Maps buttons added</span>
@@ -2732,7 +2752,28 @@ function modalContent(type) {
   if (type === "edit-coach") return editCoachModal(state.modal.coachId);
   if (type === "edit-venue") return editVenueModal(state.modal.venueId);
   if (type === "edit-builder-slot") return editBuilderSlotModal(state.modal.slotId);
+  if (type === "mobile-nav") return mobileNavModal();
   return "";
+}
+
+function mobileNavModal() {
+  const routes = navRoutes();
+  const primaryIds = hasCoachAccess()
+    ? ["home", "schedule", "availability", "attendance"]
+    : ["home", "schedule", "availability", "messages"];
+  const hidden = routes.filter((item) => !primaryIds.includes(item.id));
+  return `
+    <p class="eyebrow">Navigation</p>
+    <h2 id="modal-title">More sections</h2>
+    <div class="mobile-menu-grid">
+      ${hidden.map((item) => `
+        <button class="mobile-menu-link ${state.route === item.id ? "active" : ""}" type="button" data-route-target="${item.id}">
+          <span class="nav-mark">${escapeHtml(item.mark || item.label.slice(0, 1))}</span>
+          <span>${escapeHtml(item.label)}</span>
+        </button>
+      `).join("")}
+    </div>
+  `;
 }
 
 function editBuilderSlotModal(slotId = "") {
@@ -2960,6 +3001,7 @@ document.addEventListener("click", async (event) => {
   if (target.dataset.route) {
     event.preventDefault();
     state.route = target.dataset.route;
+    delete state.modal;
     if (state.route === "messages") await markMessagesRead();
     saveState();
     render();
@@ -2968,6 +3010,7 @@ document.addEventListener("click", async (event) => {
 
   if (target.dataset.routeTarget) {
     state.route = target.dataset.routeTarget;
+    delete state.modal;
     if (state.route === "messages") await markMessagesRead();
     saveState();
     render();
@@ -3888,7 +3931,7 @@ async function setAttendance(playerId, status) {
   state.attendance[state.selectedEventId][playerId] = status;
   saveState();
   render();
-  toast(["present", "collected"].includes(status) ? "Attendance updated and parent push queued" : "Attendance updated");
+  toast(["present", "collected"].includes(status) ? "Register updated and parent push queued" : "Register updated");
 }
 
 async function deleteEvent(eventId) {

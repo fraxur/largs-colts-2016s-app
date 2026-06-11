@@ -449,14 +449,15 @@ button:disabled {
 
 .nav-mark {
   display: grid;
-  width: 28px;
+  width: 30px;
   height: 28px;
   place-items: center;
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.11);
   color: var(--gold);
-  font-size: 0.78rem;
+  font-size: 0.72rem;
   font-weight: 950;
+  line-height: 1;
 }
 
 .sign-out {
@@ -1453,6 +1454,33 @@ button:disabled {
   font-weight: 950;
 }
 
+.mobile-menu-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.mobile-menu-link {
+  display: flex;
+  min-height: 58px;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 10px 12px;
+  background: #ffffff;
+  color: var(--red-950);
+  font-family: inherit;
+  font-weight: 900;
+  text-align: left;
+}
+
+.mobile-menu-link.active {
+  border-color: rgba(138, 0, 10, 0.25);
+  background: var(--paper-2);
+  color: var(--red-900);
+}
+
 .coach-guide-card {
   position: fixed;
   right: 22px;
@@ -1905,13 +1933,13 @@ button:disabled {
   display: none;
 }
 
-@media (max-width: 1180px) {
+@media (max-width: 1180px), (hover: none) and (pointer: coarse) {
   .app-shell {
     grid-template-columns: 1fr;
   }
 
   .side-nav {
-    display: none;
+    display: none !important;
   }
 
   .app-main {
@@ -1923,10 +1951,10 @@ button:disabled {
     inset: auto 0 0 0;
     z-index: 60;
     display: grid;
-    grid-auto-flow: column;
-    grid-auto-columns: minmax(74px, 1fr);
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 6px;
-    overflow-x: auto;
+    overflow: hidden;
+    touch-action: manipulation;
     padding: 9px 10px calc(9px + var(--bottom-safe));
     border-top: 1px solid rgba(255, 255, 255, 0.16);
     background: rgba(77, 0, 4, 0.96);
@@ -1934,13 +1962,21 @@ button:disabled {
   }
 
   .bottom-nav .nav-link {
+    min-width: 0;
     min-height: 58px;
     flex-direction: column;
     gap: 4px;
     justify-content: center;
     padding: 6px;
-    font-size: 0.72rem;
+    font-size: 0.68rem;
     text-align: center;
+  }
+
+  .bottom-nav .nav-link span:last-child {
+    width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .bottom-nav .nav-link.active {
@@ -1994,6 +2030,7 @@ button:disabled {
   .auth-form,
   .two-col,
   .metric-grid,
+  .mobile-menu-grid,
   .attendance-grid,
   .team-board,
   .venue-grid,
