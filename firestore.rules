@@ -143,7 +143,16 @@ service cloud.firestore {
           && request.resource.data.parentUid == request.auth.uid
           && request.resource.data.status == "pending"
           && request.resource.data.requestType in ["delete", "access", "correct", "concern"]
-          && request.resource.data.keys().hasOnly(["parentUid", "parentName", "email", "playerId", "playerTeamId", "childName", "requestType", "details", "status", "createdAt", "updatedAt"]);
+            && request.resource.data.keys().hasOnly(["parentUid", "parentName", "email", "playerId", "playerTeamId", "childName", "requestType", "details", "status", "createdAt", "updatedAt"]);
+        allow update, delete: if isCoach(clubId);
+      }
+
+      match /coachQueries/{queryId} {
+        allow read: if isCoach(clubId) || (signedIn() && resource.data.parentUid == request.auth.uid);
+        allow create: if isParent(clubId)
+          && request.resource.data.parentUid == request.auth.uid
+          && request.resource.data.status == "open"
+          && request.resource.data.keys().hasOnly(["parentUid", "parentName", "email", "subject", "body", "status", "createdAt", "updatedAt"]);
         allow update, delete: if isCoach(clubId);
       }
 

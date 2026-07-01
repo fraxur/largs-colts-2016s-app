@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-15";
+const appVersion = "4.0-live-rollout-16";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -163,6 +163,7 @@ const defaultState = {
   parentLinks: [],
   accessRequests: [],
   dataRequests: [],
+  coachQueries: [],
   events: [],
   availability: {},
   attendance: {},
@@ -432,6 +433,7 @@ function loadState() {
     parentLinks: [],
     accessRequests: [],
     dataRequests: [],
+    coachQueries: [],
     notifications: [],
     messages: [],
     users: [],
@@ -455,6 +457,7 @@ function normalizeState(saved) {
   merged.messages = merged.messages || [];
   merged.notifications = merged.notifications || [];
   merged.dataRequests = merged.dataRequests || [];
+  merged.coachQueries = merged.coachQueries || [];
   merged.users = merged.users || [];
   merged.coachContacts = merged.coachContacts || [];
   merged.venues = merged.venues || [];
@@ -801,11 +804,13 @@ function statusText(status) {
     pending: "Pending",
     approved: "Approved",
     rejected: "Rejected",
+    open: "Open",
+    handled: "Handled",
   }[status] || status;
 }
 
 function statusClass(status) {
-  if (["available", "present", "approved", "collected"].includes(status)) return "good";
+  if (["available", "present", "approved", "collected", "handled"].includes(status)) return "good";
   if (["unavailable", "absent", "rejected"].includes(status)) return "bad";
   return "warn";
 }
@@ -1259,6 +1264,7 @@ function navRoutes(pendingOnly = false) {
     { id: "development", label: "Development", mark: "D" },
     { id: "squad-builder", label: "Whiteboard", mark: "WB" },
     { id: "messages", label: "Messages", mark: "M" },
+    { id: "coach-inbox", label: "Inbox", mark: "IN" },
     { id: "coaches", label: "Coaches", mark: "C" },
     { id: "venues", label: "Venues", mark: "V" },
     { id: "access", label: "Requests", mark: "RQ" },
@@ -1266,11 +1272,12 @@ function navRoutes(pendingOnly = false) {
     { id: "install", label: "Install", mark: "I" },
   ];
   const parentRoutes = [
-    ...coachRoutes.filter((item) => !["squads", "development", "squad-builder"].includes(item.id)),
+    ...coachRoutes.filter((item) => !["squads", "development", "squad-builder", "coach-inbox"].includes(item.id)),
+    { id: "contact", label: "Contact", mark: "CT" },
     { id: "guide", label: "Guide", mark: "G" },
   ];
   const base = hasCoachAccess() ? coachRoutes : parentRoutes;
-  return pendingOnly ? base.filter((item) => ["access", "privacy", "install", "guide"].includes(item.id)) : base;
+  return pendingOnly ? base.filter((item) => ["access", "contact", "privacy", "install", "guide"].includes(item.id)) : base;
 }
 
 function navItem(item, route, compact = false) {
@@ -1312,8 +1319,10 @@ function pageTitle(route) {
     development: "Player Development",
     "squad-builder": "Squad Whiteboard",
     messages: "Messages",
+    "coach-inbox": "Coach Inbox",
     coaches: "Coaches",
     venues: "Venues",
+    contact: "Contact Coaches",
     access: "Access",
     privacy: "Privacy",
     install: "Mobile Test",
@@ -1344,8 +1353,9 @@ function pendingBanner() {
 
 function pageView(route) {
   const pendingOnly = state.session.role === "parent" && !approvedPlayers().length;
-  if (pendingOnly && !["privacy", "install", "guide"].includes(route)) return accessView();
-  if (!hasCoachAccess() && ["squads", "development", "squad-builder"].includes(route)) return homeView();
+  if (pendingOnly && !["access", "contact", "privacy", "install", "guide"].includes(route)) return accessView();
+  if (!hasCoachAccess() && ["squads", "development", "squad-builder", "coach-inbox"].includes(route)) return homeView();
+  if (hasCoachAccess() && route === "contact") return coachInboxView();
   return {
     home: homeView,
     schedule: scheduleView,
@@ -1355,8 +1365,10 @@ function pageView(route) {
     development: developmentView,
     "squad-builder": squadBuilderView,
     messages: messagesView,
+    "coach-inbox": coachInboxView,
     coaches: coachesView,
     venues: venuesView,
+    contact: contactCoachesView,
     access: accessView,
     privacy: privacyView,
     install: installView,
@@ -1452,6 +1464,7 @@ function coachOverviewCard() {
         <button type="button" data-route-target="access">Pending requests</button>
         <button type="button" data-route-target="attendance">Take register</button>
         <button type="button" data-route-target="venues">Venues</button>
+        <button type="button" data-route-target="coach-inbox">Coach inbox</button>
       </div>
     </article>
   `;
@@ -2074,6 +2087,97 @@ function messagesView() {
   `;
 }
 
+function contactCoachesView() {
+  const queries = state.coachQueries
+    .filter((query) => query.parentUid === state.session.userId)
+    .sort(sortByCreatedAtDesc);
+  return `
+    <section class="content-grid two-col">
+      <article class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Parent message</p>
+            <h3>Contact the coaches</h3>
+          </div>
+          <span class="status-pill good">Private</span>
+        </div>
+        <p class="muted">Use this for queries, concerns or complaints that should go to the coaches rather than the team-wide message feed.</p>
+        <form class="stacked-form" data-form="coach-query">
+          <label class="field">
+            <span>Subject</span>
+            <input name="subject" required maxlength="90" placeholder="Short subject">
+          </label>
+          <label class="field">
+            <span>Message</span>
+            <textarea name="body" rows="7" required maxlength="1800" placeholder="Write your message for the coaches"></textarea>
+          </label>
+          <button class="primary-button" type="submit">Send to coaches</button>
+        </form>
+      </article>
+      <article class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Sent messages</p>
+            <h3>Your coach contact history</h3>
+          </div>
+        </div>
+        <div class="request-list">
+          ${queries.length ? queries.map(coachQueryRow).join("") : '<p class="muted">No coach messages sent yet.</p>'}
+        </div>
+      </article>
+    </section>
+  `;
+}
+
+function coachInboxView() {
+  const queries = state.coachQueries.slice().sort((a, b) => {
+    if ((a.status || "open") !== (b.status || "open")) return (a.status || "open") === "open" ? -1 : 1;
+    return sortByCreatedAtDesc(a, b);
+  });
+  const openCount = queries.filter((query) => (query.status || "open") === "open").length;
+  return `
+    <section class="toolbar">
+      <div>
+        <p class="eyebrow">Parent contact inbox</p>
+        <h2 class="section-heading">${openCount} open message${openCount === 1 ? "" : "s"}</h2>
+      </div>
+    </section>
+    <section class="message-list">
+      ${queries.length ? queries.map(coachQueryRow).join("") : `
+        <article class="panel">
+          <p class="eyebrow">Inbox clear</p>
+          <h3>No parent messages yet</h3>
+          <p class="muted">Messages sent from the parent Contact page will appear here.</p>
+        </article>
+      `}
+    </section>
+  `;
+}
+
+function coachQueryRow(query) {
+  const status = query.status || "open";
+  const created = displayDate(query.createdAt || query.updatedAt);
+  const parentLine = [query.parentName || "Parent", query.email].filter(Boolean).join(" - ");
+  return `
+    <article class="message-card coach-query-card">
+      <div class="panel-title">
+        <div>
+          <p class="eyebrow">${escapeHtml(created)}${parentLine ? ` - ${escapeHtml(parentLine)}` : ""}</p>
+          <h3>${escapeHtml(query.subject || "Parent message")}</h3>
+        </div>
+        <span class="status-pill ${statusClass(status)}">${statusText(status)}</span>
+      </div>
+      <p>${escapeHtml(query.body || "")}</p>
+      ${hasCoachAccess() ? `
+        <div class="inline-actions">
+          ${status !== "handled" ? `<button class="tiny-button approve" type="button" data-action="resolve-coach-query" data-query-id="${escapeHtml(query.id)}">Mark handled</button>` : ""}
+          <button class="tiny-button reject" type="button" data-action="delete-coach-query" data-query-id="${escapeHtml(query.id)}">Delete</button>
+        </div>
+      ` : ""}
+    </article>
+  `;
+}
+
 function coachesView() {
   const contacts = appCoachContacts();
   return `
@@ -2098,10 +2202,12 @@ function coachesView() {
         </div>
         <div class="check-list">
           <span>Use app messages for normal team updates.</span>
+          <span>Use Contact Coaches for private queries, concerns or complaints.</span>
           <span>Use call or text for urgent fixture or pickup issues.</span>
           <span>Coach numbers are visible only inside verified parent/coach access.</span>
           <span>Email fields are left blank until the club confirms official addresses.</span>
         </div>
+        ${!hasCoachAccess() ? '<button class="primary-button panel-action" type="button" data-route-target="contact">Contact coaches</button>' : ""}
       </article>
     </section>
   `;
@@ -2615,7 +2721,8 @@ function guideView() {
           <div><strong>3. Mark availability</strong><p>Open Availability, choose the event, then tap Available or Unavailable. For fixtures you can also offer snacks or lifts.</p></div>
           <div><strong>4. Check venues</strong><p>Use Schedule or Venues for pitch, parking, Google Maps and Apple Maps links.</p></div>
           <div><strong>5. Read messages</strong><p>The message badge clears after you open Messages. Parent alerts for register updates and collection also appear there.</p></div>
-          <div><strong>6. Keep details current</strong><p>Use Access to update your own name and phone number, or Privacy to request a correction or removal of data.</p></div>
+          <div><strong>6. Contact coaches</strong><p>Use Contact for private queries, concerns or complaints that should go to the coach inbox.</p></div>
+          <div><strong>7. Keep details current</strong><p>Use Access to update your own name and phone number, or Privacy to request a correction or removal of data.</p></div>
         </div>
       </article>
       <article class="panel">
@@ -3164,6 +3271,16 @@ document.addEventListener("click", async (event) => {
     return;
   }
 
+  if (action === "resolve-coach-query") {
+    await resolveCoachQuery(target.dataset.queryId);
+    return;
+  }
+
+  if (action === "delete-coach-query") {
+    await deleteCoachQuery(target.dataset.queryId);
+    return;
+  }
+
   if (action === "set-builder-format") {
     state.squadBuilder.format = target.dataset.format || "7";
     state.squadBuilder.selectedPlayerId = "";
@@ -3437,6 +3554,7 @@ document.addEventListener("submit", async (event) => {
     if (form.dataset.form === "request-access") await requestAccess(data);
     if (form.dataset.form === "parent-profile") await updateParentProfile(data);
     if (form.dataset.form === "data-request") await submitDataRequest(data);
+    if (form.dataset.form === "coach-query") await submitCoachQuery(data);
     if (form.dataset.form === "change-password") await changePassword(data);
     if (form.dataset.form === "event") await addEvent(data);
     if (form.dataset.form === "edit-event") await editEvent(data);
@@ -3680,6 +3798,32 @@ async function submitDataRequest(data) {
   toast("Data request sent");
 }
 
+async function submitCoachQuery(data) {
+  if (!state.session.loggedIn || hasCoachAccess()) return;
+  const runtime = await ensureFirebase();
+  const subject = String(data.get("subject") || "").trim();
+  const body = String(data.get("body") || "").trim();
+
+  if (!subject || !body) {
+    toast("Add a subject and message before sending");
+    return;
+  }
+
+  const queryId = `${runtime.user.uid}_query_${Date.now()}`;
+  await runtime.modules.setDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "coachQueries", queryId), {
+    parentUid: runtime.user.uid,
+    parentName: state.session.parentName || "",
+    email: state.session.email || runtime.user.email || "",
+    subject,
+    body,
+    status: "open",
+    createdAt: runtime.modules.serverTimestamp(),
+    updatedAt: runtime.modules.serverTimestamp(),
+  }, { merge: true });
+  await loadLiveStateFromFirebase();
+  toast("Message sent to coaches");
+}
+
 async function createAccessRequest({ childName, relation, parentName, email }) {
   if (!childName) {
     toast("Add the child name for the request");
@@ -3733,6 +3877,31 @@ async function deleteDataRequest(requestId) {
   state.dataRequests = state.dataRequests.filter((request) => request.id !== requestId);
   render();
   toast("Data request deleted");
+}
+
+async function resolveCoachQuery(queryId) {
+  if (!requireCoach() || !queryId) return;
+  const runtime = await ensureFirebase();
+  await runtime.modules.setDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "coachQueries", queryId), {
+    status: "handled",
+    handledBy: state.session.userId,
+    handledByName: state.session.coachName || "Coach",
+    handledAt: runtime.modules.serverTimestamp(),
+    updatedAt: runtime.modules.serverTimestamp(),
+  }, { merge: true });
+  state.coachQueries = state.coachQueries.map((query) => query.id === queryId ? { ...query, status: "handled" } : query);
+  render();
+  toast("Coach message marked handled");
+}
+
+async function deleteCoachQuery(queryId) {
+  if (!requireCoach() || !queryId) return;
+  const confirmed = window.confirm("Delete this parent message from the coach inbox?");
+  if (!confirmed) return;
+  await deleteLiveDocument("coachQueries", queryId);
+  state.coachQueries = state.coachQueries.filter((query) => query.id !== queryId);
+  render();
+  toast("Coach message deleted");
 }
 
 async function changePassword(data) {
@@ -4347,6 +4516,15 @@ async function loadDocs(collectionName) {
   return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
 }
 
+async function loadOptionalDocs(collectionName) {
+  try {
+    return await loadDocs(collectionName);
+  } catch (error) {
+    console.warn(`${collectionName} could not be loaded yet`, error);
+    return [];
+  }
+}
+
 async function loadLiveStateFromFirebase() {
   if (!isFirebaseSignedIn()) return;
   try {
@@ -4370,13 +4548,14 @@ async function loadLiveStateFromFirebase() {
     state.coachContacts = coachContactDocs;
 
     if (hasCoachAccess(role)) {
-      const [players, parentLinks, accessRequests, notifications, users, dataRequests, playerDevelopment] = await Promise.all([
+      const [players, parentLinks, accessRequests, notifications, users, dataRequests, coachQueries, playerDevelopment] = await Promise.all([
         loadDocs("players"),
         loadDocs("parentLinks"),
         loadDocs("accessRequests"),
         loadDocs("notifications"),
         loadDocs("users"),
         loadDocs("dataRequests"),
+        loadOptionalDocs("coachQueries"),
         loadDocs("playerDevelopment"),
       ]);
       state.players = players.map(normalizePlayerRecord).sort((a, b) => a.name.localeCompare(b.name));
@@ -4385,19 +4564,22 @@ async function loadLiveStateFromFirebase() {
       state.notifications = notifications.sort(sortByCreatedAtDesc);
       state.users = users;
       state.dataRequests = dataRequests.sort(sortByCreatedAtDesc);
+      state.coachQueries = coachQueries.sort(sortByCreatedAtDesc);
       state.playerDevelopment = Object.fromEntries(playerDevelopment.map((record) => [record.playerId || record.id, defaultDevelopmentRecord(record.playerId || record.id, record)]));
     } else {
       const uid = runtime.user.uid;
-      const [parentLinks, accessRequests, notifications, dataRequests] = await Promise.all([
+      const [parentLinks, accessRequests, notifications, dataRequests, coachQueries] = await Promise.all([
         loadDocsWhere("parentLinks", "parentUid", "==", uid),
         loadDocsWhere("accessRequests", "parentUid", "==", uid),
         loadDocsWhere("notifications", "userId", "==", uid),
         loadDocsWhere("dataRequests", "parentUid", "==", uid),
+        loadOptionalDocsWhere("coachQueries", "parentUid", "==", uid),
       ]);
       state.parentLinks = parentLinks;
       state.accessRequests = accessRequests.sort(sortByCreatedAtDesc);
       state.notifications = notifications.sort(sortByCreatedAtDesc);
       state.dataRequests = dataRequests.sort(sortByCreatedAtDesc);
+      state.coachQueries = coachQueries.sort(sortByCreatedAtDesc);
       state.players = await loadApprovedPlayerDocs(parentLinks);
       state.playerDevelopment = {};
     }
@@ -4426,6 +4608,15 @@ async function loadDocsWhere(collectionName, field, operator, value) {
   const queryRef = runtime.modules.query(await liveCollection(collectionName), runtime.modules.where(field, operator, value));
   const snapshot = await runtime.modules.getDocs(queryRef);
   return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+}
+
+async function loadOptionalDocsWhere(collectionName, field, operator, value) {
+  try {
+    return await loadDocsWhere(collectionName, field, operator, value);
+  } catch (error) {
+    console.warn(`${collectionName} could not be loaded yet`, error);
+    return [];
+  }
 }
 
 async function loadApprovedPlayerDocs(parentLinks) {
@@ -4577,6 +4768,9 @@ async function startLiveSubscriptions() {
     watchCollection("dataRequests", (items) => {
       state.dataRequests = items.sort(sortByCreatedAtDesc);
     });
+    watchCollection("coachQueries", (items) => {
+      state.coachQueries = items.sort(sortByCreatedAtDesc);
+    });
     watchCollection("playerDevelopment", (items) => {
       state.playerDevelopment = Object.fromEntries(items.map((record) => [record.playerId || record.id, defaultDevelopmentRecord(record.playerId || record.id, record)]));
     });
@@ -4599,6 +4793,12 @@ async function startLiveSubscriptions() {
       runtime.modules.where("parentUid", "==", uid),
     ), (items) => {
       state.dataRequests = items.sort(sortByCreatedAtDesc);
+    });
+    watchQuery(runtime.modules.query(
+      runtime.modules.collection(runtime.db, "clubs", clubId, "coachQueries"),
+      runtime.modules.where("parentUid", "==", uid),
+    ), (items) => {
+      state.coachQueries = items.sort(sortByCreatedAtDesc);
     });
     watchQuery(runtime.modules.query(
       runtime.modules.collection(runtime.db, "clubs", clubId, "parentLinks"),
