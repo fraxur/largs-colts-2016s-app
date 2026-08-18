@@ -1262,14 +1262,14 @@ button:disabled {
 
 .team-pill.team1,
 .team-dot.team1 {
-  background: rgba(133, 0, 8, 0.13);
-  color: var(--red-900);
+  background: rgba(249, 115, 22, 0.16);
+  color: #9a3412;
 }
 
 .team-pill.team2,
 .team-dot.team2 {
-  background: rgba(211, 168, 74, 0.22);
-  color: #6c4700;
+  background: rgba(37, 99, 235, 0.14);
+  color: #1d4ed8;
 }
 
 .team-pill.unassigned,
@@ -1571,6 +1571,10 @@ button:disabled {
   font-size: 0.78rem;
   font-weight: 950;
   white-space: nowrap;
+}
+
+.level-pill.not-assessed {
+  background: #6b7280;
 }
 
 .level-pill.developmental {

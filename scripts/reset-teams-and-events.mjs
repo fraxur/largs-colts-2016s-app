@@ -5,14 +5,14 @@ const projectId = process.env.FIREBASE_PROJECT_ID || "largs-colts-2016s-app-c890
 const clubId = process.env.LARGS_CLUB_ID || "largs-colts-2016s";
 const confirmed = process.argv.includes("--yes");
 const withTraining = process.argv.includes("--with-training");
-const trainingWeeks = Number(argValue("--weeks", "20")) || 20;
-const trainingTo = argValue("--to", "");
+const trainingFrom = argValue("--from", "2026-08-18");
+const trainingTo = argValue("--to", "2026-10-17");
 
 if (!confirmed) {
-  console.log("This will update live Firestore: Team 1/Team 2 only, all players unassigned, player development reset, and all fixtures/training removed.");
-  console.log("To also add Tuesday/Thursday Bowencraig training, include --with-training.");
+  console.log("This will update live Firestore: Largs Orange/Largs Blue only, all players unassigned, player development reset, and all fixtures/training removed.");
+  console.log(`To also add Tuesday/Thursday Bowencraig training from ${trainingFrom} to ${trainingTo}, include --with-training.`);
   console.log("Run again with: npm run reset:teams-events -- --yes");
-  console.log("Or: npm run reset:teams-events -- --yes --with-training --weeks=20");
+  console.log("Or: npm run reset:teams-events -- --yes --with-training");
   process.exit(0);
 }
 
@@ -26,8 +26,8 @@ const club = db.collection("clubs").doc(clubId);
 const now = FieldValue.serverTimestamp();
 
 const teams = [
-  { id: "team1", name: "Team 1", colour: "#850008", order: 1 },
-  { id: "team2", name: "Team 2", colour: "#d3a84a", order: 2 },
+  { id: "team1", name: "Largs Orange", colour: "#f97316", order: 1 },
+  { id: "team2", name: "Largs Blue", colour: "#2563eb", order: 2 },
 ];
 const oldTeamIds = ["orange", "blue", "yellow"];
 
@@ -170,8 +170,8 @@ function trainingEvent(date) {
 }
 
 async function seedTrainingSessions() {
-  const from = startOfToday();
-  const to = parseDateInput(trainingTo, addDays(from, trainingWeeks * 7));
+  const from = parseDateInput(trainingFrom, startOfToday());
+  const to = parseDateInput(trainingTo, addDays(from, 60));
   const sessions = [];
   for (let cursor = new Date(from); cursor <= to; cursor = addDays(cursor, 1)) {
     const day = cursor.getDay();
@@ -205,7 +205,7 @@ async function main() {
   const trainingCount = withTraining ? await seedTrainingSessions() : 0;
   const retargetedMessages = await retargetMessages();
   console.log(`Reset live data in ${projectId}/${clubId}.`);
-  console.log(`Teams: Team 1 and Team 2. Old colour teams removed.`);
+  console.log(`Teams: Largs Orange and Largs Blue. Old colour teams removed.`);
   console.log(`Players unassigned: ${playerCount}. Development records reset to Not assessed.`);
   console.log(`Deleted ${eventCounts.events} events, ${eventCounts.availability} availability records and ${eventCounts.attendance} attendance records.`);
   if (withTraining) console.log(`Added ${trainingCount} Tuesday/Thursday Bowencraig training sessions.`);

@@ -14,8 +14,8 @@ const club = db.collection("clubs").doc(clubId);
 const now = FieldValue.serverTimestamp();
 
 const teams = [
-  { id: "team1", name: "Team 1", colour: "#850008", order: 1 },
-  { id: "team2", name: "Team 2", colour: "#d3a84a", order: 2 },
+  { id: "team1", name: "Largs Orange", colour: "#f97316", order: 1 },
+  { id: "team2", name: "Largs Blue", colour: "#2563eb", order: 2 },
 ];
 
 const players = [

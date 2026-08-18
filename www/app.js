@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-18";
+const appVersion = "4.0-live-rollout-19";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -26,8 +26,8 @@ let suppressBuilderClickUntil = 0;
 
 const unassignedTeam = { id: "unassigned", name: "Unassigned", colour: "#6b7280" };
 const teams = [
-  { id: "team1", name: "Team 1", colour: "#850008" },
-  { id: "team2", name: "Team 2", colour: "#d3a84a" },
+  { id: "team1", name: "Largs Orange", colour: "#f97316" },
+  { id: "team2", name: "Largs Blue", colour: "#2563eb" },
 ];
 const legacyTeamIds = new Set(["orange", "blue", "yellow", "", null, undefined]);
 liveTeams = teams;
@@ -357,7 +357,7 @@ const coachGuideSteps = [
     route: "schedule",
     target: "schedule-toolbar",
     title: "Fixtures and training",
-    body: "Use the team filters to show All, Team 1 or Team 2. The add button lets a coach add either a fixture or training session.",
+    body: "Use the team filters to show All, Largs Orange or Largs Blue. The add button lets a coach add either a fixture or training session.",
   },
   {
     route: "schedule",
@@ -389,7 +389,7 @@ const coachGuideSteps = [
     route: "squads",
     target: "team-board",
     title: "Teams and squads",
-    body: "The team board lists Unassigned, Team 1 and Team 2. Coaches can add a player, edit parent contact placeholders, or move a player when squads are agreed.",
+    body: "The team board lists Unassigned, Largs Orange and Largs Blue. Coaches can add a player, edit parent contact placeholders, or move a player when squads are agreed.",
   },
   {
     route: "messages",
