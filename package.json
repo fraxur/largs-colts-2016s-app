@@ -6,6 +6,7 @@
   "scripts": {
     "serve": "node server.mjs",
     "seed:firestore": "node scripts/seed-firestore.mjs",
+    "seed:fixtures-2026": "node scripts/seed-fixtures-2026.mjs",
     "reset:teams-events": "node scripts/reset-teams-and-events.mjs",
     "remove:sample-parents": "node scripts/remove-sample-parents.mjs",
     "prepare:capacitor": "node scripts/prepare-capacitor.mjs",

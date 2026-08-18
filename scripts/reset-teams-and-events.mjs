@@ -4,10 +4,15 @@ import { FieldValue, getFirestore } from "firebase-admin/firestore";
 const projectId = process.env.FIREBASE_PROJECT_ID || "largs-colts-2016s-app-c8909";
 const clubId = process.env.LARGS_CLUB_ID || "largs-colts-2016s";
 const confirmed = process.argv.includes("--yes");
+const withTraining = process.argv.includes("--with-training");
+const trainingWeeks = Number(argValue("--weeks", "20")) || 20;
+const trainingTo = argValue("--to", "");
 
 if (!confirmed) {
-  console.log("This will update live Firestore: Team 1/Team 2 only, all players unassigned, and all fixtures/training removed.");
+  console.log("This will update live Firestore: Team 1/Team 2 only, all players unassigned, player development reset, and all fixtures/training removed.");
+  console.log("To also add Tuesday/Thursday Bowencraig training, include --with-training.");
   console.log("Run again with: npm run reset:teams-events -- --yes");
+  console.log("Or: npm run reset:teams-events -- --yes --with-training --weeks=20");
   process.exit(0);
 }
 
@@ -25,6 +30,11 @@ const teams = [
   { id: "team2", name: "Team 2", colour: "#d3a84a", order: 2 },
 ];
 const oldTeamIds = ["orange", "blue", "yellow"];
+
+function argValue(name, fallback = "") {
+  const prefix = `${name}=`;
+  return process.argv.find((item) => item.startsWith(prefix))?.slice(prefix.length) || fallback;
+}
 
 async function commitInChunks(operations, chunkSize = 400) {
   for (let index = 0; index < operations.length; index += chunkSize) {
@@ -68,7 +78,15 @@ async function unassignPlayers() {
     operations.push((batch) => batch.set(doc.ref, { teamId: "unassigned", updatedAt: now }, { merge: true }));
   });
   development.docs.forEach((doc) => {
-    operations.push((batch) => batch.set(doc.ref, { teamId: "unassigned", updatedAt: now }, { merge: true }));
+    operations.push((batch) => batch.set(doc.ref, {
+      teamId: "unassigned",
+      level: "Not assessed",
+      band: "Not set",
+      foot: "Not set",
+      positions: [],
+      notes: "",
+      updatedAt: now,
+    }, { merge: true }));
   });
   parentLinks.docs.forEach((doc) => {
     operations.push((batch) => batch.set(doc.ref, { playerTeamId: "unassigned", updatedAt: now }, { merge: true }));
@@ -106,6 +124,65 @@ async function clearEvents() {
   };
 }
 
+function toDateOnly(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function addDays(date, days) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function startOfToday() {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return today;
+}
+
+function parseDateInput(value, fallback) {
+  if (!value) return fallback;
+  const parsed = new Date(`${value}T00:00:00`);
+  return Number.isNaN(parsed.getTime()) ? fallback : parsed;
+}
+
+function trainingEvent(date) {
+  const dateText = toDateOnly(date);
+  return {
+    id: `training-${dateText.replaceAll("-", "")}`,
+    type: "Training",
+    title: "Training",
+    teamId: "all",
+    opponent: "",
+    datetime: `${dateText}T18:00:00`,
+    finishTime: "19:30",
+    venue: "Bowencraig (Home pitch)",
+    venueId: "bowencraig",
+    address: "55.77946, -4.856398",
+    parkingAddress: "Bowencraig East Car Park, Irvine Rd, Fairlie, Largs KA29 0BG",
+    meetTime: "",
+    kit: "",
+    notes: "18:00-19:30. Tuesday and Thursday training at Bowencraig. Bring boots, water and shin pads.",
+  };
+}
+
+async function seedTrainingSessions() {
+  const from = startOfToday();
+  const to = parseDateInput(trainingTo, addDays(from, trainingWeeks * 7));
+  const sessions = [];
+  for (let cursor = new Date(from); cursor <= to; cursor = addDays(cursor, 1)) {
+    const day = cursor.getDay();
+    if (day === 2 || day === 4) sessions.push(trainingEvent(cursor));
+  }
+  await commitInChunks(sessions.map((event) => (batch) => {
+    batch.set(club.collection("events").doc(event.id), { ...event, createdAt: now, updatedAt: now }, { merge: true });
+  }));
+  return sessions.length;
+}
+
 async function retargetMessages() {
   const [announcements, messages] = await Promise.all([
     club.collection("announcements").get(),
@@ -125,11 +202,13 @@ async function main() {
   await resetTeams();
   const playerCount = await unassignPlayers();
   const eventCounts = await clearEvents();
+  const trainingCount = withTraining ? await seedTrainingSessions() : 0;
   const retargetedMessages = await retargetMessages();
   console.log(`Reset live data in ${projectId}/${clubId}.`);
   console.log(`Teams: Team 1 and Team 2. Old colour teams removed.`);
-  console.log(`Players unassigned: ${playerCount}. Development records kept.`);
+  console.log(`Players unassigned: ${playerCount}. Development records reset to Not assessed.`);
   console.log(`Deleted ${eventCounts.events} events, ${eventCounts.availability} availability records and ${eventCounts.attendance} attendance records.`);
+  if (withTraining) console.log(`Added ${trainingCount} Tuesday/Thursday Bowencraig training sessions.`);
   console.log(`Retargeted ${retargetedMessages} old colour-team messages to All teams.`);
 }
 

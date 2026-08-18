@@ -1573,6 +1573,10 @@ button:disabled {
   white-space: nowrap;
 }
 
+.level-pill.not-assessed {
+  background: #6b7280;
+}
+
 .level-pill.developmental {
   background: var(--warn);
 }

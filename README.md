@@ -49,13 +49,27 @@ This seeds:
 - Full active player list, all marked as Unassigned
 - A welcome announcement
 
-It does not create fixtures or training sessions. Coaches can add new fixtures/training once the new team split is agreed.
+It does not create match fixtures. Coaches can add fixture lists once the new team split is agreed.
 
-To reset the live Firestore data to Team 1/Team 2, mark all players as Unassigned, preserve development records, and remove all current fixtures/training plus their attendance/availability records, run:
+To reset the live Firestore data to Team 1/Team 2, mark all players as Unassigned, reset development records to a clean slate, and remove all current fixtures/training plus their attendance/availability records, run:
 
 ```powershell
 npm run reset:teams-events -- --yes
 ```
+
+To also add Tuesday and Thursday Bowencraig training sessions at 18:00-19:30, run:
+
+```powershell
+npm run reset:teams-events -- --yes --with-training --weeks=20
+```
+
+To add the August-October 2026 league fixture lists from the screenshots, run:
+
+```powershell
+npm run seed:fixtures-2026 -- --yes
+```
+
+Fixture mapping: Orange list becomes Team 1. Blue list becomes Team 2. Existing non-training schedule items are removed first unless `--keep-existing` is added.
 
 No sample parent accounts are created by the main seed. Parent test accounts should be created by the coaches using separate parent emails inside the app.
 

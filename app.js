@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-16";
+const appVersion = "4.0-live-rollout-18";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -85,8 +85,8 @@ const venues = [
 ];
 
 const kitOptions = ["Home kit", "Away kit"];
-const developmentLevels = ["Developmental", "Intermediate", "Advanced"];
-const developmentBands = ["Low", "Mid", "High"];
+const developmentLevels = ["Not assessed", "Developmental", "Intermediate", "Advanced"];
+const developmentBands = ["Not set", "Low", "Mid", "High"];
 const footOptions = ["Not set", "Right", "Left", "Both"];
 const playerPositions = [
   "Goalkeeper",
@@ -151,6 +151,7 @@ const defaultState = {
   route: "home",
   authRole: "parent",
   scheduleFilter: "all",
+  scheduleType: "matches",
   schedulePeriod: "upcoming",
   selectedEventId: "e1",
   coachGuide: {
@@ -211,8 +212,8 @@ function defaultDevelopmentRecord(playerId = "", record = {}) {
   return {
     id: playerId || record.id || "",
     playerId: playerId || record.playerId || record.id || "",
-    level: developmentLevels.includes(record.level) ? record.level : "Developmental",
-    band: developmentBands.includes(record.band) ? record.band : "Mid",
+    level: developmentLevels.includes(record.level) ? record.level : "Not assessed",
+    band: developmentBands.includes(record.band) ? record.band : "Not set",
     foot: footOptions.includes(record.foot) ? record.foot : "Not set",
     positions: Array.isArray(record.positions) ? record.positions.filter((position) => playerPositions.includes(position)) : [],
     notes: record.notes || "",
@@ -225,17 +226,18 @@ function developmentFor(playerId) {
 
 function developmentLabel(record) {
   const safe = defaultDevelopmentRecord(record.playerId, record);
-  return `${safe.band} ${safe.level}`;
+  if (safe.level === "Not assessed") return "Not assessed";
+  return safe.band === "Not set" ? safe.level : `${safe.band} ${safe.level}`;
 }
 
 function developmentClass(record) {
-  return defaultDevelopmentRecord(record.playerId, record).level.toLowerCase();
+  return defaultDevelopmentRecord(record.playerId, record).level.toLowerCase().replace(/[^a-z0-9]+/g, "-");
 }
 
 function developmentScore(record) {
   const safe = defaultDevelopmentRecord(record.playerId, record);
-  const levelScore = { Developmental: 0, Intermediate: 3, Advanced: 6 }[safe.level] || 0;
-  const bandScore = { Low: 0, Mid: 1, High: 2 }[safe.band] || 1;
+  const levelScore = { "Not assessed": -3, Developmental: 0, Intermediate: 3, Advanced: 6 }[safe.level] ?? -3;
+  const bandScore = { "Not set": 0, Low: 0, Mid: 1, High: 2 }[safe.band] ?? 0;
   return levelScore + bandScore;
 }
 
@@ -487,6 +489,7 @@ function normalizeState(saved) {
   if (merged.scheduleFilter !== "all" && !eventTeamOptions().some((team) => team.id === merged.scheduleFilter)) {
     merged.scheduleFilter = "all";
   }
+  merged.scheduleType = ["matches", "training"].includes(merged.scheduleType) ? merged.scheduleType : "matches";
   merged.schedulePeriod = merged.schedulePeriod || "upcoming";
   merged.coachGuide = {
     ...defaultState.coachGuide,
@@ -758,6 +761,14 @@ function formatDate(value) {
   }).format(new Date(value));
 }
 
+function formatDateOnly(value) {
+  return new Intl.DateTimeFormat("en-GB", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+  }).format(new Date(value));
+}
+
 function displayDate(value) {
   if (!value) return "Just now";
   if (typeof value === "string") return value;
@@ -786,11 +797,25 @@ function isPastEvent(event) {
 }
 
 function resultSummary(event) {
+  if (event.type === "Free Week") return "No fixture";
   if (event.type !== "Fixture") return "";
   const hasHome = event.homeScore !== "" && event.homeScore != null;
   const hasAway = event.awayScore !== "" && event.awayScore != null;
   if (hasHome && hasAway) return `Result ${event.homeScore}-${event.awayScore}`;
   return isPastEvent(event) ? "Result pending" : "";
+}
+
+function eventDateLine(event, venue) {
+  if (event.type === "Free Week") return `${formatDateOnly(event.datetime)} - no match scheduled`;
+  if (event.timeTbc) return `${formatDateOnly(event.datetime)} - Kick-off TBC at ${escapeHtml(venue.name)}`;
+  return `${formatDate(event.datetime)}${event.finishTime ? ` to ${escapeHtml(event.finishTime)}` : ""} at ${escapeHtml(venue.name)}`;
+}
+
+function eventPitchLine(event, venue) {
+  if (event.type === "Free Week") return "";
+  if (event.timeTbc && event.meetTime) return `Pitch: ${escapeHtml(venue.address)} - Report ${escapeHtml(event.meetTime)}`;
+  if (event.timeTbc) return `Pitch: ${escapeHtml(venue.address)} - Report TBC`;
+  return `Pitch: ${escapeHtml(venue.address)}${event.meetTime ? ` - Report ${escapeHtml(event.meetTime)}` : ""}`;
 }
 
 function statusText(status) {
@@ -1312,7 +1337,7 @@ function mobileNav(routes, route) {
 function pageTitle(route) {
   return {
     home: "Dashboard",
-    schedule: "Fixtures",
+    schedule: "Schedule",
     availability: "Availability",
     attendance: "Register",
     squads: "Teams",
@@ -1488,21 +1513,33 @@ function messageCard() {
 
 function scheduleView() {
   const childTeamIds = new Set(approvedPlayers().map((player) => normalizeTeamId(player.teamId)));
+  const scheduleType = state.scheduleType || "matches";
   const period = state.schedulePeriod || "upcoming";
   const allVisibleEvents = state.events
     .filter((event) => hasCoachAccess() || event.teamId === "all" || childTeamIds.has(normalizeTeamId(event.teamId)))
     .filter((event) => state.scheduleFilter === "all" || normalizeTeamId(event.teamId) === normalizeTeamId(state.scheduleFilter) || event.teamId === "all");
-  const upcomingCount = allVisibleEvents.filter((event) => !isPastEvent(event)).length;
-  const pastCount = allVisibleEvents.filter(isPastEvent).length;
-  const visibleEvents = allVisibleEvents
+  const matchEvents = allVisibleEvents.filter((event) => event.type !== "Training");
+  const trainingEvents = allVisibleEvents.filter((event) => event.type === "Training");
+  const typeEvents = scheduleType === "training" ? trainingEvents : matchEvents;
+  const upcomingCount = typeEvents.filter((event) => !isPastEvent(event)).length;
+  const pastCount = typeEvents.filter(isPastEvent).length;
+  const visibleEvents = typeEvents
     .filter((event) => period === "past" ? isPastEvent(event) : !isPastEvent(event))
     .sort((a, b) => period === "past"
       ? eventEndDate(b) - eventEndDate(a)
       : eventEndDate(a) - eventEndDate(b));
+  const emptyLabel = scheduleType === "training" ? "training sessions" : "matches";
+  const emptyCopy = scheduleType === "training"
+    ? "Tuesday and Thursday Bowencraig training will appear here when the season training dates are seeded."
+    : "Send over the two fixture lists and the matches will be added here by team.";
 
   return `
     <section class="toolbar" data-tour="schedule-toolbar">
       <div class="schedule-controls">
+        <div class="segmented light schedule-type">
+          <button type="button" class="${scheduleType === "matches" ? "active" : ""}" data-action="set-schedule-type" data-type="matches">Matches (${matchEvents.length})</button>
+          <button type="button" class="${scheduleType === "training" ? "active" : ""}" data-action="set-schedule-type" data-type="training">Training (${trainingEvents.length})</button>
+        </div>
         <div class="segmented light schedule-period">
           <button type="button" class="${period === "upcoming" ? "active" : ""}" data-action="set-schedule-period" data-period="upcoming">Upcoming (${upcomingCount})</button>
           <button type="button" class="${period === "past" ? "active" : ""}" data-action="set-schedule-period" data-period="past">Past (${pastCount})</button>
@@ -1519,7 +1556,7 @@ function scheduleView() {
     </section>
     ${isCoachGuide() ? '<aside class="coach-guide-hint" data-tour="away-support">Away destination adds venue name and address fields, so map buttons still work for places like Bellfield Estate.</aside>' : ""}
     <div class="event-list" data-tour="event-list">
-      ${visibleEvents.length ? visibleEvents.map(eventCard).join("") : `<article class="panel"><h3>No ${period === "past" ? "past" : "upcoming"} events to show</h3><p class="muted">${period === "past" ? "Completed fixtures and older training will appear here automatically." : "Once new fixtures or training are added they will appear here."}</p></article>`}
+      ${visibleEvents.length ? visibleEvents.map(eventCard).join("") : `<article class="panel"><h3>No ${period === "past" ? "past" : "upcoming"} ${emptyLabel} to show</h3><p class="muted">${period === "past" ? "Completed items will appear here automatically." : emptyCopy}</p></article>`}
     </div>
   `;
 }
@@ -1531,6 +1568,7 @@ function eventCard(event) {
   const past = isPastEvent(event);
   const result = resultSummary(event);
   const openLabel = hasCoachAccess() ? "Responses" : "Respond";
+  const isFreeWeek = event.type === "Free Week";
   const coachActions = hasCoachAccess()
     ? `
       <button class="secondary-button" type="button" data-modal="edit-event" data-event-id="${event.id}">Edit</button>
@@ -1551,13 +1589,11 @@ function eventCard(event) {
             ${past ? '<span class="status-pill warn">Archived</span>' : ""}
           </div>
         </div>
-        <p>${formatDate(event.datetime)}${event.finishTime ? ` to ${escapeHtml(event.finishTime)}` : ""} at ${escapeHtml(venue.name)}</p>
-        <p>Pitch: ${escapeHtml(venue.address)}${event.meetTime ? ` - Report ${escapeHtml(event.meetTime)}` : ""}</p>
-        ${venueParkingLine(venue)}
+        <p>${eventDateLine(event, venue)}</p>
+        ${eventPitchLine(event, venue) ? `<p>${eventPitchLine(event, venue)}</p>` : ""}
+        ${isFreeWeek ? "" : venueParkingLine(venue)}
         <div class="mini-stats">
-          <span>${counts.available} available</span>
-          <span>${counts.unavailable} unavailable</span>
-          <span>${counts.unknown} no reply</span>
+          ${isFreeWeek ? "" : `<span>${counts.available} available</span><span>${counts.unavailable} unavailable</span><span>${counts.unknown} no reply</span>`}
           ${event.type === "Fixture" ? `<span>${counts.snacks} snacks</span><span>${counts.liftSeats} lift seats</span>` : ""}
           ${result ? `<span>${escapeHtml(result)}</span>` : ""}
           ${event.resultNotes ? `<span>${escapeHtml(event.resultNotes)}</span>` : ""}
@@ -1566,8 +1602,8 @@ function eventCard(event) {
         </div>
       </div>
       <div class="event-actions">
-        <button class="secondary-button" type="button" data-action="focus-event" data-event-id="${event.id}">${openLabel}</button>
-        <button class="secondary-button" type="button" data-modal="directions" data-event-id="${event.id}">Directions</button>
+        ${isFreeWeek ? "" : `<button class="secondary-button" type="button" data-action="focus-event" data-event-id="${event.id}">${openLabel}</button>`}
+        ${isFreeWeek ? "" : `<button class="secondary-button" type="button" data-modal="directions" data-event-id="${event.id}">Directions</button>`}
         ${coachActions}
       </div>
     </article>
@@ -1638,9 +1674,9 @@ function parentAvailabilityCard(event, child, childInEvent) {
         </div>
         <span class="status-pill ${statusClass(entry.status)}">${statusText(entry.status)}</span>
       </div>
-      <p class="muted">${formatDate(event.datetime)}${event.finishTime ? ` to ${escapeHtml(event.finishTime)}` : ""} at ${escapeHtml(venue.name)}</p>
+      <p class="muted">${eventDateLine(event, venue)}</p>
       ${event.kit ? `<p class="muted">${escapeHtml(event.kit)}</p>` : ""}
-      <p class="muted">Pitch: ${escapeHtml(venue.address)}</p>
+      ${eventPitchLine(event, venue) ? `<p class="muted">${eventPitchLine(event, venue)}</p>` : ""}
       ${venue.parkingAddress ? `<p class="muted">Parking: ${escapeHtml(venue.parkingAddress)}</p>` : ""}
       <div class="choice-row">
         <button class="secondary-button" type="button" data-modal="directions" data-event-id="${event.id}">Directions</button>
@@ -2958,7 +2994,7 @@ function eventModal(eventId = "") {
     <h2 id="modal-title">${editing ? "Edit fixture/training" : "Add fixture/training"}</h2>
     <form class="stacked-form" data-form="${editing ? "edit-event" : "event"}">
       ${editing ? `<input type="hidden" name="eventId" value="${escapeHtml(event.id)}">` : ""}
-      <label class="field"><span>Type</span><select name="type" data-action="event-type-choice"><option ${type === "Fixture" ? "selected" : ""}>Fixture</option><option ${type === "Training" ? "selected" : ""}>Training</option></select></label>
+      <label class="field"><span>Type</span><select name="type" data-action="event-type-choice"><option ${type === "Fixture" ? "selected" : ""}>Fixture</option><option ${type === "Training" ? "selected" : ""}>Training</option><option ${type === "Free Week" ? "selected" : ""}>Free Week</option></select></label>
       <label class="field"><span>Team</span><select name="teamId"><option value="all" ${teamId === "all" ? "selected" : ""}>All teams</option>${eventTeamOptions().map((team) => `<option value="${team.id}" ${team.id === normalizeTeamId(teamId) ? "selected" : ""}>${team.name}</option>`).join("")}</select></label>
       <label class="field"><span>Opponent or title</span><input name="opponent" required value="${escapeHtml(opponent)}" placeholder="Kilwinning Rangers"></label>
       <label class="field"><span>Date</span><input name="date" type="date" required value="${escapeHtml(date)}"></label>
@@ -3185,6 +3221,13 @@ document.addEventListener("click", async (event) => {
 
   if (action === "set-schedule-filter") {
     state.scheduleFilter = target.dataset.teamId;
+    saveState();
+    render();
+    return;
+  }
+
+  if (action === "set-schedule-type") {
+    state.scheduleType = target.dataset.type || "matches";
     saveState();
     render();
     return;
@@ -4242,8 +4285,8 @@ async function savePlayerDevelopment(data) {
   const player = activePlayers().find((item) => item.id === playerId);
   if (!player) return;
   const record = defaultDevelopmentRecord(playerId, {
-    level: String(data.get("level") || "Developmental"),
-    band: String(data.get("band") || "Mid"),
+    level: String(data.get("level") || "Not assessed"),
+    band: String(data.get("band") || "Not set"),
     foot: String(data.get("foot") || "Not set"),
     positions: data.getAll("positions").map(String),
     notes: String(data.get("notes") || "").trim(),
