@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-19";
+const appVersion = "4.0-live-rollout-20";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -14,6 +14,7 @@ const firebaseRuntime = {
   auth: null,
   db: null,
   messaging: null,
+  storage: null,
   user: null,
 };
 const clubId = "largs-colts-2016s";
@@ -88,6 +89,13 @@ const kitOptions = ["Home kit", "Away kit"];
 const developmentLevels = ["Not assessed", "Developmental", "Intermediate", "Advanced"];
 const developmentBands = ["Not set", "Low", "Mid", "High"];
 const footOptions = ["Not set", "Right", "Left", "Both"];
+const allowedDocumentExtensions = [".pdf", ".doc", ".docx"];
+const allowedDocumentTypes = new Set([
+  "application/pdf",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+]);
+const maxDocumentBytes = 15 * 1024 * 1024;
 const playerPositions = [
   "Goalkeeper",
   "Left Back",
@@ -165,6 +173,9 @@ const defaultState = {
   accessRequests: [],
   dataRequests: [],
   coachQueries: [],
+  playerDocuments: [],
+  documentFilter: "all",
+  documentSort: "newest",
   events: [],
   availability: {},
   attendance: {},
@@ -174,6 +185,8 @@ const defaultState = {
   coachContacts: [],
   venues: [],
   playerDevelopment: {},
+  squadListSort: "name",
+  squadListPositionFilter: "all",
   squadBuilder: {
     format: "7",
     teamFilter: "all",
@@ -1287,6 +1300,7 @@ function navRoutes(pendingOnly = false) {
     { id: "attendance", label: "Register", mark: "R" },
     { id: "squads", label: "Teams", mark: "T" },
     { id: "development", label: "Development", mark: "D" },
+    { id: "documents", label: "Documents", mobileLabel: "Docs", mark: "DOC" },
     { id: "squad-builder", label: "Whiteboard", mark: "WB" },
     { id: "messages", label: "Messages", mark: "M" },
     { id: "coach-inbox", label: "Inbox", mark: "IN" },
@@ -1342,6 +1356,7 @@ function pageTitle(route) {
     attendance: "Register",
     squads: "Teams",
     development: "Player Development",
+    documents: "Documents",
     "squad-builder": "Squad Whiteboard",
     messages: "Messages",
     "coach-inbox": "Coach Inbox",
@@ -1388,6 +1403,7 @@ function pageView(route) {
     attendance: attendanceView,
     squads: squadsView,
     development: developmentView,
+    documents: documentsView,
     "squad-builder": squadBuilderView,
     messages: messagesView,
     "coach-inbox": coachInboxView,
@@ -1470,6 +1486,7 @@ function linkedChildCard(child) {
         <div><dt>Register</dt><dd>${attendancePercent(child.id)}%</dd></div>
         <div><dt>Access</dt><dd>Verified</dd></div>
       </dl>
+      <button class="secondary-button panel-action" type="button" data-route-target="documents">View documents</button>
     </article>
   `;
 }
@@ -1489,6 +1506,7 @@ function coachOverviewCard() {
         <button type="button" data-route-target="access">Pending requests</button>
         <button type="button" data-route-target="attendance">Take register</button>
         <button type="button" data-route-target="venues">Venues</button>
+        <button type="button" data-route-target="documents">Documents</button>
         <button type="button" data-route-target="coach-inbox">Coach inbox</button>
       </div>
     </article>
@@ -1875,6 +1893,126 @@ function teamColumn(team) {
   `;
 }
 
+function documentsView() {
+  const docs = visiblePlayerDocuments();
+  const currentChild = currentPlayer();
+  const players = activePlayers();
+  const selectedFilter = state.documentFilter || "all";
+  return `
+    <section class="toolbar documents-toolbar">
+      <div>
+        <p class="eyebrow">${hasCoachAccess() ? "Coach documents" : "Player documents"}</p>
+        <h2 class="section-heading">${hasCoachAccess() ? "Share files with parents" : escapeHtml(currentChild?.name || "Documents")}</h2>
+      </div>
+      ${hasCoachAccess() ? `
+        <div class="document-controls">
+          <label class="field compact-field">
+            <span>Player</span>
+            <select data-action="set-document-filter">
+              <option value="all" ${selectedFilter === "all" ? "selected" : ""}>All players</option>
+              ${players.map((player) => `<option value="${player.id}" ${selectedFilter === player.id ? "selected" : ""}>${escapeHtml(player.name)}</option>`).join("")}
+            </select>
+          </label>
+          <label class="field compact-field">
+            <span>Sort</span>
+            <select data-action="set-document-sort">
+              <option value="newest" ${state.documentSort === "newest" ? "selected" : ""}>Newest first</option>
+              <option value="name" ${state.documentSort === "name" ? "selected" : ""}>Player name</option>
+              <option value="title" ${state.documentSort === "title" ? "selected" : ""}>Document title</option>
+            </select>
+          </label>
+          <button class="primary-button" type="button" data-modal="document">Upload document</button>
+        </div>
+      ` : ""}
+    </section>
+    ${!hasCoachAccess() && !currentChild ? `
+      <article class="panel">
+        <h3>No linked child selected</h3>
+        <p class="muted">A coach needs to approve your child link before documents can be shown.</p>
+      </article>
+    ` : `
+      <section class="document-grid">
+        ${docs.length ? docs.map(playerDocumentCard).join("") : `
+          <article class="panel">
+            <h3>No documents yet</h3>
+            <p class="muted">${hasCoachAccess() ? "Upload a PDF or Word document and attach it to a player profile." : "Documents shared with this child will appear here for download."}</p>
+          </article>
+        `}
+      </section>
+    `}
+  `;
+}
+
+function visiblePlayerDocuments() {
+  const docs = [...(state.playerDocuments || [])];
+  const selectedFilter = state.documentFilter || "all";
+  const currentChild = currentPlayer();
+  const approvedIds = new Set(approvedPlayers().map((player) => player.id));
+  const visible = hasCoachAccess()
+    ? docs.filter((doc) => selectedFilter === "all" || doc.playerId === selectedFilter)
+    : docs.filter((doc) => currentChild ? doc.playerId === currentChild.id : approvedIds.has(doc.playerId));
+
+  return visible.sort((a, b) => {
+    if (state.documentSort === "name") {
+      return documentPlayerName(a).localeCompare(documentPlayerName(b)) || documentTitle(a).localeCompare(documentTitle(b));
+    }
+    if (state.documentSort === "title") {
+      return documentTitle(a).localeCompare(documentTitle(b)) || documentPlayerName(a).localeCompare(documentPlayerName(b));
+    }
+    return createdTime(b) - createdTime(a) || documentTitle(a).localeCompare(documentTitle(b));
+  });
+}
+
+function documentTitle(doc) {
+  return String(doc.title || doc.originalFileName || "Document");
+}
+
+function documentPlayerName(doc) {
+  return activePlayers().find((player) => player.id === doc.playerId)?.name || doc.playerName || "Player";
+}
+
+function fileTypeLabel(doc) {
+  const contentType = String(doc.contentType || "").toLowerCase();
+  const fileName = String(doc.originalFileName || "").toLowerCase();
+  if (contentType.includes("pdf") || fileName.endsWith(".pdf")) return "PDF";
+  if (contentType.includes("word") || fileName.endsWith(".doc") || fileName.endsWith(".docx")) return "Word";
+  return "Document";
+}
+
+function formatFileSize(size = 0) {
+  const bytes = Number(size || 0);
+  if (!bytes) return "Size unknown";
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${Math.round((bytes / (1024 * 1024)) * 10) / 10} MB`;
+}
+
+function createdTime(item = {}) {
+  return item.createdAt?.seconds || Date.parse(item.createdAt || "") / 1000 || 0;
+}
+
+function playerDocumentCard(doc) {
+  return `
+    <article class="document-card panel">
+      <div class="panel-title">
+        <div>
+          <p class="eyebrow">${escapeHtml(fileTypeLabel(doc))} - ${escapeHtml(formatFileSize(doc.size))}</p>
+          <h3>${escapeHtml(documentTitle(doc))}</h3>
+        </div>
+        <span class="team-pill ${normalizeTeamId(activePlayers().find((player) => player.id === doc.playerId)?.teamId)}">${escapeHtml(documentPlayerName(doc))}</span>
+      </div>
+      <dl class="info-list compact-info">
+        <div><dt>File</dt><dd>${escapeHtml(doc.originalFileName || "Uploaded file")}</dd></div>
+        <div><dt>Shared</dt><dd>${escapeHtml(displayDate(doc.createdAt))}</dd></div>
+        ${hasCoachAccess() ? `<div><dt>Uploaded by</dt><dd>${escapeHtml(doc.uploadedByName || "Coach")}</dd></div>` : ""}
+      </dl>
+      <div class="choice-row">
+        <button class="secondary-button" type="button" data-action="download-document" data-document-id="${escapeHtml(doc.id)}">Download</button>
+        ${hasCoachAccess() ? `<button class="secondary-button danger-button" type="button" data-action="delete-document" data-document-id="${escapeHtml(doc.id)}">Remove</button>` : ""}
+      </div>
+    </article>
+  `;
+}
+
 function developmentView() {
   if (!hasCoachAccess()) return homeView();
   const players = activePlayers().slice().sort((a, b) => teamName(a.teamId).localeCompare(teamName(b.teamId)) || a.name.localeCompare(b.name));
@@ -1893,9 +2031,77 @@ function developmentView() {
     <section class="metric-grid development-summary">
       ${levelCounts.map((item) => `<article><strong>${item.count}</strong><span>${escapeHtml(item.level)}</span></article>`).join("")}
     </section>
+    ${squadPositionList()}
     <section class="development-grid">
       ${players.map(developmentCard).join("")}
     </section>
+  `;
+}
+
+function squadPositionList() {
+  const positionFilter = state.squadListPositionFilter || "all";
+  const sortMode = state.squadListSort || "name";
+  const players = activePlayers()
+    .filter((player) => {
+      const positions = developmentFor(player.id).positions;
+      return positionFilter === "all" || positions.includes(positionFilter);
+    })
+    .sort((a, b) => {
+      if (sortMode === "position") {
+        return primaryPosition(a).localeCompare(primaryPosition(b)) || a.name.localeCompare(b.name);
+      }
+      return a.name.localeCompare(b.name);
+    });
+
+  return `
+    <section class="panel squad-position-panel">
+      <div class="panel-title">
+        <div>
+          <p class="eyebrow">Squad list</p>
+          <h3>Players by position</h3>
+        </div>
+        <span class="status-pill good">${players.length} shown</span>
+      </div>
+      <div class="squad-list-controls">
+        <label class="field compact-field">
+          <span>Filter position</span>
+          <select data-action="set-squad-position-filter">
+            <option value="all" ${positionFilter === "all" ? "selected" : ""}>All positions</option>
+            ${playerPositions.map((position) => `<option value="${escapeHtml(position)}" ${positionFilter === position ? "selected" : ""}>${escapeHtml(position)}</option>`).join("")}
+          </select>
+        </label>
+        <label class="field compact-field">
+          <span>Sort by</span>
+          <select data-action="set-squad-list-sort">
+            <option value="name" ${sortMode === "name" ? "selected" : ""}>Name A-Z</option>
+            <option value="position" ${sortMode === "position" ? "selected" : ""}>Position</option>
+          </select>
+        </label>
+      </div>
+      <div class="squad-position-list">
+        ${players.length ? players.map(squadPositionRow).join("") : '<p class="muted">No players match that position filter yet.</p>'}
+      </div>
+    </section>
+  `;
+}
+
+function primaryPosition(player) {
+  return developmentFor(player.id).positions[0] || "No positions set";
+}
+
+function squadPositionRow(player) {
+  const record = developmentFor(player.id);
+  return `
+    <div class="person-row squad-position-row">
+      <div>
+        <strong>${escapeHtml(player.name)}</strong>
+        <p>${escapeHtml(teamName(player.teamId))} - ${escapeHtml(developmentLabel(record))} - ${escapeHtml(record.foot === "Not set" ? "Foot not set" : `${record.foot} foot`)}</p>
+        <div class="availability-tags">
+          ${record.positions.length ? record.positions.map((position) => `<span>${escapeHtml(position)}</span>`).join("") : "<span>No positions set</span>"}
+        </div>
+      </div>
+      <button class="tiny-button" type="button" data-route-target="squad-builder">Whiteboard</button>
+    </div>
   `;
 }
 
@@ -2889,6 +3095,7 @@ function modalContent(type) {
   if (type === "edit-event") return eventModal(state.modal.eventId);
   if (type === "directions") return directionsModal(state.modal.eventId);
   if (type === "message") return messageModal();
+  if (type === "document") return documentModal();
   if (type === "player") return playerModal();
   if (type === "move-player") return movePlayerModal(state.modal.playerId);
   if (type === "edit-player") return editPlayerModal(state.modal.playerId);
@@ -3030,6 +3237,33 @@ function messageModal() {
       <label class="field"><span>Title</span><input name="title" required placeholder="Training update"></label>
       <label class="field"><span>Message</span><textarea name="body" rows="5" required placeholder="Message for parents"></textarea></label>
       <button class="primary-button" type="submit">Send message</button>
+    </form>
+  `;
+}
+
+function documentModal() {
+  const players = activePlayers();
+  return `
+    <p class="eyebrow">Coach documents</p>
+    <h2 id="modal-title">Upload player document</h2>
+    <form class="stacked-form" data-form="player-document">
+      <label class="field">
+        <span>Player profile</span>
+        <select name="playerId" required>
+          <option value="">Choose player</option>
+          ${players.map((player) => `<option value="${player.id}">${escapeHtml(player.name)} - ${teamName(player.teamId)}</option>`).join("")}
+        </select>
+      </label>
+      <label class="field">
+        <span>Document title</span>
+        <input name="title" required placeholder="Right Back Handbook">
+      </label>
+      <label class="field">
+        <span>PDF or Word file</span>
+        <input name="documentFile" type="file" accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" required>
+      </label>
+      <p class="muted">Parents can only see documents linked to a child profile they have been approved for.</p>
+      <button class="primary-button" type="submit">Upload and share</button>
     </form>
   `;
 }
@@ -3250,6 +3484,16 @@ document.addEventListener("click", async (event) => {
 
   if (action === "delete-event") {
     await deleteEvent(target.dataset.eventId);
+    return;
+  }
+
+  if (action === "download-document") {
+    await downloadPlayerDocument(target.dataset.documentId);
+    return;
+  }
+
+  if (action === "delete-document") {
+    await deletePlayerDocument(target.dataset.documentId);
     return;
   }
 
@@ -3525,6 +3769,30 @@ document.addEventListener("change", async (event) => {
     toggleResultFields();
     return;
   }
+  if (target.dataset.action === "set-document-filter") {
+    state.documentFilter = target.value || "all";
+    saveState();
+    render();
+    return;
+  }
+  if (target.dataset.action === "set-document-sort") {
+    state.documentSort = target.value || "newest";
+    saveState();
+    render();
+    return;
+  }
+  if (target.dataset.action === "set-squad-position-filter") {
+    state.squadListPositionFilter = target.value || "all";
+    saveState();
+    render();
+    return;
+  }
+  if (target.dataset.action === "set-squad-list-sort") {
+    state.squadListSort = target.value || "name";
+    saveState();
+    render();
+    return;
+  }
   if (["snack-volunteer", "lift-offer", "lift-seats"].includes(target.dataset.action)) {
     const child = currentPlayer();
     if (!child) return;
@@ -3602,6 +3870,7 @@ document.addEventListener("submit", async (event) => {
     if (form.dataset.form === "event") await addEvent(data);
     if (form.dataset.form === "edit-event") await editEvent(data);
     if (form.dataset.form === "message") await addMessage(data);
+    if (form.dataset.form === "player-document") await uploadPlayerDocument(data);
     if (form.dataset.form === "player") await addPlayer(data);
     if (form.dataset.form === "move-player") await movePlayer(data);
     if (form.dataset.form === "edit-player") await editPlayer(data);
@@ -4183,6 +4452,125 @@ async function addMessage(data) {
   toast("Message sent");
 }
 
+function isAllowedDocumentFile(file) {
+  if (!file?.name) return false;
+  const lowerName = file.name.toLowerCase();
+  return allowedDocumentTypes.has(file.type) || allowedDocumentExtensions.some((extension) => lowerName.endsWith(extension));
+}
+
+function safeStorageFileName(name = "document") {
+  const parts = String(name).split(".");
+  const extension = parts.length > 1 ? `.${parts.pop().toLowerCase().replace(/[^a-z0-9]/g, "")}` : "";
+  const base = parts.join(".").replace(/[^a-zA-Z0-9-]+/g, "-").replace(/(^-|-$)/g, "").slice(0, 70) || "document";
+  return `${base}${extension}`;
+}
+
+async function uploadPlayerDocument(data) {
+  if (!requireCoach()) return;
+  const runtime = await ensureFirebase();
+  const playerId = String(data.get("playerId") || "").trim();
+  const player = activePlayers().find((item) => item.id === playerId);
+  const title = String(data.get("title") || "").trim();
+  const file = data.get("documentFile");
+
+  if (!player || !title || !(file instanceof File) || !file.name) {
+    toast("Choose a player, title and document before uploading");
+    return;
+  }
+  if (!isAllowedDocumentFile(file)) {
+    toast("Only PDF, DOC and DOCX files can be uploaded");
+    return;
+  }
+  if (file.size > maxDocumentBytes) {
+    toast("Document is too large. Keep uploads under 15 MB.");
+    return;
+  }
+
+  const documentId = uid("doc");
+  const fileName = safeStorageFileName(file.name);
+  const storagePath = `clubs/${clubId}/playerDocuments/${player.id}/${documentId}/${fileName}`;
+  const storageRef = runtime.modules.ref(runtime.storage, storagePath);
+
+  toast("Uploading document...");
+  await runtime.modules.uploadBytes(storageRef, file, {
+    contentType: file.type || "application/octet-stream",
+    customMetadata: {
+      clubId,
+      playerId: player.id,
+      uploadedBy: state.session.userId || "",
+    },
+  });
+
+  const record = {
+    id: documentId,
+    playerId: player.id,
+    playerName: player.name,
+    playerTeamId: normalizeTeamId(player.teamId),
+    title,
+    originalFileName: file.name,
+    storagePath,
+    contentType: file.type || "",
+    size: file.size,
+    uploadedBy: state.session.userId,
+    uploadedByName: state.session.coachName || "Coach",
+    status: "active",
+  };
+
+  await saveLiveDocument("playerDocuments", documentId, record);
+  state.playerDocuments = sortPlayerDocuments([record, ...state.playerDocuments.filter((item) => item.id !== documentId)]);
+  delete state.modal;
+  toast("Document uploaded and shared");
+}
+
+async function downloadPlayerDocument(documentId) {
+  const doc = state.playerDocuments.find((item) => item.id === documentId);
+  if (!doc?.storagePath) {
+    toast("Document could not be found");
+    return;
+  }
+  if (!hasCoachAccess() && !approvedPlayers().some((player) => player.id === doc.playerId)) {
+    toast("This document is not linked to your child");
+    return;
+  }
+
+  try {
+    const runtime = await ensureFirebase();
+    const url = await runtime.modules.getDownloadURL(runtime.modules.ref(runtime.storage, doc.storagePath));
+    const link = document.createElement("a");
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.download = doc.originalFileName || documentTitle(doc);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  } catch (error) {
+    console.error(error);
+    toast("Document download failed. Check Storage rules are deployed.");
+  }
+}
+
+async function deletePlayerDocument(documentId) {
+  if (!requireCoach() || !documentId) return;
+  const doc = state.playerDocuments.find((item) => item.id === documentId);
+  if (!doc) return;
+  const confirmed = window.confirm(`Remove "${documentTitle(doc)}" from ${documentPlayerName(doc)}?`);
+  if (!confirmed) return;
+
+  const runtime = await ensureFirebase();
+  if (doc.storagePath) {
+    try {
+      await runtime.modules.deleteObject(runtime.modules.ref(runtime.storage, doc.storagePath));
+    } catch (error) {
+      console.warn("Stored file could not be deleted; removing Firestore record anyway", error);
+    }
+  }
+  await deleteLiveDocument("playerDocuments", documentId);
+  state.playerDocuments = state.playerDocuments.filter((item) => item.id !== documentId);
+  render();
+  toast("Document removed");
+}
+
 async function addPlayer(data) {
   if (!requireCoach()) return;
   const player = {
@@ -4512,11 +4900,13 @@ async function ensureFirebase() {
     authModule,
     firestoreModule,
     messagingModule,
+    storageModule,
   ] = await Promise.all([
     import("https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js"),
     import("https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js"),
     import("https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js"),
     import("https://www.gstatic.com/firebasejs/10.12.5/firebase-messaging.js"),
+    import("https://www.gstatic.com/firebasejs/10.12.5/firebase-storage.js"),
   ]);
 
   firebaseRuntime.modules = {
@@ -4524,10 +4914,12 @@ async function ensureFirebase() {
     ...authModule,
     ...firestoreModule,
     ...messagingModule,
+    ...storageModule,
   };
   firebaseRuntime.app = appModule.initializeApp(backendConfig.firebaseConfig);
   firebaseRuntime.auth = authModule.getAuth(firebaseRuntime.app);
   firebaseRuntime.db = firestoreModule.getFirestore(firebaseRuntime.app);
+  firebaseRuntime.storage = storageModule.getStorage(firebaseRuntime.app);
   firebaseRuntime.messaging = messagingModule.isSupported && await messagingModule.isSupported()
     ? messagingModule.getMessaging(firebaseRuntime.app)
     : null;
@@ -4591,7 +4983,7 @@ async function loadLiveStateFromFirebase() {
     state.coachContacts = coachContactDocs;
 
     if (hasCoachAccess(role)) {
-      const [players, parentLinks, accessRequests, notifications, users, dataRequests, coachQueries, playerDevelopment] = await Promise.all([
+      const [players, parentLinks, accessRequests, notifications, users, dataRequests, coachQueries, playerDevelopment, playerDocuments] = await Promise.all([
         loadDocs("players"),
         loadDocs("parentLinks"),
         loadDocs("accessRequests"),
@@ -4600,6 +4992,7 @@ async function loadLiveStateFromFirebase() {
         loadDocs("dataRequests"),
         loadOptionalDocs("coachQueries"),
         loadDocs("playerDevelopment"),
+        loadOptionalDocs("playerDocuments"),
       ]);
       state.players = players.map(normalizePlayerRecord).sort((a, b) => a.name.localeCompare(b.name));
       state.parentLinks = parentLinks;
@@ -4609,6 +5002,7 @@ async function loadLiveStateFromFirebase() {
       state.dataRequests = dataRequests.sort(sortByCreatedAtDesc);
       state.coachQueries = coachQueries.sort(sortByCreatedAtDesc);
       state.playerDevelopment = Object.fromEntries(playerDevelopment.map((record) => [record.playerId || record.id, defaultDevelopmentRecord(record.playerId || record.id, record)]));
+      state.playerDocuments = sortPlayerDocuments(playerDocuments);
     } else {
       const uid = runtime.user.uid;
       const [parentLinks, accessRequests, notifications, dataRequests, coachQueries] = await Promise.all([
@@ -4624,6 +5018,7 @@ async function loadLiveStateFromFirebase() {
       state.dataRequests = dataRequests.sort(sortByCreatedAtDesc);
       state.coachQueries = coachQueries.sort(sortByCreatedAtDesc);
       state.players = await loadApprovedPlayerDocs(parentLinks);
+      state.playerDocuments = await loadPlayerDocumentsForParent(parentLinks);
       state.playerDevelopment = {};
     }
 
@@ -4667,6 +5062,29 @@ async function loadApprovedPlayerDocs(parentLinks) {
   const approved = parentLinks.filter((link) => link.status === "approved");
   const docs = await Promise.all(approved.map((link) => runtime.modules.getDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "players", link.playerId))));
   return docs.filter((snap) => snap.exists()).map((snap) => normalizePlayerRecord({ id: snap.id, ...snap.data() })).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function sortPlayerDocuments(items = []) {
+  return items
+    .filter((item) => item.status !== "deleted")
+    .sort((a, b) => createdTime(b) - createdTime(a) || documentTitle(a).localeCompare(documentTitle(b)));
+}
+
+async function loadPlayerDocumentsForParent(parentLinks) {
+  try {
+    const runtime = await ensureFirebase();
+    const approvedIds = parentLinks.filter((link) => link.status === "approved").map((link) => link.playerId).filter(Boolean);
+    if (!approvedIds.length) return [];
+    const chunks = chunkArray([...new Set(approvedIds)], 10);
+    const collectionRef = await liveCollection("playerDocuments");
+    const snapshots = await Promise.all(chunks.map((chunk) => runtime.modules.getDocs(
+      runtime.modules.query(collectionRef, runtime.modules.where("playerId", "in", chunk)),
+    )));
+    return sortPlayerDocuments(snapshots.flatMap((snapshot) => snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))));
+  } catch (error) {
+    console.warn("playerDocuments could not be loaded yet", error);
+    return [];
+  }
 }
 
 async function loadEventSubcollections() {
@@ -4817,8 +5235,12 @@ async function startLiveSubscriptions() {
     watchCollection("playerDevelopment", (items) => {
       state.playerDevelopment = Object.fromEntries(items.map((record) => [record.playerId || record.id, defaultDevelopmentRecord(record.playerId || record.id, record)]));
     });
+    watchCollection("playerDocuments", (items) => {
+      state.playerDocuments = sortPlayerDocuments(items);
+    });
   } else {
     const uid = state.session.userId;
+    const approvedIds = approvedPlayers().map((player) => player.id).filter(Boolean);
     watchQuery(runtime.modules.query(
       runtime.modules.collection(runtime.db, "clubs", clubId, "notifications"),
       runtime.modules.where("userId", "==", uid),
@@ -4849,8 +5271,17 @@ async function startLiveSubscriptions() {
     ), async (items) => {
       state.parentLinks = items;
       state.players = await loadApprovedPlayerDocs(items);
+      state.playerDocuments = await loadPlayerDocumentsForParent(items);
       if (!state.session.selectedPlayerId) state.session.selectedPlayerId = approvedPlayers()[0]?.id || "";
     });
+    if (approvedIds.length) {
+      watchQuery(runtime.modules.query(
+        runtime.modules.collection(runtime.db, "clubs", clubId, "playerDocuments"),
+        runtime.modules.where("playerId", "in", approvedIds.slice(0, 10)),
+      ), (items) => {
+        state.playerDocuments = sortPlayerDocuments(items);
+      });
+    }
   }
 
   startEventDataSubscriptions(runtime);

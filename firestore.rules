@@ -48,6 +48,10 @@ service cloud.firestore {
       return request.resource.data.keys().hasOnly(["playerId", "id", "playerName", "teamId", "level", "band", "foot", "positions", "notes", "reviewedBy", "reviewedByName", "createdAt", "updatedAt"]);
     }
 
+    function playerDocumentKeys() {
+      return request.resource.data.keys().hasOnly(["id", "playerId", "playerName", "playerTeamId", "title", "originalFileName", "storagePath", "contentType", "size", "uploadedBy", "uploadedByName", "status", "createdAt", "updatedAt"]);
+    }
+
     match /clubs/{clubId} {
       allow read: if signedIn();
       allow create, update, delete: if isCoach(clubId);
@@ -84,10 +88,24 @@ service cloud.firestore {
         allow read: if isCoach(clubId);
         allow create, update: if isCoach(clubId)
           && request.resource.data.playerId == playerId
-          && request.resource.data.level in ["Developmental", "Intermediate", "Advanced"]
-          && request.resource.data.band in ["Low", "Mid", "High"]
+          && request.resource.data.level in ["Not assessed", "Developmental", "Intermediate", "Advanced"]
+          && request.resource.data.band in ["Not set", "Low", "Mid", "High"]
           && request.resource.data.foot in ["Not set", "Right", "Left", "Both"]
           && playerDevelopmentKeys();
+        allow delete: if isCoach(clubId);
+      }
+
+      match /playerDocuments/{documentId} {
+        allow read: if isCoach(clubId) || approvedFor(clubId, resource.data.playerId);
+        allow create, update: if isCoach(clubId)
+          && request.resource.data.id == documentId
+          && request.resource.data.playerId is string
+          && request.resource.data.storagePath is string
+          && request.resource.data.status in ["active", "archived"]
+          && request.resource.data.size is number
+          && request.resource.data.size <= 15 * 1024 * 1024
+          && request.resource.data.contentType in ["application/pdf", "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ""]
+          && playerDocumentKeys();
         allow delete: if isCoach(clubId);
       }
 

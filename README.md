@@ -10,7 +10,9 @@ Private Firebase-backed team app for Largs Colts 2016s coaches and verified pare
 - Parents only see children approved through `parentLinks`
 - Coaches can manage players, teams, fixtures, training, attendance, availability and announcements
 - Coaches have a private player development page for level, band, foot and playable positions
+- Coaches have a private squad list that can be sorted by name or position and filtered by playable position
 - Coaches have a private 7-a-side and 9-a-side squad builder/whiteboard using those development records
+- Coaches can upload PDF or Word documents to a specific player profile for approved parents to download
 - Attendance writes trigger push notifications through Firebase Cloud Functions
 - Announcements are stored in Firestore and trigger parent push notifications
 - Teams and players can be seeded into Firestore, with players starting as unassigned
@@ -96,6 +98,16 @@ npm run cap:sync
 ```
 
 See `MOBILE-TESTING.md` for the coach/phone testing path.
+
+## Document Sharing
+
+Document sharing uses Firebase Storage plus the `playerDocuments` Firestore collection. Enable Firebase Storage in the Firebase Console, then deploy both Firestore and Storage rules:
+
+```powershell
+firebase deploy --only firestore:rules,storage
+```
+
+Coaches can upload `.pdf`, `.doc`, or `.docx` files up to 15 MB from the Documents page. Parents only see files attached to player profiles they have an approved parent link for.
 
 ## Rollout Hardening
 

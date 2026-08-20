@@ -1620,6 +1620,53 @@ button:disabled {
   font-weight: 850;
 }
 
+.documents-toolbar,
+.document-controls,
+.squad-list-controls {
+  align-items: end;
+}
+
+.document-controls,
+.squad-list-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.document-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.document-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.compact-info {
+  margin: 0;
+}
+
+.compact-info div {
+  padding: 8px 0;
+}
+
+.squad-position-panel {
+  margin-bottom: 14px;
+}
+
+.squad-position-list {
+  display: grid;
+  gap: 2px;
+  margin-top: 12px;
+}
+
+.squad-position-row {
+  align-items: flex-start;
+}
+
 .builder-toolbar {
   align-items: center;
 }
@@ -2042,6 +2089,7 @@ button:disabled {
   .attendance-grid,
   .team-board,
   .venue-grid,
+  .document-grid,
   .development-grid,
   .development-fields,
   .position-checks,

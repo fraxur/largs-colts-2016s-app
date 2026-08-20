@@ -1,6 +1,6 @@
 # Firebase Backend Setup
 
-This build is Firebase-first. The app expects Authentication, Firestore and Cloud Messaging to be enabled.
+This build is Firebase-first. The app expects Authentication, Firestore, Cloud Messaging and Storage to be enabled.
 
 ## What Firebase Will Handle
 
@@ -15,6 +15,7 @@ This build is Firebase-first. The app expects Authentication, Firestore and Clou
 - In-app notification records
 - Push notification tokens
 - Push alerts when a child is marked present or collected
+- Player-specific PDF/Word document uploads and downloads
 
 ## 1. Create Firebase Project
 
@@ -26,6 +27,7 @@ This build is Firebase-first. The app expects Authentication, Firestore and Clou
 6. Enable Email/Password sign-in.
 7. Enable Cloud Firestore.
 8. Enable Cloud Messaging.
+9. Enable Firebase Storage.
 
 Firebase Auth supports email/password sign-in on the web. Firebase Cloud Messaging is used for push delivery.
 
@@ -52,7 +54,7 @@ Install the Firebase CLI, log in, then run:
 ```powershell
 firebase login
 firebase use --add
-firebase deploy --only firestore:rules,functions
+firebase deploy --only firestore:rules,storage,functions
 ```
 
 The included files are:
@@ -60,6 +62,7 @@ The included files are:
 - `firebase.json`
 - `firestore.rules`
 - `firestore.indexes.json`
+- `storage.rules`
 - `functions/package.json`
 - `functions/index.js`
 
@@ -153,7 +156,23 @@ clubs/largs-colts-2016s/notificationTokens/{uid_tokenSuffix}
 
 When a coach marks a child as `present` or `collected`, the Cloud Function sends a push notification to approved parent tokens. Coach announcements also send push notifications to the selected team group.
 
-## 8. Support Contact
+## 8. Document Sharing
+
+Player documents are stored in Firebase Storage under:
+
+```text
+clubs/largs-colts-2016s/playerDocuments/{playerId}/{documentId}/{fileName}
+```
+
+The matching Firestore metadata is stored in:
+
+```text
+clubs/largs-colts-2016s/playerDocuments/{documentId}
+```
+
+Only coaches/admins can upload or remove documents. Approved parents can only download documents attached to their own approved child profile.
+
+## 9. Support Contact
 
 Temporary support email is:
 

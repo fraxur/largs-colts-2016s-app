@@ -1,0 +1,51 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function userPath(clubId) {
+      return /databases/(default)/documents/clubs/$(clubId)/users/$(request.auth.uid);
+    }
+
+    function hasUserDoc(clubId) {
+      return signedIn() && firestore.exists(userPath(clubId));
+    }
+
+    function role(clubId) {
+      return hasUserDoc(clubId) ? firestore.get(userPath(clubId)).data.role : "";
+    }
+
+    function isCoach(clubId) {
+      return signedIn() && role(clubId) in ["coach", "admin"];
+    }
+
+    function approvedFor(clubId, playerId) {
+      return signedIn()
+        && firestore.exists(/databases/(default)/documents/clubs/$(clubId)/parentLinks/$(request.auth.uid + "_" + playerId))
+        && firestore.get(/databases/(default)/documents/clubs/$(clubId)/parentLinks/$(request.auth.uid + "_" + playerId)).data.status == "approved";
+    }
+
+    function allowedDocumentType() {
+      return request.resource.contentType in [
+        "application/pdf",
+        "application/msword",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      ];
+    }
+
+    match /clubs/{clubId}/playerDocuments/{playerId}/{documentId}/{fileName} {
+      allow read: if isCoach(clubId) || approvedFor(clubId, playerId);
+      allow create, update: if isCoach(clubId)
+        && request.resource.size <= 15 * 1024 * 1024
+        && allowedDocumentType();
+      allow delete: if isCoach(clubId);
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
