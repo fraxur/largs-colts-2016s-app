@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-20";
+const appVersion = "4.0-live-rollout-23";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -1874,21 +1874,23 @@ function teamColumn(team) {
         </div>
         <span class="team-dot ${team.id}"></span>
       </div>
-      ${players.map((player) => `
-        <div class="person-row compact">
-          <div>
-            <strong>${escapeHtml(player.name)}</strong>
-            <p>${escapeHtml(player.role)}</p>
-            ${hasCoachAccess() ? `<p>${escapeHtml(player.parentName)} - ${escapeHtml(player.parentPhone)}</p>` : ""}
-          </div>
-          ${hasCoachAccess() ? `
-            <div class="inline-actions">
-              <button class="tiny-button" type="button" data-modal="edit-player" data-player-id="${player.id}">Edit</button>
-              <button class="tiny-button" type="button" data-modal="move-player" data-player-id="${player.id}">Move</button>
+      <div class="team-player-list" tabindex="0" aria-label="${escapeHtml(team.name)} player list">
+        ${players.length ? players.map((player) => `
+          <div class="person-row compact">
+            <div>
+              <strong>${escapeHtml(player.name)}</strong>
+              <p>${escapeHtml(player.role)}</p>
+              ${hasCoachAccess() ? `<p>${escapeHtml(player.parentName)} - ${escapeHtml(player.parentPhone)}</p>` : ""}
             </div>
-          ` : ""}
-        </div>
-      `).join("")}
+            ${hasCoachAccess() ? `
+              <div class="inline-actions">
+                <button class="tiny-button" type="button" data-modal="edit-player" data-player-id="${player.id}">Edit</button>
+                <button class="tiny-button" type="button" data-modal="move-player" data-player-id="${player.id}">Move</button>
+              </div>
+            ` : ""}
+          </div>
+        `).join("") : '<p class="muted empty-team-note">No players assigned yet.</p>'}
+      </div>
     </article>
   `;
 }
@@ -3223,6 +3225,10 @@ function eventModal(eventId = "") {
         <label class="field"><span>Result notes</span><input name="resultNotes" value="${escapeHtml(resultNotes)}" placeholder="Optional match note"></label>
       </div>
       <label class="field"><span>Notes</span><input name="notes" value="${escapeHtml(event?.notes || "")}" placeholder="Home kit, bring water"></label>
+      <label class="check-row">
+        <input name="notifyParents" type="checkbox" checked>
+        <span>${editing ? "Notify parents about this schedule change" : "Notify parents about this new schedule item"}</span>
+      </label>
       <button class="primary-button" type="submit">${editing ? "Save changes" : "Add fixture/training"}</button>
     </form>
   `;
@@ -4365,6 +4371,45 @@ function eventDataFromForm(data, id = uid("event")) {
   };
 }
 
+function shouldNotifyParents(data) {
+  return data.get("notifyParents") === "on";
+}
+
+function plainScheduleLine(event) {
+  const venue = eventVenue(event);
+  if (event.type === "Free Week") return `${formatDateOnly(event.datetime)} - no match scheduled.`;
+  return `${formatDate(event.datetime)}${event.finishTime ? ` to ${event.finishTime}` : ""} at ${venue.name}.`;
+}
+
+function scheduleNotificationTitle(event, action) {
+  if (action === "created") return `New ${event.type.toLowerCase()}: ${event.title}`;
+  if (action === "deleted") return `${event.type} removed: ${event.title}`;
+  return `${event.type} updated: ${event.title}`;
+}
+
+function scheduleNotificationBody(event, action) {
+  const team = teamName(normalizeEventTeamId(event.teamId));
+  const line = plainScheduleLine(event);
+  if (action === "deleted") return `${team}: ${line} This item has been removed from the schedule.`;
+  if (action === "created") return `${team}: ${line} Please check the Schedule tab for details.`;
+  return `${team}: ${line} Please check the Schedule tab for the latest details.`;
+}
+
+async function queueScheduleNotification(event, action) {
+  const request = {
+    id: uid("notify"),
+    audience: "schedule",
+    action,
+    eventId: event.id,
+    teamId: normalizeEventTeamId(event.teamId),
+    title: scheduleNotificationTitle(event, action),
+    body: scheduleNotificationBody(event, action),
+    createdBy: state.session.userId,
+    createdByName: state.session.coachName || "Coach",
+  };
+  await saveLiveDocument("notificationRequests", request.id, request);
+}
+
 function syncEventRoster(event) {
   state.availability[event.id] = state.availability[event.id] || {};
   state.attendance[event.id] = state.attendance[event.id] || {};
@@ -4378,11 +4423,12 @@ async function addEvent(data) {
   if (!requireCoach()) return;
   const event = eventDataFromForm(data);
   await saveLiveDocument("events", event.id, event);
+  if (shouldNotifyParents(data)) await queueScheduleNotification(event, "created");
   state.events.push(event);
   syncEventRoster(event);
   state.selectedEventId = event.id;
   delete state.modal;
-  toast("Event added");
+  toast(shouldNotifyParents(data) ? "Event added and parent push queued" : "Event added");
 }
 
 async function editEvent(data) {
@@ -4392,11 +4438,12 @@ async function editEvent(data) {
   if (index === -1) return;
   const nextEvent = eventDataFromForm(data, eventId);
   await saveLiveDocument("events", eventId, nextEvent);
+  if (shouldNotifyParents(data)) await queueScheduleNotification(nextEvent, "updated");
   state.events[index] = nextEvent;
   syncEventRoster(nextEvent);
   state.selectedEventId = eventId;
   delete state.modal;
-  toast("Event updated");
+  toast(shouldNotifyParents(data) ? "Event updated and parent push queued" : "Event updated");
 }
 
 async function setAttendance(playerId, status) {
@@ -4423,6 +4470,7 @@ async function deleteEvent(eventId) {
   const confirmed = window.confirm(`Remove "${event.title}"? This will also remove its availability and attendance marks.`);
   if (!confirmed) return;
 
+  await queueScheduleNotification(event, "deleted");
   await deleteEventLive(eventId);
   state.events = state.events.filter((item) => item.id !== eventId);
   delete state.availability[eventId];
@@ -4434,7 +4482,7 @@ async function deleteEvent(eventId) {
 
   saveState();
   render();
-  toast("Event removed");
+  toast("Event removed and parent push queued");
 }
 
 async function addMessage(data) {
@@ -5129,11 +5177,12 @@ async function getEventPlayerDocs(runtime, collectionRef, approvedChunks) {
     const snapshot = await runtime.modules.getDocs(collectionRef);
     return snapshot.docs;
   }
-  if (!approvedChunks.length) return [];
-  const snapshots = await Promise.all(approvedChunks.map((chunk) => runtime.modules.getDocs(
-    runtime.modules.query(collectionRef, runtime.modules.where("playerId", "in", chunk)),
+  const playerIds = approvedChunks.flat();
+  if (!playerIds.length) return [];
+  const docs = await Promise.all(playerIds.map((playerId) => runtime.modules.getDoc(
+    runtime.modules.doc(collectionRef, playerId),
   )));
-  return snapshots.flatMap((snapshot) => snapshot.docs);
+  return docs.filter((docSnap) => docSnap.exists());
 }
 
 function clearLiveSubscriptions() {
@@ -5307,10 +5356,10 @@ function startEventDataSubscriptions(runtime) {
         eventDataUnsubscribers.push(unsubscribe);
         return;
       }
-      approvedChunks.forEach((chunk) => {
+      approvedChunks.flat().forEach((playerId) => {
         const unsubscribe = runtime.modules.onSnapshot(
-          runtime.modules.query(collectionRef, runtime.modules.where("playerId", "in", chunk)),
-          (snapshot) => applyDocs(snapshot.docs),
+          runtime.modules.doc(collectionRef, playerId),
+          (docSnap) => applyDocs(docSnap.exists() ? [docSnap] : []),
           (error) => console.error(error),
         );
         eventDataUnsubscribers.push(unsubscribe);

@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-22";
+const appVersion = "4.0-live-rollout-23";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -5177,11 +5177,12 @@ async function getEventPlayerDocs(runtime, collectionRef, approvedChunks) {
     const snapshot = await runtime.modules.getDocs(collectionRef);
     return snapshot.docs;
   }
-  if (!approvedChunks.length) return [];
-  const snapshots = await Promise.all(approvedChunks.map((chunk) => runtime.modules.getDocs(
-    runtime.modules.query(collectionRef, runtime.modules.where("playerId", "in", chunk)),
+  const playerIds = approvedChunks.flat();
+  if (!playerIds.length) return [];
+  const docs = await Promise.all(playerIds.map((playerId) => runtime.modules.getDoc(
+    runtime.modules.doc(collectionRef, playerId),
   )));
-  return snapshots.flatMap((snapshot) => snapshot.docs);
+  return docs.filter((docSnap) => docSnap.exists());
 }
 
 function clearLiveSubscriptions() {
@@ -5355,10 +5356,10 @@ function startEventDataSubscriptions(runtime) {
         eventDataUnsubscribers.push(unsubscribe);
         return;
       }
-      approvedChunks.forEach((chunk) => {
+      approvedChunks.flat().forEach((playerId) => {
         const unsubscribe = runtime.modules.onSnapshot(
-          runtime.modules.query(collectionRef, runtime.modules.where("playerId", "in", chunk)),
-          (snapshot) => applyDocs(snapshot.docs),
+          runtime.modules.doc(collectionRef, playerId),
+          (docSnap) => applyDocs(docSnap.exists() ? [docSnap] : []),
           (error) => console.error(error),
         );
         eventDataUnsubscribers.push(unsubscribe);

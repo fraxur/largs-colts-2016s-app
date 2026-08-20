@@ -1290,7 +1290,43 @@ button:disabled {
 }
 
 .team-board {
+  align-items: start;
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.team-column {
+  display: flex;
+  max-height: min(720px, calc(100vh - 174px));
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.team-column .panel-title {
+  flex: 0 0 auto;
+  padding-bottom: 10px;
+}
+
+.team-player-list {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 6px;
+  scrollbar-color: rgba(152, 0, 12, 0.42) transparent;
+  scrollbar-width: thin;
+}
+
+.team-player-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.team-player-list::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(152, 0, 12, 0.34);
+}
+
+.empty-team-note {
+  margin: 12px 0 0;
 }
 
 .team-dot {
@@ -2039,6 +2075,10 @@ button:disabled {
     color: #ffffff;
   }
 
+  .team-column {
+    max-height: min(680px, calc(100vh - 160px));
+  }
+
   .two-col,
   .attendance-grid,
   .team-board,
@@ -2215,6 +2255,16 @@ button:disabled {
   .panel-title {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .team-column {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .team-player-list {
+    overflow: visible;
+    padding-right: 0;
   }
 
   .inline-actions {
