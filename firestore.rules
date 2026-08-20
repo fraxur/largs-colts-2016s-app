@@ -52,6 +52,10 @@ service cloud.firestore {
       return request.resource.data.keys().hasOnly(["id", "playerId", "playerName", "playerTeamId", "title", "originalFileName", "storagePath", "contentType", "size", "uploadedBy", "uploadedByName", "status", "createdAt", "updatedAt"]);
     }
 
+    function notificationRequestKeys() {
+      return request.resource.data.keys().hasOnly(["id", "audience", "action", "eventId", "teamId", "title", "body", "createdBy", "createdByName", "createdAt", "updatedAt"]);
+    }
+
     match /clubs/{clubId} {
       allow read: if signedIn();
       allow create, update, delete: if isCoach(clubId);
@@ -187,6 +191,20 @@ service cloud.firestore {
       match /notifications/{notificationId} {
         allow read: if isCoach(clubId) || (signedIn() && resource.data.userId == request.auth.uid);
         allow create, update, delete: if isCoach(clubId);
+      }
+
+      match /notificationRequests/{requestId} {
+        allow read: if isCoach(clubId);
+        allow create: if isCoach(clubId)
+          && request.resource.data.id == requestId
+          && request.resource.data.audience == "schedule"
+          && request.resource.data.action in ["created", "updated", "deleted"]
+          && request.resource.data.teamId in ["all", "team1", "team2"]
+          && request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.title is string
+          && request.resource.data.body is string
+          && notificationRequestKeys();
+        allow update, delete: if isCoach(clubId);
       }
 
       match /notificationTokens/{tokenId} {
