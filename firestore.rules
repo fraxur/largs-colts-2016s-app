@@ -52,6 +52,31 @@ service cloud.firestore {
       return request.resource.data.keys().hasOnly(["id", "playerId", "playerName", "playerTeamId", "title", "originalFileName", "storagePath", "contentType", "size", "uploadedBy", "uploadedByName", "status", "createdAt", "updatedAt"]);
     }
 
+    function coachDocumentKeys() {
+      return request.resource.data.keys().hasOnly(["id", "category", "title", "originalFileName", "storagePath", "contentType", "size", "uploadedBy", "uploadedByName", "status", "createdAt", "updatedAt"]);
+    }
+
+    function liftOfferKeys() {
+      return request.resource.data.keys().hasOnly(["id", "dateKey", "playerId", "playerName", "playerTeamId", "parentUid", "parentName", "liftSeats", "liftFrom", "status", "createdAt", "updatedAt"]);
+    }
+
+    function validParentLiftOffer(clubId, offerId) {
+      return signedIn()
+        && request.resource.data.id == offerId
+        && request.resource.data.parentUid == request.auth.uid
+        && approvedFor(clubId, request.resource.data.playerId)
+        && request.resource.data.status in ["active", "inactive"]
+        && request.resource.data.dateKey is string
+        && request.resource.data.playerId is string
+        && request.resource.data.playerName is string
+        && request.resource.data.parentName is string
+        && request.resource.data.liftSeats is number
+        && request.resource.data.liftSeats >= 0
+        && request.resource.data.liftSeats <= 6
+        && request.resource.data.liftFrom is string
+        && liftOfferKeys();
+    }
+
     function notificationRequestKeys() {
       return request.resource.data.keys().hasOnly(["id", "audience", "action", "eventId", "teamId", "title", "body", "createdBy", "createdByName", "createdAt", "updatedAt"]);
     }
@@ -113,6 +138,20 @@ service cloud.firestore {
         allow delete: if isCoach(clubId);
       }
 
+      match /coachDocuments/{documentId} {
+        allow read: if isCoach(clubId);
+        allow create, update: if isCoach(clubId)
+          && request.resource.data.id == documentId
+          && request.resource.data.category in ["handbooks", "drills", "coaching-plans"]
+          && request.resource.data.storagePath is string
+          && request.resource.data.status in ["active", "archived"]
+          && request.resource.data.size is number
+          && request.resource.data.size <= 15 * 1024 * 1024
+          && request.resource.data.contentType in ["application/pdf", "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ""]
+          && coachDocumentKeys();
+        allow delete: if isCoach(clubId);
+      }
+
       match /events/{eventId} {
         allow read: if signedIn();
         allow create, update, delete: if isCoach(clubId);
@@ -142,6 +181,14 @@ service cloud.firestore {
             && request.resource.data.updatedBy == request.auth.uid
             && request.resource.data.keys().hasOnly(["playerId", "eventId", "status", "note", "snacks", "liftOffer", "liftSeats", "liftFrom", "updatedBy", "createdAt", "updatedAt"]));
         allow delete: if isCoach(clubId);
+      }
+
+      match /liftOffers/{offerId} {
+        allow read: if signedIn();
+        allow create: if isCoach(clubId) || validParentLiftOffer(clubId, offerId);
+        allow update: if isCoach(clubId)
+          || (resource.data.parentUid == request.auth.uid && validParentLiftOffer(clubId, offerId));
+        allow delete: if isCoach(clubId) || (signedIn() && resource.data.parentUid == request.auth.uid);
       }
 
       match /parentLinks/{linkId} {

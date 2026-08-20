@@ -1187,6 +1187,47 @@ button:disabled {
   gap: 10px;
 }
 
+.availability-fixture-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.availability-fixture-list span {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0 10px;
+  background: #fff2f0;
+  color: var(--red-900);
+  font-size: 0.75rem;
+  font-weight: 950;
+}
+
+.availability-row-actions {
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.allocation-field {
+  min-width: min(100%, 210px);
+  margin: 0;
+}
+
+.fixture-lift-group {
+  display: grid;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.fixture-lift-group:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
 .availability-tags {
   display: flex;
   flex-wrap: wrap;

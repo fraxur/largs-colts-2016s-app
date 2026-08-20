@@ -44,6 +44,15 @@ service firebase.storage {
       allow delete: if isCoach(clubId);
     }
 
+    match /clubs/{clubId}/coachDocuments/{category}/{documentId}/{fileName} {
+      allow read: if isCoach(clubId);
+      allow create, update: if isCoach(clubId)
+        && category in ["handbooks", "drills", "coaching-plans"]
+        && request.resource.size <= 15 * 1024 * 1024
+        && allowedDocumentType();
+      allow delete: if isCoach(clubId);
+    }
+
     match /{allPaths=**} {
       allow read, write: if false;
     }

@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-23";
+const appVersion = "4.0-live-rollout-25";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -96,6 +96,11 @@ const allowedDocumentTypes = new Set([
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 ]);
 const maxDocumentBytes = 15 * 1024 * 1024;
+const coachDocumentCategories = [
+  { id: "handbooks", label: "Handbooks" },
+  { id: "drills", label: "Drills" },
+  { id: "coaching-plans", label: "Coaching Plans" },
+];
 const playerPositions = [
   "Goalkeeper",
   "Left Back",
@@ -174,8 +179,13 @@ const defaultState = {
   dataRequests: [],
   coachQueries: [],
   playerDocuments: [],
+  coachDocuments: [],
+  liftOffers: [],
   documentFilter: "all",
   documentSort: "newest",
+  coachDocumentCategory: "handbooks",
+  coachSectionTab: "contacts",
+  availabilityTab: "responses",
   events: [],
   availability: {},
   attendance: {},
@@ -389,7 +399,7 @@ const coachGuideSteps = [
     target: "availability-summary",
     eventId: "e1",
     title: "Availability responses",
-    body: "Availability shows who has replied for the selected fixture or training session. Coaches can switch events from the dropdown and quickly see available, unavailable and no reply totals.",
+    body: "Availability shows who has replied for the selected date. Coaches can then pick which players go to each fixture on that date and review lift offers.",
   },
   {
     route: "attendance",
@@ -759,9 +769,65 @@ function venueMapActions(venue) {
 }
 
 function getPlayersForEvent(event, players = activePlayers()) {
+  if (Array.isArray(event?.selectedPlayerIds) && event.selectedPlayerIds.length) {
+    const selected = new Set(event.selectedPlayerIds);
+    return players.filter((player) => selected.has(player.id));
+  }
   const eventTeamId = normalizeTeamId(event.teamId);
   if (eventTeamId === "all") return players;
   return players.filter((player) => normalizeTeamId(player.teamId) === eventTeamId);
+}
+
+function availabilityPlayersForEvent(event, players = activePlayers()) {
+  if (!event) return [];
+  if (!hasCoachAccess()) return approvedPlayers();
+  return players;
+}
+
+function availabilityKeyForEvent(event) {
+  return dateValue(event?.datetime) || event?.id || "";
+}
+
+function availabilityEntry(event, playerId) {
+  const key = availabilityKeyForEvent(event);
+  return defaultAvailabilityEntry(state.availability[key]?.[playerId] || state.availability[event?.id]?.[playerId]);
+}
+
+function eventsForAvailabilityDate(event) {
+  const key = availabilityKeyForEvent(event);
+  return state.events
+    .filter((item) => availabilityKeyForEvent(item) === key && item.type !== "Training" && item.type !== "Free Week")
+    .sort((a, b) => new Date(a.datetime) - new Date(b.datetime) || String(a.title).localeCompare(String(b.title)));
+}
+
+function availabilityDateLabel(event) {
+  return event ? formatDateOnly(event.datetime) : "Selected date";
+}
+
+function selectedFixtureForPlayer(event, playerId) {
+  return eventsForAvailabilityDate(event).find((item) => Array.isArray(item.selectedPlayerIds) && item.selectedPlayerIds.includes(playerId));
+}
+
+function availabilityDateOptions() {
+  const grouped = new Map();
+  state.events.forEach((event) => {
+    const key = availabilityKeyForEvent(event);
+    if (!key || grouped.has(key)) return;
+    grouped.set(key, {
+      key,
+      event,
+      fixtures: eventsForAvailabilityDate(event),
+    });
+  });
+  return [...grouped.values()].sort((a, b) => new Date(a.event.datetime) - new Date(b.event.datetime));
+}
+
+function availabilityDateOptionLabel(option) {
+  if (!option) return "Selected date";
+  const fixtureCount = option.fixtures.length;
+  if (fixtureCount === 1) return `${formatDateOnly(option.event.datetime)} - ${option.fixtures[0].title}`;
+  if (fixtureCount > 1) return `${formatDateOnly(option.event.datetime)} - ${fixtureCount} fixtures`;
+  return `${formatDateOnly(option.event.datetime)} - ${option.event.title}`;
 }
 
 function formatDate(value) {
@@ -855,10 +921,10 @@ function statusClass(status) {
 
 function availabilityCounts(eventId) {
   const event = state.events.find((item) => item.id === eventId);
-  const players = event ? getPlayersForEvent(event) : activePlayers();
+  const players = event ? availabilityPlayersForEvent(event) : activePlayers();
   return players.reduce(
     (acc, player) => {
-      const entry = defaultAvailabilityEntry(state.availability[eventId]?.[player.id]);
+      const entry = event ? availabilityEntry(event, player.id) : defaultAvailabilityEntry(state.availability[eventId]?.[player.id]);
       const status = entry?.status || "unknown";
       acc[status] += 1;
       if (entry.snacks) acc.snacks += 1;
@@ -1530,11 +1596,10 @@ function messageCard() {
 }
 
 function scheduleView() {
-  const childTeamIds = new Set(approvedPlayers().map((player) => normalizeTeamId(player.teamId)));
   const scheduleType = state.scheduleType || "matches";
   const period = state.schedulePeriod || "upcoming";
   const allVisibleEvents = state.events
-    .filter((event) => hasCoachAccess() || event.teamId === "all" || childTeamIds.has(normalizeTeamId(event.teamId)))
+    .filter((event) => hasCoachAccess() || event.teamId === "all" || ["Fixture", "Free Week", "Training"].includes(event.type))
     .filter((event) => state.scheduleFilter === "all" || normalizeTeamId(event.teamId) === normalizeTeamId(state.scheduleFilter) || event.teamId === "all");
   const matchEvents = allVisibleEvents.filter((event) => event.type !== "Training");
   const trainingEvents = allVisibleEvents.filter((event) => event.type === "Training");
@@ -1548,7 +1613,7 @@ function scheduleView() {
       : eventEndDate(a) - eventEndDate(b));
   const emptyLabel = scheduleType === "training" ? "training sessions" : "matches";
   const emptyCopy = scheduleType === "training"
-    ? "Tuesday and Thursday Bowencraig training will appear here when the season training dates are seeded."
+    ? "Tuesday and Wednesday Bowencraig training will appear here when the season training dates are seeded."
     : "Send over the two fixture lists and the matches will be added here by team.";
 
   return `
@@ -1632,70 +1697,95 @@ function availabilityView() {
   const event = state.events.find((item) => item.id === state.selectedEventId) || state.events[0];
   if (!event) return emptyEventsView("Availability");
   const child = currentPlayer();
-  const eventPlayers = getPlayersForEvent(event);
-  const childInEvent = child && eventPlayers.some((player) => player.id === child.id);
-  const players = hasCoachAccess() ? eventPlayers : [child].filter(Boolean).filter((player) => childInEvent);
+  const players = hasCoachAccess() ? availabilityPlayersForEvent(event) : [child].filter(Boolean);
   const counts = availabilityCounts(event.id);
+  const tab = state.availabilityTab || "responses";
+  const dateOptions = availabilityDateOptions();
 
   return `
     <section class="toolbar" data-tour="availability-summary">
       <label class="field compact-field">
-        <span>Event</span>
+        <span>Date</span>
         <select data-action="select-event">
-          ${state.events.map((item) => `<option value="${item.id}" ${item.id === event.id ? "selected" : ""}>${escapeHtml(item.title)}</option>`).join("")}
+          ${dateOptions.map((option) => `<option value="${option.event.id}" ${option.key === availabilityKeyForEvent(event) ? "selected" : ""}>${escapeHtml(availabilityDateOptionLabel(option))}</option>`).join("")}
         </select>
       </label>
       <div class="summary-strip">
         <span>${counts.available} available</span>
         <span>${counts.unavailable} unavailable</span>
         <span>${counts.unknown} no reply</span>
-        ${event.type === "Fixture" ? `<span>${counts.snacks} snack offers</span><span>${counts.liftSeats} lift seats</span>` : ""}
+        <span>${counts.snacks} snack offers</span>
+        <span>${counts.liftSeats} lift seats</span>
+      </div>
+      <div class="segmented light">
+        <button type="button" class="${tab === "responses" ? "active" : ""}" data-action="set-availability-tab" data-tab="responses">Responses</button>
+        <button type="button" class="${tab === "lifts" ? "active" : ""}" data-action="set-availability-tab" data-tab="lifts">Lifts</button>
       </div>
     </section>
 
+    ${tab === "lifts" ? liftOffersView(event) : `
     <section class="content-grid ${hasCoachAccess() ? "" : "two-col"}">
-      ${!hasCoachAccess() ? parentAvailabilityCard(event, child, childInEvent) : ""}
+      ${!hasCoachAccess() ? parentAvailabilityCard(event, child) : ""}
       <article class="panel" data-tour="availability-responses">
         <div class="panel-title">
           <div>
             <p class="eyebrow">Responses</p>
-            <h3>${escapeHtml(event.title)}</h3>
+            <h3>${escapeHtml(availabilityDateLabel(event))}</h3>
           </div>
         </div>
+        ${availabilityFixtureSummary(event)}
         <div class="response-list">
           ${players.map((player) => responseRow(event, player)).join("")}
         </div>
       </article>
     </section>
+    `}
   `;
 }
 
-function parentAvailabilityCard(event, child, childInEvent) {
-  const entry = defaultAvailabilityEntry(state.availability[event.id]?.[child?.id]);
-  const venue = eventVenue(event);
-  if (!childInEvent) {
+function availabilityFixtureSummary(event) {
+  const fixtures = eventsForAvailabilityDate(event);
+  if (!fixtures.length) return '<p class="muted">Availability is collected for this date.</p>';
+  return `
+    <div class="availability-fixture-list">
+      ${fixtures.map((fixture) => {
+        const selectedCount = Array.isArray(fixture.selectedPlayerIds) ? fixture.selectedPlayerIds.length : 0;
+        return `<span>${escapeHtml(fixture.title)}${selectedCount ? ` - ${selectedCount} picked` : ""}</span>`;
+      }).join("")}
+    </div>
+  `;
+}
+
+function parentAvailabilityCard(event, child) {
+  if (!child) {
     return `
       <article class="panel">
         <p class="eyebrow">Availability</p>
-        <h3>${escapeHtml(child?.name || "Linked child")}</h3>
-        <p class="muted">This event is for ${teamName(event.teamId)}.</p>
+        <h3>No child linked yet</h3>
+        <p class="muted">A coach needs to approve your child before availability can be submitted.</p>
       </article>
     `;
   }
+  const entry = availabilityEntry(event, child.id);
+  const venue = eventVenue(event);
+  const selectedFixture = selectedFixtureForPlayer(event, child.id);
 
   return `
     <article class="panel">
       <div class="panel-title">
         <div>
           <p class="eyebrow">Your response</p>
-          <h3>${escapeHtml(child.name)}</h3>
+          <h3>${escapeHtml(child.name)} - ${escapeHtml(availabilityDateLabel(event))}</h3>
         </div>
         <span class="status-pill ${statusClass(entry.status)}">${statusText(entry.status)}</span>
       </div>
-      <p class="muted">${eventDateLine(event, venue)}</p>
-      ${event.kit ? `<p class="muted">${escapeHtml(event.kit)}</p>` : ""}
-      ${eventPitchLine(event, venue) ? `<p class="muted">${eventPitchLine(event, venue)}</p>` : ""}
-      ${venue.parkingAddress ? `<p class="muted">Parking: ${escapeHtml(venue.parkingAddress)}</p>` : ""}
+      <p class="muted">Mark whether your child is available on this date. Coaches will decide which fixture each child is selected for.</p>
+      ${selectedFixture ? `
+        <p class="muted"><strong>Selected fixture:</strong> ${escapeHtml(selectedFixture.title)} - ${eventDateLine(selectedFixture, eventVenue(selectedFixture))}</p>
+      ` : `
+        <p class="muted"><strong>Fixture selection:</strong> coaches have not confirmed this yet.</p>
+      `}
+      ${availabilityFixtureSummary(event)}
       <div class="choice-row">
         <button class="secondary-button" type="button" data-modal="directions" data-event-id="${event.id}">Directions</button>
       </div>
@@ -1707,7 +1797,7 @@ function parentAvailabilityCard(event, child, childInEvent) {
         <span>Note to coach</span>
         <textarea rows="4" data-action="availability-note" placeholder="Anything the coach should know">${escapeHtml(entry.note)}</textarea>
       </label>
-      ${event.type === "Fixture" ? availabilityExtras(entry) : ""}
+      ${availabilityExtras(entry)}
     </article>
   `;
 }
@@ -1720,7 +1810,7 @@ function availabilityExtras(entry) {
         <input type="checkbox" data-action="snack-volunteer" ${entry.snacks ? "checked" : ""}>
         <span>
           <strong>Can bring half-time snacks</strong>
-          <small>Shown to coaches beside the fixture response.</small>
+          <small>Shown to coaches beside the date response.</small>
         </span>
       </label>
       <label class="toggle-card">
@@ -1749,7 +1839,8 @@ function availabilityExtras(entry) {
 }
 
 function responseRow(event, player) {
-  const entry = defaultAvailabilityEntry(state.availability[event.id]?.[player.id]);
+  const entry = availabilityEntry(event, player.id);
+  const selectedFixture = selectedFixtureForPlayer(event, player.id);
   const extras = [];
   if (entry.snacks) extras.push("Snacks");
   if (entry.liftOffer) {
@@ -1761,10 +1852,111 @@ function responseRow(event, player) {
     <div class="person-row">
       <div>
         <strong>${escapeHtml(player.name)}</strong>
-        <p>${teamName(player.teamId)} - ${escapeHtml(player.role)}${entry.note ? ` - ${escapeHtml(entry.note)}` : ""}</p>
+        <p>${teamName(player.teamId)} - ${escapeHtml(player.role)}${selectedFixture ? ` - Picked for ${escapeHtml(selectedFixture.title)}` : ""}${entry.note ? ` - ${escapeHtml(entry.note)}` : ""}</p>
         ${extras.length ? `<div class="availability-tags">${extras.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}
       </div>
-      <span class="status-pill ${statusClass(entry.status)}">${statusText(entry.status)}</span>
+      <div class="inline-actions availability-row-actions">
+        ${hasCoachAccess() ? fixtureAllocationControl(event, player) : ""}
+        <span class="status-pill ${statusClass(entry.status)}">${statusText(entry.status)}</span>
+      </div>
+    </div>
+  `;
+}
+
+function fixtureAllocationControl(event, player) {
+  const fixtures = eventsForAvailabilityDate(event);
+  if (!fixtures.length) return "";
+  const selected = selectedFixtureForPlayer(event, player.id)?.id || "";
+  return `
+    <label class="field compact-field allocation-field">
+      <span>Pick fixture</span>
+      <select data-action="set-player-fixture" data-player-id="${escapeHtml(player.id)}">
+        <option value="" ${selected ? "" : "selected"}>Not picked</option>
+        ${fixtures.map((fixture) => `<option value="${escapeHtml(fixture.id)}" ${selected === fixture.id ? "selected" : ""}>${escapeHtml(fixture.title)}</option>`).join("")}
+      </select>
+    </label>
+  `;
+}
+
+function liftOffersForEvent(event) {
+  const dateKey = availabilityKeyForEvent(event);
+  return (state.liftOffers || [])
+    .filter((offer) => offer.dateKey === dateKey && offer.status === "active" && Number(offer.liftSeats || 0) > 0)
+    .sort((a, b) => String(a.liftFrom || "").localeCompare(String(b.liftFrom || "")) || String(a.playerName || "").localeCompare(String(b.playerName || "")));
+}
+
+function liftOffersView(event) {
+  const offers = liftOffersForEvent(event);
+  const child = currentPlayer();
+  const childFixture = child ? selectedFixtureForPlayer(event, child.id) : null;
+  const matchOffers = childFixture
+    ? offers.filter((offer) => selectedFixtureForPlayer(event, offer.playerId)?.id === childFixture.id)
+    : [];
+
+  return `
+    <section class="content-grid two-col">
+      <article class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">All lift offers</p>
+            <h3>${escapeHtml(availabilityDateLabel(event))}</h3>
+          </div>
+          <span class="status-pill good">${offers.reduce((total, offer) => total + Number(offer.liftSeats || 0), 0)} seats</span>
+        </div>
+        <p class="muted">These are the parents who have offered lifts for the selected date.</p>
+        <div class="response-list">
+          ${offers.length ? offers.map((offer) => liftOfferRow(offer, event, true)).join("") : '<p class="muted">No lift offers yet for this date.</p>'}
+        </div>
+      </article>
+      <article class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">${hasCoachAccess() ? "Fixture lift groups" : "Your match lifts"}</p>
+            <h3>${hasCoachAccess() ? "By coach selection" : childFixture ? childFixture.title : "Awaiting selection"}</h3>
+          </div>
+        </div>
+        ${hasCoachAccess() ? fixtureLiftGroups(event, offers) : parentMatchLiftPanel(event, childFixture, matchOffers)}
+      </article>
+    </section>
+  `;
+}
+
+function liftOfferRow(offer, event, showFixture = false) {
+  const fixture = selectedFixtureForPlayer(event, offer.playerId);
+  return `
+    <div class="person-row compact">
+      <div>
+        <strong>${escapeHtml(offer.parentName || "Parent")} - ${escapeHtml(offer.playerName || "Player")}</strong>
+        <p>${Number(offer.liftSeats || 0)} ${Number(offer.liftSeats || 0) === 1 ? "seat" : "seats"}${offer.liftFrom ? ` from ${escapeHtml(offer.liftFrom)}` : ""}${showFixture && fixture ? ` - ${escapeHtml(fixture.title)}` : ""}</p>
+      </div>
+      <span class="status-pill good">Lift</span>
+    </div>
+  `;
+}
+
+function fixtureLiftGroups(event, offers) {
+  const fixtures = eventsForAvailabilityDate(event);
+  if (!fixtures.length) return '<p class="muted">No fixtures on this date to group lifts against.</p>';
+  return fixtures.map((fixture) => {
+    const selected = new Set(fixture.selectedPlayerIds || []);
+    const fixtureOffers = offers.filter((offer) => selected.has(offer.playerId));
+    return `
+      <div class="fixture-lift-group">
+        <strong>${escapeHtml(fixture.title)}</strong>
+        ${fixtureOffers.length ? fixtureOffers.map((offer) => liftOfferRow(offer, event)).join("") : '<p class="muted">No lift offers from selected players for this fixture yet.</p>'}
+      </div>
+    `;
+  }).join("");
+}
+
+function parentMatchLiftPanel(event, childFixture, offers) {
+  if (!childFixture) {
+    return '<p class="muted">Once coaches confirm which match your child is selected for, this panel will show lift offers for that match.</p>';
+  }
+  return `
+    <p class="muted">These lift offers are from parents whose children are also picked for this fixture.</p>
+    <div class="response-list">
+      ${offers.length ? offers.map((offer) => liftOfferRow(offer, event)).join("") : '<p class="muted">No lift offers for this selected fixture yet.</p>'}
     </div>
   `;
 }
@@ -2424,7 +2616,21 @@ function coachQueryRow(query) {
 
 function coachesView() {
   const contacts = appCoachContacts();
+  const tab = hasCoachAccess() ? state.coachSectionTab || "contacts" : "contacts";
   return `
+    ${hasCoachAccess() ? `
+      <section class="toolbar">
+        <div>
+          <p class="eyebrow">Coach area</p>
+          <h2 class="section-heading">Contacts and library</h2>
+        </div>
+        <div class="segmented light">
+          <button type="button" class="${tab === "contacts" ? "active" : ""}" data-action="set-coach-section-tab" data-tab="contacts">Contacts</button>
+          <button type="button" class="${tab === "library" ? "active" : ""}" data-action="set-coach-section-tab" data-tab="library">Coach Library</button>
+        </div>
+      </section>
+    ` : ""}
+    ${tab === "library" ? coachLibraryView() : `
     <section class="content-grid two-col">
       <article class="panel">
         <div class="panel-title">
@@ -2454,6 +2660,70 @@ function coachesView() {
         ${!hasCoachAccess() ? '<button class="primary-button panel-action" type="button" data-route-target="contact">Contact coaches</button>' : ""}
       </article>
     </section>
+    `}
+  `;
+}
+
+function coachLibraryView() {
+  const category = state.coachDocumentCategory || "handbooks";
+  const docs = visibleCoachDocuments(category);
+  return `
+    <section class="toolbar documents-toolbar">
+      <div>
+        <p class="eyebrow">Coach only</p>
+        <h2 class="section-heading">Document library</h2>
+      </div>
+      <div class="document-controls">
+        <label class="field compact-field">
+          <span>Section</span>
+          <select data-action="set-coach-document-category">
+            ${coachDocumentCategories.map((item) => `<option value="${item.id}" ${item.id === category ? "selected" : ""}>${escapeHtml(item.label)}</option>`).join("")}
+          </select>
+        </label>
+        <button class="primary-button" type="button" data-modal="coach-document">Upload document</button>
+      </div>
+    </section>
+    <section class="document-grid">
+      ${docs.length ? docs.map(coachDocumentCard).join("") : `
+        <article class="panel">
+          <h3>No ${escapeHtml(coachDocumentCategoryLabel(category).toLowerCase())} yet</h3>
+          <p class="muted">Upload PDFs or Word files for coaches to use later.</p>
+        </article>
+      `}
+    </section>
+  `;
+}
+
+function coachDocumentCategoryLabel(category) {
+  return coachDocumentCategories.find((item) => item.id === category)?.label || "Coach Documents";
+}
+
+function visibleCoachDocuments(category = state.coachDocumentCategory || "handbooks") {
+  return (state.coachDocuments || [])
+    .filter((doc) => doc.status !== "deleted" && doc.category === category)
+    .sort((a, b) => createdTime(b) - createdTime(a) || documentTitle(a).localeCompare(documentTitle(b)));
+}
+
+function coachDocumentCard(doc) {
+  return `
+    <article class="document-card panel">
+      <div class="panel-title">
+        <div>
+          <p class="eyebrow">${escapeHtml(coachDocumentCategoryLabel(doc.category))} - ${escapeHtml(fileTypeLabel(doc))} - ${escapeHtml(formatFileSize(doc.size))}</p>
+          <h3>${escapeHtml(documentTitle(doc))}</h3>
+        </div>
+        <span class="status-pill good">Coach only</span>
+      </div>
+      <dl class="info-list compact-info">
+        <div><dt>File</dt><dd>${escapeHtml(doc.originalFileName || "Uploaded file")}</dd></div>
+        <div><dt>Shared</dt><dd>${escapeHtml(displayDate(doc.createdAt))}</dd></div>
+        <div><dt>Uploaded by</dt><dd>${escapeHtml(doc.uploadedByName || "Coach")}</dd></div>
+      </dl>
+      <div class="choice-row">
+        <button class="secondary-button" type="button" data-action="download-coach-document" data-document-id="${escapeHtml(doc.id)}">Download</button>
+        <button class="secondary-button danger-button" type="button" data-action="delete-coach-document" data-document-id="${escapeHtml(doc.id)}">Remove</button>
+      </div>
+    </article>
   `;
 }
 
@@ -3098,6 +3368,7 @@ function modalContent(type) {
   if (type === "directions") return directionsModal(state.modal.eventId);
   if (type === "message") return messageModal();
   if (type === "document") return documentModal();
+  if (type === "coach-document") return coachDocumentModal();
   if (type === "player") return playerModal();
   if (type === "move-player") return movePlayerModal(state.modal.playerId);
   if (type === "edit-player") return editPlayerModal(state.modal.playerId);
@@ -3270,6 +3541,32 @@ function documentModal() {
       </label>
       <p class="muted">Parents can only see documents linked to a child profile they have been approved for.</p>
       <button class="primary-button" type="submit">Upload and share</button>
+    </form>
+  `;
+}
+
+function coachDocumentModal() {
+  const category = state.coachDocumentCategory || "handbooks";
+  return `
+    <p class="eyebrow">Coach library</p>
+    <h2 id="modal-title">Upload coach document</h2>
+    <form class="stacked-form" data-form="coach-document">
+      <label class="field">
+        <span>Section</span>
+        <select name="category" required>
+          ${coachDocumentCategories.map((item) => `<option value="${item.id}" ${item.id === category ? "selected" : ""}>${escapeHtml(item.label)}</option>`).join("")}
+        </select>
+      </label>
+      <label class="field">
+        <span>Document title</span>
+        <input name="title" required placeholder="Pressing drill plan">
+      </label>
+      <label class="field">
+        <span>PDF or Word file</span>
+        <input name="documentFile" type="file" accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" required>
+      </label>
+      <p class="muted">Coach library documents are visible only to coach/admin accounts.</p>
+      <button class="primary-button" type="submit">Upload to coach library</button>
     </form>
   `;
 }
@@ -3480,6 +3777,20 @@ document.addEventListener("click", async (event) => {
     return;
   }
 
+  if (action === "set-availability-tab") {
+    state.availabilityTab = target.dataset.tab || "responses";
+    saveState();
+    render();
+    return;
+  }
+
+  if (action === "set-coach-section-tab") {
+    state.coachSectionTab = target.dataset.tab || "contacts";
+    saveState();
+    render();
+    return;
+  }
+
   if (action === "focus-event") {
     state.selectedEventId = target.dataset.eventId;
     state.route = "availability";
@@ -3503,25 +3814,37 @@ document.addEventListener("click", async (event) => {
     return;
   }
 
+  if (action === "download-coach-document") {
+    await downloadCoachDocument(target.dataset.documentId);
+    return;
+  }
+
+  if (action === "delete-coach-document") {
+    await deleteCoachDocument(target.dataset.documentId);
+    return;
+  }
+
   if (action === "set-availability") {
     const child = currentPlayer();
     if (child) {
-      const previous = state.availability[state.selectedEventId]?.[child.id] || { status: "unknown", note: "" };
-      state.availability[state.selectedEventId] = state.availability[state.selectedEventId] || {};
-      state.availability[state.selectedEventId][child.id] = {
+      const selectedEvent = state.events.find((item) => item.id === state.selectedEventId) || state.events[0];
+      const availabilityKey = availabilityKeyForEvent(selectedEvent);
+      const previous = state.availability[availabilityKey]?.[child.id] || state.availability[state.selectedEventId]?.[child.id] || { status: "unknown", note: "" };
+      state.availability[availabilityKey] = state.availability[availabilityKey] || {};
+      state.availability[availabilityKey][child.id] = {
         ...defaultAvailabilityEntry(previous),
         status: target.dataset.status,
       };
       if (target.dataset.status === "unavailable") {
-        state.availability[state.selectedEventId][child.id].snacks = false;
-        state.availability[state.selectedEventId][child.id].liftOffer = false;
-        state.availability[state.selectedEventId][child.id].liftSeats = 0;
-        state.availability[state.selectedEventId][child.id].liftFrom = "";
+        state.availability[availabilityKey][child.id].snacks = false;
+        state.availability[availabilityKey][child.id].liftOffer = false;
+        state.availability[availabilityKey][child.id].liftSeats = 0;
+        state.availability[availabilityKey][child.id].liftFrom = "";
       }
       try {
         await saveAvailability(child.id);
       } catch {
-        state.availability[state.selectedEventId][child.id] = previous;
+        state.availability[availabilityKey][child.id] = previous;
         render();
         return;
       }
@@ -3787,6 +4110,12 @@ document.addEventListener("change", async (event) => {
     render();
     return;
   }
+  if (target.dataset.action === "set-coach-document-category") {
+    state.coachDocumentCategory = target.value || "handbooks";
+    saveState();
+    render();
+    return;
+  }
   if (target.dataset.action === "set-squad-position-filter") {
     state.squadListPositionFilter = target.value || "all";
     saveState();
@@ -3799,11 +4128,17 @@ document.addEventListener("change", async (event) => {
     render();
     return;
   }
+  if (target.dataset.action === "set-player-fixture") {
+    await assignPlayerToFixture(target.dataset.playerId, target.value || "");
+    return;
+  }
   if (["snack-volunteer", "lift-offer", "lift-seats"].includes(target.dataset.action)) {
     const child = currentPlayer();
     if (!child) return;
-    state.availability[state.selectedEventId] = state.availability[state.selectedEventId] || {};
-    const entry = defaultAvailabilityEntry(state.availability[state.selectedEventId][child.id]);
+    const selectedEvent = state.events.find((item) => item.id === state.selectedEventId) || state.events[0];
+    const availabilityKey = availabilityKeyForEvent(selectedEvent);
+    state.availability[availabilityKey] = state.availability[availabilityKey] || {};
+    const entry = availabilityEntry(selectedEvent, child.id);
 
     if (target.dataset.action === "snack-volunteer") {
       entry.snacks = target.checked;
@@ -3818,7 +4153,7 @@ document.addEventListener("change", async (event) => {
       entry.liftOffer = true;
     }
 
-    state.availability[state.selectedEventId][child.id] = entry;
+    state.availability[availabilityKey][child.id] = entry;
     try {
       await saveAvailability(child.id);
     } catch {
@@ -3835,9 +4170,11 @@ document.addEventListener("input", (event) => {
   if (target.dataset.action === "availability-note") {
     const child = currentPlayer();
     if (!child) return;
-    state.availability[state.selectedEventId] = state.availability[state.selectedEventId] || {};
-    state.availability[state.selectedEventId][child.id] = {
-      ...defaultAvailabilityEntry(state.availability[state.selectedEventId][child.id]),
+    const selectedEvent = state.events.find((item) => item.id === state.selectedEventId) || state.events[0];
+    const availabilityKey = availabilityKeyForEvent(selectedEvent);
+    state.availability[availabilityKey] = state.availability[availabilityKey] || {};
+    state.availability[availabilityKey][child.id] = {
+      ...availabilityEntry(selectedEvent, child.id),
       note: target.value,
     };
     scheduleAvailabilitySave(child.id);
@@ -3847,11 +4184,14 @@ document.addEventListener("input", (event) => {
   if (target.dataset.action === "lift-from") {
     const child = currentPlayer();
     if (!child) return;
-    state.availability[state.selectedEventId] = state.availability[state.selectedEventId] || {};
-    state.availability[state.selectedEventId][child.id] = {
-      ...defaultAvailabilityEntry(state.availability[state.selectedEventId][child.id]),
+    const selectedEvent = state.events.find((item) => item.id === state.selectedEventId) || state.events[0];
+    const availabilityKey = availabilityKeyForEvent(selectedEvent);
+    const existing = availabilityEntry(selectedEvent, child.id);
+    state.availability[availabilityKey] = state.availability[availabilityKey] || {};
+    state.availability[availabilityKey][child.id] = {
+      ...existing,
       liftOffer: true,
-      liftSeats: Number(state.availability[state.selectedEventId][child.id]?.liftSeats || 1),
+      liftSeats: Number(existing.liftSeats || 1),
       liftFrom: target.value,
     };
     scheduleAvailabilitySave(child.id);
@@ -3877,6 +4217,7 @@ document.addEventListener("submit", async (event) => {
     if (form.dataset.form === "edit-event") await editEvent(data);
     if (form.dataset.form === "message") await addMessage(data);
     if (form.dataset.form === "player-document") await uploadPlayerDocument(data);
+    if (form.dataset.form === "coach-document") await uploadCoachDocument(data);
     if (form.dataset.form === "player") await addPlayer(data);
     if (form.dataset.form === "move-player") await movePlayer(data);
     if (form.dataset.form === "edit-player") await editPlayer(data);
@@ -4309,11 +4650,14 @@ function scheduleAvailabilitySave(playerId) {
 }
 
 async function saveAvailability(playerId) {
-  const entry = defaultAvailabilityEntry(state.availability[state.selectedEventId]?.[playerId]);
+  const event = state.events.find((item) => item.id === state.selectedEventId) || state.events[0];
+  const availabilityKey = availabilityKeyForEvent(event);
+  if (!event || !availabilityKey) return;
+  const entry = defaultAvailabilityEntry(state.availability[availabilityKey]?.[playerId] || state.availability[event?.id]?.[playerId]);
   if (!entry) return;
-  await saveLiveDocument(`availability/${state.selectedEventId}/players`, playerId, {
+  await saveLiveDocument(`availability/${availabilityKey}/players`, playerId, {
     playerId,
-    eventId: state.selectedEventId,
+    eventId: availabilityKey,
     status: entry.status || "unknown",
     note: entry.note || "",
     snacks: Boolean(entry.snacks),
@@ -4322,6 +4666,64 @@ async function saveAvailability(playerId) {
     liftFrom: entry.liftFrom || "",
     updatedBy: state.session.userId,
   });
+  await saveLiftOfferForAvailability(playerId, event, entry);
+}
+
+function liftOfferId(dateKey, playerId) {
+  return `${String(dateKey).replace(/[^a-zA-Z0-9-]/g, "-")}_${String(playerId).replace(/[^a-zA-Z0-9-]/g, "-")}`;
+}
+
+async function saveLiftOfferForAvailability(playerId, event, entry) {
+  if (!event || hasCoachAccess()) return;
+  const player = approvedPlayers().find((item) => item.id === playerId);
+  if (!player) return;
+  const dateKey = availabilityKeyForEvent(event);
+  if (!dateKey) return;
+  const active = entry.status === "available" && Boolean(entry.liftOffer) && Number(entry.liftSeats || 0) > 0;
+  const record = {
+    id: liftOfferId(dateKey, playerId),
+    dateKey,
+    playerId,
+    playerName: player.name,
+    playerTeamId: normalizeTeamId(player.teamId),
+    parentUid: state.session.userId,
+    parentName: state.session.parentName || state.session.email || "Parent",
+    liftSeats: active ? Number(entry.liftSeats || 0) : 0,
+    liftFrom: active ? String(entry.liftFrom || "").trim() : "",
+    status: active ? "active" : "inactive",
+  };
+  await saveLiveDocument("liftOffers", record.id, record);
+  state.liftOffers = [
+    record,
+    ...state.liftOffers.filter((item) => item.id !== record.id),
+  ];
+}
+
+async function assignPlayerToFixture(playerId, fixtureId) {
+  if (!requireCoach() || !playerId) return;
+  const event = state.events.find((item) => item.id === state.selectedEventId) || state.events[0];
+  const fixtures = eventsForAvailabilityDate(event);
+  if (!fixtures.length) return;
+
+  const changed = fixtures.map((fixture) => {
+    const selected = new Set(fixture.selectedPlayerIds || []);
+    const hadPlayer = selected.delete(playerId);
+    if (fixture.id === fixtureId) selected.add(playerId);
+    const nextSelectedPlayerIds = [...selected];
+    const changedSelection = hadPlayer || fixture.id === fixtureId;
+    return changedSelection
+      ? { ...fixture, selectedPlayerIds: nextSelectedPlayerIds }
+      : fixture;
+  });
+
+  const changedFixtures = changed.filter((fixture, index) => fixture !== fixtures[index]);
+  if (!changedFixtures.length) return;
+
+  await Promise.all(changedFixtures.map((fixture) => saveLiveDocument("events", fixture.id, fixture)));
+  state.events = state.events.map((item) => changedFixtures.find((fixture) => fixture.id === item.id) || item);
+  saveState();
+  render();
+  toast(fixtureId ? "Player picked for fixture" : "Player removed from fixture");
 }
 
 function eventTitle(type, teamId, opponent, venueId) {
@@ -4411,10 +4813,11 @@ async function queueScheduleNotification(event, action) {
 }
 
 function syncEventRoster(event) {
-  state.availability[event.id] = state.availability[event.id] || {};
+  const availabilityKey = availabilityKeyForEvent(event);
+  state.availability[availabilityKey] = state.availability[availabilityKey] || {};
   state.attendance[event.id] = state.attendance[event.id] || {};
-  getPlayersForEvent(event).forEach((player) => {
-    state.availability[event.id][player.id] = defaultAvailabilityEntry(state.availability[event.id][player.id]);
+  availabilityPlayersForEvent(event).forEach((player) => {
+    state.availability[availabilityKey][player.id] = defaultAvailabilityEntry(state.availability[availabilityKey][player.id]);
     state.attendance[event.id][player.id] = state.attendance[event.id][player.id] || "unknown";
   });
 }
@@ -4436,7 +4839,10 @@ async function editEvent(data) {
   const eventId = data.get("eventId");
   const index = state.events.findIndex((event) => event.id === eventId);
   if (index === -1) return;
-  const nextEvent = eventDataFromForm(data, eventId);
+  const nextEvent = {
+    ...eventDataFromForm(data, eventId),
+    selectedPlayerIds: state.events[index].selectedPlayerIds || [],
+  };
   await saveLiveDocument("events", eventId, nextEvent);
   if (shouldNotifyParents(data)) await queueScheduleNotification(nextEvent, "updated");
   state.events[index] = nextEvent;
@@ -4471,9 +4877,11 @@ async function deleteEvent(eventId) {
   if (!confirmed) return;
 
   await queueScheduleNotification(event, "deleted");
-  await deleteEventLive(eventId);
+  await deleteEventLive(eventId, event);
   state.events = state.events.filter((item) => item.id !== eventId);
-  delete state.availability[eventId];
+  const availabilityKey = availabilityKeyForEvent(event);
+  const remainingForDate = state.events.some((item) => item.id !== eventId && availabilityKeyForEvent(item) === availabilityKey);
+  if (!remainingForDate) delete state.availability[availabilityKey];
   delete state.attendance[eventId];
 
   if (state.selectedEventId === eventId) {
@@ -4617,6 +5025,111 @@ async function deletePlayerDocument(documentId) {
   state.playerDocuments = state.playerDocuments.filter((item) => item.id !== documentId);
   render();
   toast("Document removed");
+}
+
+async function uploadCoachDocument(data) {
+  if (!requireCoach()) return;
+  const runtime = await ensureFirebase();
+  const category = String(data.get("category") || state.coachDocumentCategory || "handbooks").trim();
+  const title = String(data.get("title") || "").trim();
+  const file = data.get("documentFile");
+
+  if (!coachDocumentCategories.some((item) => item.id === category)) {
+    toast("Choose a valid coach library section");
+    return;
+  }
+  if (!title || !(file instanceof File) || !file.name) {
+    toast("Choose a title and document before uploading");
+    return;
+  }
+  if (!isAllowedDocumentFile(file)) {
+    toast("Only PDF, DOC and DOCX files can be uploaded");
+    return;
+  }
+  if (file.size > maxDocumentBytes) {
+    toast("Document is too large. Keep uploads under 15 MB.");
+    return;
+  }
+
+  const documentId = uid("coachdoc");
+  const fileName = safeStorageFileName(file.name);
+  const storagePath = `clubs/${clubId}/coachDocuments/${category}/${documentId}/${fileName}`;
+  const storageRef = runtime.modules.ref(runtime.storage, storagePath);
+
+  toast("Uploading coach document...");
+  await runtime.modules.uploadBytes(storageRef, file, {
+    contentType: file.type || "application/octet-stream",
+    customMetadata: {
+      clubId,
+      category,
+      uploadedBy: state.session.userId || "",
+    },
+  });
+
+  const record = {
+    id: documentId,
+    category,
+    title,
+    originalFileName: file.name,
+    storagePath,
+    contentType: file.type || "",
+    size: file.size,
+    uploadedBy: state.session.userId,
+    uploadedByName: state.session.coachName || "Coach",
+    status: "active",
+  };
+
+  await saveLiveDocument("coachDocuments", documentId, record);
+  state.coachDocuments = sortCoachDocuments([record, ...state.coachDocuments.filter((item) => item.id !== documentId)]);
+  state.coachDocumentCategory = category;
+  delete state.modal;
+  toast("Coach document uploaded");
+}
+
+async function downloadCoachDocument(documentId) {
+  if (!requireCoach() || !documentId) return;
+  const doc = state.coachDocuments.find((item) => item.id === documentId);
+  if (!doc?.storagePath) {
+    toast("Document could not be found");
+    return;
+  }
+
+  try {
+    const runtime = await ensureFirebase();
+    const url = await runtime.modules.getDownloadURL(runtime.modules.ref(runtime.storage, doc.storagePath));
+    const link = document.createElement("a");
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.download = doc.originalFileName || documentTitle(doc);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  } catch (error) {
+    console.error(error);
+    toast("Coach document download failed. Check Storage rules are deployed.");
+  }
+}
+
+async function deleteCoachDocument(documentId) {
+  if (!requireCoach() || !documentId) return;
+  const doc = state.coachDocuments.find((item) => item.id === documentId);
+  if (!doc) return;
+  const confirmed = window.confirm(`Remove "${documentTitle(doc)}" from the coach library?`);
+  if (!confirmed) return;
+
+  const runtime = await ensureFirebase();
+  if (doc.storagePath) {
+    try {
+      await runtime.modules.deleteObject(runtime.modules.ref(runtime.storage, doc.storagePath));
+    } catch (error) {
+      console.warn("Stored coach document could not be deleted; removing Firestore record anyway", error);
+    }
+  }
+  await deleteLiveDocument("coachDocuments", documentId);
+  state.coachDocuments = state.coachDocuments.filter((item) => item.id !== documentId);
+  render();
+  toast("Coach document removed");
 }
 
 async function addPlayer(data) {
@@ -5013,13 +5526,14 @@ async function loadLiveStateFromFirebase() {
   try {
     const runtime = await ensureFirebase();
     const role = state.session.role;
-    const [squadDocs, teamDocs, events, announcements, venueDocs, coachContactDocs] = await Promise.all([
+    const [squadDocs, teamDocs, events, announcements, venueDocs, coachContactDocs, liftOfferDocs] = await Promise.all([
       loadDocs("squads"),
       loadDocs("teams"),
       loadDocs("events"),
       loadDocs("announcements"),
       loadDocs("venues"),
       loadDocs("coachContacts"),
+      loadOptionalDocs("liftOffers"),
     ]);
 
     const squadSource = squadDocs.length ? squadDocs : teamDocs;
@@ -5029,9 +5543,10 @@ async function loadLiveStateFromFirebase() {
     state.messages = announcements.sort(sortByCreatedAtDesc);
     state.venues = venueDocs;
     state.coachContacts = coachContactDocs;
+    state.liftOffers = liftOfferDocs;
 
     if (hasCoachAccess(role)) {
-      const [players, parentLinks, accessRequests, notifications, users, dataRequests, coachQueries, playerDevelopment, playerDocuments] = await Promise.all([
+      const [players, parentLinks, accessRequests, notifications, users, dataRequests, coachQueries, playerDevelopment, playerDocuments, coachDocuments] = await Promise.all([
         loadDocs("players"),
         loadDocs("parentLinks"),
         loadDocs("accessRequests"),
@@ -5041,6 +5556,7 @@ async function loadLiveStateFromFirebase() {
         loadOptionalDocs("coachQueries"),
         loadDocs("playerDevelopment"),
         loadOptionalDocs("playerDocuments"),
+        loadOptionalDocs("coachDocuments"),
       ]);
       state.players = players.map(normalizePlayerRecord).sort((a, b) => a.name.localeCompare(b.name));
       state.parentLinks = parentLinks;
@@ -5051,6 +5567,7 @@ async function loadLiveStateFromFirebase() {
       state.coachQueries = coachQueries.sort(sortByCreatedAtDesc);
       state.playerDevelopment = Object.fromEntries(playerDevelopment.map((record) => [record.playerId || record.id, defaultDevelopmentRecord(record.playerId || record.id, record)]));
       state.playerDocuments = sortPlayerDocuments(playerDocuments);
+      state.coachDocuments = sortCoachDocuments(coachDocuments);
     } else {
       const uid = runtime.user.uid;
       const [parentLinks, accessRequests, notifications, dataRequests, coachQueries] = await Promise.all([
@@ -5118,6 +5635,12 @@ function sortPlayerDocuments(items = []) {
     .sort((a, b) => createdTime(b) - createdTime(a) || documentTitle(a).localeCompare(documentTitle(b)));
 }
 
+function sortCoachDocuments(items = []) {
+  return items
+    .filter((item) => item.status !== "deleted")
+    .sort((a, b) => createdTime(b) - createdTime(a) || documentTitle(a).localeCompare(documentTitle(b)));
+}
+
 async function loadPlayerDocumentsForParent(parentLinks) {
   try {
     const runtime = await ensureFirebase();
@@ -5137,24 +5660,27 @@ async function loadPlayerDocumentsForParent(parentLinks) {
 
 async function loadEventSubcollections() {
   const runtime = await ensureFirebase();
-    const approvedIds = approvedPlayers().map((player) => player.id);
+  const approvedIds = approvedPlayers().map((player) => player.id);
   state.availability = {};
   state.attendance = {};
 
-  await Promise.all(state.events.map(async (event) => {
-    const availabilityCollection = runtime.modules.collection(runtime.db, "clubs", clubId, "availability", event.id, "players");
-    const attendanceCollection = runtime.modules.collection(runtime.db, "clubs", clubId, "attendance", event.id, "players");
+  const availabilityKeys = [...new Set(state.events.map(availabilityKeyForEvent).filter(Boolean))];
+  await Promise.all(availabilityKeys.map(async (availabilityKey) => {
+    const availabilityCollection = runtime.modules.collection(runtime.db, "clubs", clubId, "availability", availabilityKey, "players");
     const approvedChunks = chunkArray(approvedIds, 10);
-    const [availabilitySnap, attendanceSnap] = await Promise.all([
-      getEventPlayerDocs(runtime, availabilityCollection, approvedChunks),
-      getEventPlayerDocs(runtime, attendanceCollection, approvedChunks),
-    ]);
+    const availabilitySnap = await getEventPlayerDocs(runtime, availabilityCollection, approvedChunks);
 
-    state.availability[event.id] = {};
+    state.availability[availabilityKey] = {};
     availabilitySnap.forEach((docSnap) => {
       const data = docSnap.data();
-      state.availability[event.id][data.playerId || docSnap.id] = data;
+      state.availability[availabilityKey][data.playerId || docSnap.id] = data;
     });
+  }));
+
+  await Promise.all(state.events.map(async (event) => {
+    const attendanceCollection = runtime.modules.collection(runtime.db, "clubs", clubId, "attendance", event.id, "players");
+    const approvedChunks = chunkArray(approvedIds, 10);
+    const attendanceSnap = await getEventPlayerDocs(runtime, attendanceCollection, approvedChunks);
 
     state.attendance[event.id] = {};
     attendanceSnap.forEach((docSnap) => {
@@ -5256,6 +5782,9 @@ async function startLiveSubscriptions() {
   watchCollection("coachContacts", (items) => {
     state.coachContacts = items;
   });
+  watchCollection("liftOffers", (items) => {
+    state.liftOffers = items;
+  });
 
   if (hasCoachAccess()) {
     watchCollection("players", (items) => {
@@ -5286,6 +5815,9 @@ async function startLiveSubscriptions() {
     });
     watchCollection("playerDocuments", (items) => {
       state.playerDocuments = sortPlayerDocuments(items);
+    });
+    watchCollection("coachDocuments", (items) => {
+      state.coachDocuments = sortCoachDocuments(items);
     });
   } else {
     const uid = state.session.userId;
@@ -5342,41 +5874,44 @@ function startEventDataSubscriptions(runtime) {
   const approvedChunks = chunkArray(approvedIds, 10);
   const canReadAll = hasCoachAccess();
 
-  state.events.forEach((event) => {
-    const availabilityRef = runtime.modules.collection(runtime.db, "clubs", clubId, "availability", event.id, "players");
-    const attendanceRef = runtime.modules.collection(runtime.db, "clubs", clubId, "attendance", event.id, "players");
+  const watchPlayerCollection = (collectionRef, applyDocs) => {
+    if (canReadAll) {
+      const unsubscribe = runtime.modules.onSnapshot(
+        collectionRef,
+        (snapshot) => applyDocs(snapshot.docs),
+        (error) => console.error(error),
+      );
+      eventDataUnsubscribers.push(unsubscribe);
+      return;
+    }
+    approvedChunks.flat().forEach((playerId) => {
+      const unsubscribe = runtime.modules.onSnapshot(
+        runtime.modules.doc(collectionRef, playerId),
+        (docSnap) => applyDocs(docSnap.exists() ? [docSnap] : []),
+        (error) => console.error(error),
+      );
+      eventDataUnsubscribers.push(unsubscribe);
+    });
+  };
 
-    const watchPlayerCollection = (collectionRef, applyDocs) => {
-      if (canReadAll) {
-        const unsubscribe = runtime.modules.onSnapshot(
-          collectionRef,
-          (snapshot) => applyDocs(snapshot.docs),
-          (error) => console.error(error),
-        );
-        eventDataUnsubscribers.push(unsubscribe);
-        return;
-      }
-      approvedChunks.flat().forEach((playerId) => {
-        const unsubscribe = runtime.modules.onSnapshot(
-          runtime.modules.doc(collectionRef, playerId),
-          (docSnap) => applyDocs(docSnap.exists() ? [docSnap] : []),
-          (error) => console.error(error),
-        );
-        eventDataUnsubscribers.push(unsubscribe);
-      });
-    };
-
+  const availabilityKeys = [...new Set(state.events.map(availabilityKeyForEvent).filter(Boolean))];
+  availabilityKeys.forEach((availabilityKey) => {
+    const availabilityRef = runtime.modules.collection(runtime.db, "clubs", clubId, "availability", availabilityKey, "players");
     watchPlayerCollection(
       availabilityRef,
       (snapshot) => {
-        state.availability[event.id] = {};
+        state.availability[availabilityKey] = {};
         snapshot.forEach((docSnap) => {
           const data = docSnap.data();
-          state.availability[event.id][data.playerId || docSnap.id] = data;
+          state.availability[availabilityKey][data.playerId || docSnap.id] = data;
         });
         render();
       },
     );
+  });
+
+  state.events.forEach((event) => {
+    const attendanceRef = runtime.modules.collection(runtime.db, "clubs", clubId, "attendance", event.id, "players");
     watchPlayerCollection(
       attendanceRef,
       (snapshot) => {
@@ -5420,12 +5955,16 @@ async function deleteLiveDocument(collectionName, id) {
   }
 }
 
-async function deleteEventLive(eventId) {
+async function deleteEventLive(eventId, event = null) {
   const runtime = await ensureFirebase();
   const batch = runtime.modules.writeBatch(runtime.db);
   const eventRef = runtime.modules.doc(runtime.db, "clubs", clubId, "events", eventId);
+  const availabilityKey = availabilityKeyForEvent(event || state.events.find((item) => item.id === eventId) || { id: eventId });
+  const shouldDeleteAvailability = !state.events.some((item) => item.id !== eventId && availabilityKeyForEvent(item) === availabilityKey);
   const [availabilitySnap, attendanceSnap] = await Promise.all([
-    runtime.modules.getDocs(runtime.modules.collection(runtime.db, "clubs", clubId, "availability", eventId, "players")),
+    shouldDeleteAvailability
+      ? runtime.modules.getDocs(runtime.modules.collection(runtime.db, "clubs", clubId, "availability", availabilityKey, "players"))
+      : Promise.resolve({ docs: [] }),
     runtime.modules.getDocs(runtime.modules.collection(runtime.db, "clubs", clubId, "attendance", eventId, "players")),
   ]);
   availabilitySnap.docs.forEach((docSnap) => batch.delete(docSnap.ref));

@@ -5,13 +5,13 @@ const projectId = process.env.FIREBASE_PROJECT_ID || "largs-colts-2016s-app-c890
 const clubId = process.env.LARGS_CLUB_ID || "largs-colts-2016s";
 const confirmed = process.argv.includes("--yes");
 const keepExisting = process.argv.includes("--keep-existing");
-const seasonTrainingFrom = argValue("--from", "2026-08-18");
+const seasonTrainingFrom = argValue("--from", "2026-08-20");
 const seasonTrainingTo = argValue("--to", "2026-10-17");
 
 if (!confirmed) {
   console.log("This will update live Firestore with the 2026 league fixtures and training schedule.");
   console.log("Mapping: Orange fixture list -> Largs Orange. Blue fixture list -> Largs Blue.");
-  console.log(`Training: Tuesday/Thursday Bowencraig sessions from ${seasonTrainingFrom} to ${seasonTrainingTo}.`);
+  console.log(`Training: Tuesday/Wednesday Bowencraig sessions from ${seasonTrainingFrom} to ${seasonTrainingTo}.`);
   console.log("By default it removes existing schedule items first so test fixtures/training are cleared.");
   console.log("Run again with: npm run seed:fixtures-2026 -- --yes");
   console.log("To keep existing schedule items and only add/overwrite these IDs, use: npm run seed:fixtures-2026 -- --yes --keep-existing");
@@ -174,7 +174,7 @@ function trainingEvent(date) {
     homeScore: "",
     awayScore: "",
     resultNotes: "",
-    notes: "18:00-19:30. Tuesday and Thursday training at Bowencraig. Bring boots, water and shin pads.",
+    notes: "18:00-19:30. Tuesday and Wednesday training at Bowencraig. Bring boots, water and shin pads.",
     competition: "",
     homeAway: "",
     timeTbc: false,
@@ -188,7 +188,7 @@ function trainingSessions() {
   const sessions = [];
   for (let cursor = new Date(from); cursor <= to; cursor = addDays(cursor, 1)) {
     const day = cursor.getDay();
-    if (day === 2 || day === 4) sessions.push(trainingEvent(cursor));
+    if (day === 2 || day === 3) sessions.push(trainingEvent(cursor));
   }
   return sessions;
 }

@@ -45,6 +45,8 @@ const players = [
   player("p24", "Harris Jardine"),
   player("p25", "Lucas Reilly"),
   player("p26", "Jacob McShane"),
+  player("p27", "Vinnie Johnstone"),
+  player("p28", "Elliot Linton"),
 ];
 
 const events = [];

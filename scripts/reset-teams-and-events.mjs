@@ -5,12 +5,12 @@ const projectId = process.env.FIREBASE_PROJECT_ID || "largs-colts-2016s-app-c890
 const clubId = process.env.LARGS_CLUB_ID || "largs-colts-2016s";
 const confirmed = process.argv.includes("--yes");
 const withTraining = process.argv.includes("--with-training");
-const trainingFrom = argValue("--from", "2026-08-18");
+const trainingFrom = argValue("--from", "2026-08-20");
 const trainingTo = argValue("--to", "2026-10-17");
 
 if (!confirmed) {
   console.log("This will update live Firestore: Largs Orange/Largs Blue only, all players unassigned, player development reset, and all fixtures/training removed.");
-  console.log(`To also add Tuesday/Thursday Bowencraig training from ${trainingFrom} to ${trainingTo}, include --with-training.`);
+  console.log(`To also add Tuesday/Wednesday Bowencraig training from ${trainingFrom} to ${trainingTo}, include --with-training.`);
   console.log("Run again with: npm run reset:teams-events -- --yes");
   console.log("Or: npm run reset:teams-events -- --yes --with-training");
   process.exit(0);
@@ -165,7 +165,7 @@ function trainingEvent(date) {
     parkingAddress: "Bowencraig East Car Park, Irvine Rd, Fairlie, Largs KA29 0BG",
     meetTime: "",
     kit: "",
-    notes: "18:00-19:30. Tuesday and Thursday training at Bowencraig. Bring boots, water and shin pads.",
+    notes: "18:00-19:30. Tuesday and Wednesday training at Bowencraig. Bring boots, water and shin pads.",
   };
 }
 
@@ -175,7 +175,7 @@ async function seedTrainingSessions() {
   const sessions = [];
   for (let cursor = new Date(from); cursor <= to; cursor = addDays(cursor, 1)) {
     const day = cursor.getDay();
-    if (day === 2 || day === 4) sessions.push(trainingEvent(cursor));
+    if (day === 2 || day === 3) sessions.push(trainingEvent(cursor));
   }
   await commitInChunks(sessions.map((event) => (batch) => {
     batch.set(club.collection("events").doc(event.id), { ...event, createdAt: now, updatedAt: now }, { merge: true });
@@ -208,7 +208,7 @@ async function main() {
   console.log(`Teams: Largs Orange and Largs Blue. Old colour teams removed.`);
   console.log(`Players unassigned: ${playerCount}. Development records reset to Not assessed.`);
   console.log(`Deleted ${eventCounts.events} events, ${eventCounts.availability} availability records and ${eventCounts.attendance} attendance records.`);
-  if (withTraining) console.log(`Added ${trainingCount} Tuesday/Thursday Bowencraig training sessions.`);
+  if (withTraining) console.log(`Added ${trainingCount} Tuesday/Wednesday Bowencraig training sessions.`);
   console.log(`Retargeted ${retargetedMessages} old colour-team messages to All teams.`);
 }
 
