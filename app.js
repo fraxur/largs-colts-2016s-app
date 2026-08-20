@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-21";
+const appVersion = "4.0-live-rollout-22";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -1874,21 +1874,23 @@ function teamColumn(team) {
         </div>
         <span class="team-dot ${team.id}"></span>
       </div>
-      ${players.map((player) => `
-        <div class="person-row compact">
-          <div>
-            <strong>${escapeHtml(player.name)}</strong>
-            <p>${escapeHtml(player.role)}</p>
-            ${hasCoachAccess() ? `<p>${escapeHtml(player.parentName)} - ${escapeHtml(player.parentPhone)}</p>` : ""}
-          </div>
-          ${hasCoachAccess() ? `
-            <div class="inline-actions">
-              <button class="tiny-button" type="button" data-modal="edit-player" data-player-id="${player.id}">Edit</button>
-              <button class="tiny-button" type="button" data-modal="move-player" data-player-id="${player.id}">Move</button>
+      <div class="team-player-list" tabindex="0" aria-label="${escapeHtml(team.name)} player list">
+        ${players.length ? players.map((player) => `
+          <div class="person-row compact">
+            <div>
+              <strong>${escapeHtml(player.name)}</strong>
+              <p>${escapeHtml(player.role)}</p>
+              ${hasCoachAccess() ? `<p>${escapeHtml(player.parentName)} - ${escapeHtml(player.parentPhone)}</p>` : ""}
             </div>
-          ` : ""}
-        </div>
-      `).join("")}
+            ${hasCoachAccess() ? `
+              <div class="inline-actions">
+                <button class="tiny-button" type="button" data-modal="edit-player" data-player-id="${player.id}">Edit</button>
+                <button class="tiny-button" type="button" data-modal="move-player" data-player-id="${player.id}">Move</button>
+              </div>
+            ` : ""}
+          </div>
+        `).join("") : '<p class="muted empty-team-note">No players assigned yet.</p>'}
+      </div>
     </article>
   `;
 }
