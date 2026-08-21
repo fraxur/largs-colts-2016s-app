@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-26";
+const appVersion = "4.0-live-rollout-27";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -204,6 +204,7 @@ const defaultState = {
     format: "7",
     teamFilter: "all",
     levelFilter: "all",
+    showDevelopmentLabels: true,
     selectedPlayerId: "",
     arrowMode: false,
     arrows: {
@@ -555,6 +556,7 @@ function normalizeState(saved) {
   }
   merged.squadBuilder.teamFilter = normalizeTeamId(merged.squadBuilder.teamFilter);
   if (!["all", ...filterTeamOptions().map((team) => team.id)].includes(merged.squadBuilder.teamFilter)) merged.squadBuilder.teamFilter = "all";
+  merged.squadBuilder.showDevelopmentLabels = merged.squadBuilder.showDevelopmentLabels !== false;
 
   merged.events.forEach((event) => {
     event.venueId = event.venueId || venueIdFromName(event.venue);
@@ -2397,6 +2399,7 @@ function squadBuilderView() {
   const selections = builderSelections(format);
   const pool = builderPlayerPool();
   const selectedPlayer = activePlayers().find((player) => player.id === state.squadBuilder.selectedPlayerId);
+  const showDevelopmentLabels = state.squadBuilder.showDevelopmentLabels !== false;
   return `
     <section class="toolbar builder-toolbar">
       <div>
@@ -2409,6 +2412,7 @@ function squadBuilderView() {
         <button class="secondary-button ${state.squadBuilder.arrowMode ? "active-filter" : ""}" type="button" data-action="toggle-whiteboard-arrows">${state.squadBuilder.arrowMode ? "Stop arrows" : "Draw arrows"}</button>
         <button class="secondary-button" type="button" data-action="undo-whiteboard-arrow">Undo arrow</button>
         <button class="secondary-button" type="button" data-action="clear-whiteboard-arrows">Clear arrows</button>
+        <button class="secondary-button ${showDevelopmentLabels ? "" : "active-filter"}" type="button" data-action="toggle-whiteboard-ratings">${showDevelopmentLabels ? "Hide ratings" : "Show ratings"}</button>
         <button class="secondary-button" type="button" data-action="reset-builder-layout">Reset positions</button>
         <button class="secondary-button danger-button" type="button" data-action="reset-builder">Reset</button>
       </div>
@@ -2418,10 +2422,10 @@ function squadBuilderView() {
         <button type="button" class="${state.squadBuilder.teamFilter === "all" ? "active" : ""}" data-action="set-builder-team" data-team-id="all">All</button>
         ${filterTeamOptions().map((team) => `<button type="button" class="${state.squadBuilder.teamFilter === team.id ? "active" : ""}" data-action="set-builder-team" data-team-id="${team.id}">${team.name}</button>`).join("")}
       </div>
-      <div class="segmented light">
+      ${showDevelopmentLabels ? `<div class="segmented light">
         <button type="button" class="${state.squadBuilder.levelFilter === "all" ? "active" : ""}" data-action="set-builder-level" data-level="all">All levels</button>
         ${developmentLevels.map((level) => `<button type="button" class="${state.squadBuilder.levelFilter === level ? "active" : ""}" data-action="set-builder-level" data-level="${level}">${level}</button>`).join("")}
-      </div>
+      </div>` : ""}
     </section>
     <section class="squad-builder-layout">
       <article class="panel formation-panel shape-live">
@@ -2433,6 +2437,7 @@ function squadBuilderView() {
           <div class="builder-board-status">
             ${selectedPlayer ? `<span class="status-pill good">Selected: ${escapeHtml(selectedPlayer.name)}</span>` : ""}
             <span class="status-pill warn">Drag markers to change roles</span>
+            ${showDevelopmentLabels ? "" : '<span class="status-pill good">Parent-safe view</span>'}
             ${state.squadBuilder.arrowMode ? '<span class="status-pill good">Arrow drawing on</span>' : ""}
           </div>
         </div>
@@ -2479,10 +2484,12 @@ function builderPlayerPool() {
 function builderPlayerCard(player) {
   const record = developmentFor(player.id);
   const selected = state.squadBuilder.selectedPlayerId === player.id;
+  const showDevelopmentLabels = state.squadBuilder.showDevelopmentLabels !== false;
+  const meta = showDevelopmentLabels ? `${teamName(player.teamId)} - ${developmentLabel(record)}` : teamName(player.teamId);
   return `
     <button class="builder-player-card ${selected ? "selected" : ""} ${player.alreadyPicked ? "picked" : ""}" type="button" draggable="true" data-action="select-builder-player" data-player-id="${escapeHtml(player.id)}" data-player-drag="${escapeHtml(player.id)}">
       <strong>${escapeHtml(player.name)}</strong>
-      <span>${teamName(player.teamId)} - ${escapeHtml(developmentLabel(record))}</span>
+      <span>${escapeHtml(meta)}</span>
       <small>${escapeHtml(record.foot === "Not set" ? "Foot not set" : `${record.foot} foot`)}</small>
       <em>${record.positions.length ? escapeHtml(record.positions.join(", ")) : "No positions set"}</em>
     </button>
@@ -2496,11 +2503,12 @@ function formationSlot(slot, playerId, options = {}) {
   const editable = Boolean(options.editable && !slot.isSub);
   const style = slot.isSub ? "" : `style="left:${slot.x}%; top:${slot.y}%;"`;
   const dragMarker = editable ? `data-formation-drag="${escapeHtml(slot.id)}"` : "";
+  const showDevelopmentLabels = state.squadBuilder.showDevelopmentLabels !== false;
   return `
     <div class="formation-slot ${slot.isSub ? "sub-slot" : ""} ${editable ? "editable-slot" : ""} ${player ? "filled" : ""} ${match ? "" : "position-warning"}" ${style} data-builder-slot="${escapeHtml(slot.id)}" data-position="${escapeHtml(slot.position)}" data-action="assign-builder-slot" ${dragMarker}>
       <span class="slot-label">${escapeHtml(slot.label)}</span>
       <strong>${player ? escapeHtml(player.name) : escapeHtml(slot.position)}</strong>
-      ${player ? `<small>${escapeHtml(developmentLabel(record))}</small>` : editable ? '<small>Drag to move</small>' : ""}
+      ${player && showDevelopmentLabels ? `<small>${escapeHtml(developmentLabel(record))}</small>` : !player && editable ? '<small>Drag to move</small>' : ""}
       <div class="slot-actions">
         ${editable ? `<button class="slot-edit" type="button" data-action="edit-builder-slot" data-slot-id="${escapeHtml(slot.id)}">Edit</button>` : ""}
         ${player ? `<button class="slot-clear" type="button" data-action="clear-builder-slot" data-slot-id="${escapeHtml(slot.id)}" aria-label="Clear ${escapeHtml(slot.label)}">x</button>` : ""}
@@ -4034,6 +4042,14 @@ document.addEventListener("click", async (event) => {
   if (action === "toggle-whiteboard-arrows") {
     state.squadBuilder.arrowMode = !state.squadBuilder.arrowMode;
     state.squadBuilder.selectedPlayerId = "";
+    saveState();
+    render();
+    return;
+  }
+
+  if (action === "toggle-whiteboard-ratings") {
+    state.squadBuilder.showDevelopmentLabels = state.squadBuilder.showDevelopmentLabels === false;
+    if (!state.squadBuilder.showDevelopmentLabels) state.squadBuilder.levelFilter = "all";
     saveState();
     render();
     return;
