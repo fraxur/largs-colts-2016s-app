@@ -1120,6 +1120,10 @@ button:disabled {
   display: none;
 }
 
+.document-audience-fields[hidden] {
+  display: none;
+}
+
 .mini-stats {
   margin-top: 10px;
 }

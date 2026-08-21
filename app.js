@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-27";
+const appVersion = "4.0-live-rollout-28";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -2188,10 +2188,9 @@ function visiblePlayerDocuments() {
   const docs = [...(state.playerDocuments || [])];
   const selectedFilter = state.documentFilter || "all";
   const currentChild = currentPlayer();
-  const approvedIds = new Set(approvedPlayers().map((player) => player.id));
   const visible = hasCoachAccess()
-    ? docs.filter((doc) => selectedFilter === "all" || doc.playerId === selectedFilter)
-    : docs.filter((doc) => currentChild ? doc.playerId === currentChild.id : approvedIds.has(doc.playerId));
+    ? docs.filter((doc) => coachDocumentMatchesFilter(doc, selectedFilter))
+    : docs.filter((doc) => parentCanOpenDocument(doc, currentChild));
 
   return visible.sort((a, b) => {
     if (state.documentSort === "name") {
@@ -2209,7 +2208,52 @@ function documentTitle(doc) {
 }
 
 function documentPlayerName(doc) {
+  if (doc.audience === "all") return "All players";
+  if (doc.audience === "team") return doc.teamName || teamName(doc.teamId || doc.playerTeamId);
   return activePlayers().find((player) => player.id === doc.playerId)?.name || doc.playerName || "Player";
+}
+
+function documentTeamId(doc) {
+  if (doc.audience === "all") return "all";
+  if (doc.audience === "team") return normalizeEventTeamId(doc.teamId || doc.playerTeamId);
+  return normalizeTeamId(activePlayers().find((player) => player.id === doc.playerId)?.teamId || doc.playerTeamId);
+}
+
+function documentRecipientPlayerIds(doc = {}) {
+  return Array.isArray(doc.recipientPlayerIds) ? doc.recipientPlayerIds.filter(Boolean) : [];
+}
+
+function documentRecipientParentUids(doc = {}) {
+  return Array.isArray(doc.recipientParentUids) ? doc.recipientParentUids.filter(Boolean) : [];
+}
+
+function parentCanOpenDocument(doc, currentChild = currentPlayer()) {
+  if (hasCoachAccess()) return true;
+  const approved = approvedPlayers();
+  const approvedIds = new Set(approved.map((player) => player.id));
+  const recipientIds = new Set(documentRecipientPlayerIds(doc));
+  const recipientUids = new Set(documentRecipientParentUids(doc));
+  const parentIsRecipient = Boolean(state.session.userId && recipientUids.has(state.session.userId));
+
+  if (currentChild) {
+    if (doc.playerId === currentChild.id) return true;
+    if (recipientIds.has(currentChild.id)) return true;
+    if (doc.audience === "all" && parentIsRecipient) return true;
+    if (doc.audience === "team" && parentIsRecipient && normalizeTeamId(currentChild.teamId) === normalizeTeamId(doc.teamId || doc.playerTeamId)) return true;
+    return false;
+  }
+
+  if (doc.playerId && approvedIds.has(doc.playerId)) return true;
+  if (parentIsRecipient) return true;
+  return documentRecipientPlayerIds(doc).some((playerId) => approvedIds.has(playerId));
+}
+
+function coachDocumentMatchesFilter(doc, selectedFilter = "all") {
+  if (selectedFilter === "all") return true;
+  if (doc.playerId === selectedFilter) return true;
+  if (documentRecipientPlayerIds(doc).includes(selectedFilter)) return true;
+  const player = activePlayers().find((item) => item.id === selectedFilter);
+  return Boolean(player && doc.audience === "team" && normalizeTeamId(player.teamId) === normalizeTeamId(doc.teamId || doc.playerTeamId));
 }
 
 function fileTypeLabel(doc) {
@@ -2239,9 +2283,10 @@ function playerDocumentCard(doc) {
           <p class="eyebrow">${escapeHtml(fileTypeLabel(doc))} - ${escapeHtml(formatFileSize(doc.size))}</p>
           <h3>${escapeHtml(documentTitle(doc))}</h3>
         </div>
-        <span class="team-pill ${normalizeTeamId(activePlayers().find((player) => player.id === doc.playerId)?.teamId)}">${escapeHtml(documentPlayerName(doc))}</span>
+        <span class="team-pill ${escapeHtml(documentTeamId(doc))}">${escapeHtml(documentPlayerName(doc))}</span>
       </div>
       <dl class="info-list compact-info">
+        <div><dt>Audience</dt><dd>${escapeHtml(documentPlayerName(doc))}</dd></div>
         <div><dt>File</dt><dd>${escapeHtml(doc.originalFileName || "Uploaded file")}</dd></div>
         <div><dt>Shared</dt><dd>${escapeHtml(displayDate(doc.createdAt))}</dd></div>
         ${hasCoachAccess() ? `<div><dt>Uploaded by</dt><dd>${escapeHtml(doc.uploadedByName || "Coach")}</dd></div>` : ""}
@@ -3603,10 +3648,24 @@ function documentModal() {
     <h2 id="modal-title">Upload player document</h2>
     <form class="stacked-form" data-form="player-document">
       <label class="field">
+        <span>Audience</span>
+        <select name="audience" data-action="document-audience-choice">
+          <option value="player">Specific child</option>
+          <option value="team">One team</option>
+          <option value="all">All players and parents</option>
+        </select>
+      </label>
+      <label class="field" data-document-player-field>
         <span>Player profile</span>
-        <select name="playerId" required>
+        <select name="playerId">
           <option value="">Choose player</option>
           ${players.map((player) => `<option value="${player.id}">${escapeHtml(player.name)} - ${teamName(player.teamId)}</option>`).join("")}
+        </select>
+      </label>
+      <label class="field document-audience-fields" data-document-team-field hidden>
+        <span>Team</span>
+        <select name="teamId">
+          ${eventTeamOptions().map((team) => `<option value="${team.id}">${escapeHtml(team.name)}</option>`).join("")}
         </select>
       </label>
       <label class="field">
@@ -3617,7 +3676,7 @@ function documentModal() {
         <span>PDF or Word file</span>
         <input name="documentFile" type="file" accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" required>
       </label>
-      <p class="muted">Parents can only see documents linked to a child profile they have been approved for.</p>
+      <p class="muted">Parents can only see documents linked to an approved child account. Shared documents are sent to the approved parents in the chosen audience.</p>
       <button class="primary-button" type="submit">Upload and share</button>
     </form>
   `;
@@ -3733,6 +3792,7 @@ function editVenueModal(venueId) {
 function bindFormDefaults() {
   toggleAwayFields();
   toggleResultFields();
+  toggleDocumentAudienceFields();
 }
 
 function toggleAwayFields() {
@@ -3747,6 +3807,16 @@ function toggleResultFields() {
   const resultFields = $('[data-result-fields]');
   if (!typeChoice || !resultFields) return;
   resultFields.hidden = typeChoice.value !== "Fixture";
+}
+
+function toggleDocumentAudienceFields() {
+  const audienceChoice = $('[data-action="document-audience-choice"]');
+  if (!audienceChoice) return;
+  const form = audienceChoice.closest("form");
+  const playerField = $('[data-document-player-field]', form);
+  const teamField = $('[data-document-team-field]', form);
+  if (playerField) playerField.hidden = audienceChoice.value !== "player";
+  if (teamField) teamField.hidden = audienceChoice.value !== "team";
 }
 
 document.addEventListener("click", async (event) => {
@@ -4182,6 +4252,10 @@ document.addEventListener("change", async (event) => {
   }
   if (target.dataset.action === "event-type-choice") {
     toggleResultFields();
+    return;
+  }
+  if (target.dataset.action === "document-audience-choice") {
+    toggleDocumentAudienceFields();
     return;
   }
   if (target.dataset.action === "set-document-filter") {
@@ -5000,6 +5074,15 @@ function isAllowedDocumentFile(file) {
   return allowedDocumentTypes.has(file.type) || allowedDocumentExtensions.some((extension) => lowerName.endsWith(extension));
 }
 
+function documentContentType(file) {
+  if (allowedDocumentTypes.has(file?.type)) return file.type;
+  const lowerName = String(file?.name || "").toLowerCase();
+  if (lowerName.endsWith(".pdf")) return "application/pdf";
+  if (lowerName.endsWith(".docx")) return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  if (lowerName.endsWith(".doc")) return "application/msword";
+  return file?.type || "";
+}
+
 function safeStorageFileName(name = "document") {
   const parts = String(name).split(".");
   const extension = parts.length > 1 ? `.${parts.pop().toLowerCase().replace(/[^a-z0-9]/g, "")}` : "";
@@ -5007,16 +5090,66 @@ function safeStorageFileName(name = "document") {
   return `${base}${extension}`;
 }
 
+function approvedParentUidsForPlayers(players = []) {
+  const playerIds = new Set(players.map((player) => player.id).filter(Boolean));
+  return [...new Set((state.parentLinks || [])
+    .filter((link) => link.status === "approved" && playerIds.has(link.playerId) && link.parentUid)
+    .map((link) => link.parentUid))];
+}
+
 async function uploadPlayerDocument(data) {
   if (!requireCoach()) return;
   const runtime = await ensureFirebase();
-  const playerId = String(data.get("playerId") || "").trim();
-  const player = activePlayers().find((item) => item.id === playerId);
+  const audience = ["all", "team", "player"].includes(String(data.get("audience"))) ? String(data.get("audience")) : "player";
+  const selectedTeamId = normalizeEventTeamId(data.get("teamId"));
+  const selectedPlayerId = String(data.get("playerId") || "").trim();
+  const player = activePlayers().find((item) => item.id === selectedPlayerId);
   const title = String(data.get("title") || "").trim();
   const file = data.get("documentFile");
 
-  if (!player || !title || !(file instanceof File) || !file.name) {
-    toast("Choose a player, title and document before uploading");
+  if (!title || !(file instanceof File) || !file.name) {
+    toast("Choose a title and document before uploading");
+    return;
+  }
+
+  let targetPlayers = [];
+  let targetLabel = "All players";
+  let targetTeamId = "all";
+  let storageTargetId = "all";
+
+  if (audience === "player") {
+    if (!player) {
+      toast("Choose the child this document is for");
+      return;
+    }
+    targetPlayers = [player];
+    targetLabel = player.name;
+    targetTeamId = normalizeTeamId(player.teamId);
+    storageTargetId = player.id;
+  }
+
+  if (audience === "team") {
+    targetPlayers = activePlayers().filter((item) => normalizeTeamId(item.teamId) === normalizeTeamId(selectedTeamId));
+    targetLabel = teamName(selectedTeamId);
+    targetTeamId = selectedTeamId;
+    storageTargetId = selectedTeamId;
+    if (!targetPlayers.length) {
+      toast(`No active players are currently assigned to ${targetLabel}`);
+      return;
+    }
+  }
+
+  if (audience === "all") {
+    targetPlayers = activePlayers();
+    if (!targetPlayers.length) {
+      toast("No active players found to share this with");
+      return;
+    }
+  }
+
+  const contentType = documentContentType(file);
+  if (!contentType) {
+    toast("Only PDF, DOC and DOCX files can be uploaded");
     return;
   }
   if (!isAllowedDocumentFile(file)) {
@@ -5030,28 +5163,37 @@ async function uploadPlayerDocument(data) {
 
   const documentId = uid("doc");
   const fileName = safeStorageFileName(file.name);
-  const storagePath = `clubs/${clubId}/playerDocuments/${player.id}/${documentId}/${fileName}`;
+  const storagePath = `clubs/${clubId}/playerDocuments/${storageTargetId}/${documentId}/${fileName}`;
   const storageRef = runtime.modules.ref(runtime.storage, storagePath);
+  const recipientPlayerIds = [...new Set(targetPlayers.map((item) => item.id).filter(Boolean))];
+  const recipientParentUids = approvedParentUidsForPlayers(targetPlayers);
 
   toast("Uploading document...");
   await runtime.modules.uploadBytes(storageRef, file, {
-    contentType: file.type || "application/octet-stream",
+    contentType,
     customMetadata: {
       clubId,
-      playerId: player.id,
+      playerId: audience === "player" ? player.id : "",
+      audience,
+      teamId: targetTeamId,
       uploadedBy: state.session.userId || "",
     },
   });
 
   const record = {
     id: documentId,
-    playerId: player.id,
-    playerName: player.name,
-    playerTeamId: normalizeTeamId(player.teamId),
+    audience,
+    teamId: targetTeamId,
+    teamName: audience === "all" ? "All players" : teamName(targetTeamId),
+    playerId: audience === "player" ? player.id : "",
+    playerName: targetLabel,
+    playerTeamId: targetTeamId,
+    recipientPlayerIds,
+    recipientParentUids,
     title,
     originalFileName: file.name,
     storagePath,
-    contentType: file.type || "",
+    contentType,
     size: file.size,
     uploadedBy: state.session.userId,
     uploadedByName: state.session.coachName || "Coach",
@@ -5061,7 +5203,7 @@ async function uploadPlayerDocument(data) {
   await saveLiveDocument("playerDocuments", documentId, record);
   state.playerDocuments = sortPlayerDocuments([record, ...state.playerDocuments.filter((item) => item.id !== documentId)]);
   delete state.modal;
-  toast("Document uploaded and shared");
+  toast(recipientParentUids.length ? `Document uploaded and shared with ${targetLabel}` : "Document uploaded. No approved parents matched this audience yet.");
 }
 
 async function downloadPlayerDocument(documentId) {
@@ -5070,7 +5212,7 @@ async function downloadPlayerDocument(documentId) {
     toast("Document could not be found");
     return;
   }
-  if (!hasCoachAccess() && !approvedPlayers().some((player) => player.id === doc.playerId)) {
+  if (!hasCoachAccess() && !parentCanOpenDocument(doc)) {
     toast("This document is not linked to your child");
     return;
   }
@@ -5141,10 +5283,11 @@ async function uploadCoachDocument(data) {
   const fileName = safeStorageFileName(file.name);
   const storagePath = `clubs/${clubId}/coachDocuments/${category}/${documentId}/${fileName}`;
   const storageRef = runtime.modules.ref(runtime.storage, storagePath);
+  const contentType = documentContentType(file);
 
   toast("Uploading coach document...");
   await runtime.modules.uploadBytes(storageRef, file, {
-    contentType: file.type || "application/octet-stream",
+    contentType,
     customMetadata: {
       clubId,
       category,
@@ -5158,7 +5301,7 @@ async function uploadCoachDocument(data) {
     title,
     originalFileName: file.name,
     storagePath,
-    contentType: file.type || "",
+    contentType,
     size: file.size,
     uploadedBy: state.session.userId,
     uploadedByName: state.session.coachName || "Coach",
@@ -5731,13 +5874,25 @@ async function loadPlayerDocumentsForParent(parentLinks) {
   try {
     const runtime = await ensureFirebase();
     const approvedIds = parentLinks.filter((link) => link.status === "approved").map((link) => link.playerId).filter(Boolean);
-    if (!approvedIds.length) return [];
+    if (!approvedIds.length && !state.session.userId) return [];
     const chunks = chunkArray([...new Set(approvedIds)], 10);
     const collectionRef = await liveCollection("playerDocuments");
-    const snapshots = await Promise.all(chunks.map((chunk) => runtime.modules.getDocs(
+    const queries = chunks.map((chunk) => runtime.modules.getDocs(
       runtime.modules.query(collectionRef, runtime.modules.where("playerId", "in", chunk)),
-    )));
-    return sortPlayerDocuments(snapshots.flatMap((snapshot) => snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))));
+    ));
+    if (state.session.userId) {
+      queries.push(runtime.modules.getDocs(
+        runtime.modules.query(collectionRef, runtime.modules.where("recipientParentUids", "array-contains", state.session.userId)),
+      ));
+    }
+    const snapshots = await Promise.all(queries);
+    const docsById = new Map();
+    snapshots.forEach((snapshot) => {
+      snapshot.docs.forEach((item) => {
+        docsById.set(item.id, { id: item.id, ...item.data() });
+      });
+    });
+    return sortPlayerDocuments([...docsById.values()].filter((doc) => parentCanOpenDocument(doc)));
   } catch (error) {
     console.warn("playerDocuments could not be loaded yet", error);
     return [];
@@ -5941,12 +6096,18 @@ async function startLiveSubscriptions() {
       state.playerDocuments = await loadPlayerDocumentsForParent(items);
       if (!state.session.selectedPlayerId) state.session.selectedPlayerId = approvedPlayers()[0]?.id || "";
     });
+    watchQuery(runtime.modules.query(
+      runtime.modules.collection(runtime.db, "clubs", clubId, "playerDocuments"),
+      runtime.modules.where("recipientParentUids", "array-contains", uid),
+    ), async () => {
+      state.playerDocuments = await loadPlayerDocumentsForParent(state.parentLinks);
+    });
     if (approvedIds.length) {
       watchQuery(runtime.modules.query(
         runtime.modules.collection(runtime.db, "clubs", clubId, "playerDocuments"),
         runtime.modules.where("playerId", "in", approvedIds.slice(0, 10)),
-      ), (items) => {
-        state.playerDocuments = sortPlayerDocuments(items);
+      ), async () => {
+        state.playerDocuments = await loadPlayerDocumentsForParent(state.parentLinks);
       });
     }
   }

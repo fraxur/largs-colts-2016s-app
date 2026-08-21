@@ -49,7 +49,13 @@ service cloud.firestore {
     }
 
     function playerDocumentKeys() {
-      return request.resource.data.keys().hasOnly(["id", "playerId", "playerName", "playerTeamId", "title", "originalFileName", "storagePath", "contentType", "size", "uploadedBy", "uploadedByName", "status", "createdAt", "updatedAt"]);
+      return request.resource.data.keys().hasOnly(["id", "audience", "teamId", "teamName", "playerId", "playerName", "playerTeamId", "recipientParentUids", "recipientPlayerIds", "title", "originalFileName", "storagePath", "contentType", "size", "uploadedBy", "uploadedByName", "status", "createdAt", "updatedAt"]);
+    }
+
+    function listedDocumentRecipient() {
+      return signedIn()
+        && resource.data.recipientParentUids is list
+        && request.auth.uid in resource.data.recipientParentUids;
     }
 
     function coachDocumentKeys() {
@@ -125,15 +131,24 @@ service cloud.firestore {
       }
 
       match /playerDocuments/{documentId} {
-        allow read: if isCoach(clubId) || approvedFor(clubId, resource.data.playerId);
+        allow read: if isCoach(clubId)
+          || approvedFor(clubId, resource.data.playerId)
+          || listedDocumentRecipient();
         allow create, update: if isCoach(clubId)
           && request.resource.data.id == documentId
+          && request.resource.data.audience in ["player", "team", "all"]
+          && request.resource.data.teamId is string
           && request.resource.data.playerId is string
+          && request.resource.data.playerName is string
           && request.resource.data.storagePath is string
           && request.resource.data.status in ["active", "archived"]
           && request.resource.data.size is number
           && request.resource.data.size <= 15 * 1024 * 1024
           && request.resource.data.contentType in ["application/pdf", "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ""]
+          && request.resource.data.recipientParentUids is list
+          && request.resource.data.recipientParentUids.size() <= 200
+          && request.resource.data.recipientPlayerIds is list
+          && request.resource.data.recipientPlayerIds.size() <= 200
           && playerDocumentKeys();
         allow delete: if isCoach(clubId);
       }

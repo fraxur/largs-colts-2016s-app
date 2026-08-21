@@ -28,6 +28,17 @@ service firebase.storage {
         && firestore.get(/databases/(default)/documents/clubs/$(clubId)/parentLinks/$(request.auth.uid + "_" + playerId)).data.status == "approved";
     }
 
+    function playerDocumentPath(clubId, documentId) {
+      return /databases/(default)/documents/clubs/$(clubId)/playerDocuments/$(documentId);
+    }
+
+    function listedDocumentRecipient(clubId, documentId) {
+      return signedIn()
+        && firestore.exists(playerDocumentPath(clubId, documentId))
+        && firestore.get(playerDocumentPath(clubId, documentId)).data.recipientParentUids is list
+        && request.auth.uid in firestore.get(playerDocumentPath(clubId, documentId)).data.recipientParentUids;
+    }
+
     function allowedDocumentType() {
       return request.resource.contentType in [
         "application/pdf",
@@ -37,7 +48,7 @@ service firebase.storage {
     }
 
     match /clubs/{clubId}/playerDocuments/{playerId}/{documentId}/{fileName} {
-      allow read: if isCoach(clubId) || approvedFor(clubId, playerId);
+      allow read: if isCoach(clubId) || approvedFor(clubId, playerId) || listedDocumentRecipient(clubId, documentId);
       allow create, update: if isCoach(clubId)
         && request.resource.size <= 15 * 1024 * 1024
         && allowedDocumentType();
