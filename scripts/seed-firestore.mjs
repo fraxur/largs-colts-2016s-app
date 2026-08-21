@@ -140,7 +140,6 @@ async function seed() {
         eventId: event.id,
         status: "unknown",
         note: "",
-        snacks: false,
         liftOffer: false,
         liftSeats: 0,
         liftFrom: "",

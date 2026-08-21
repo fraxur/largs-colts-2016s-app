@@ -294,6 +294,16 @@ textarea:focus {
   accent-color: var(--red-700);
 }
 
+.check-row.compact-consent {
+  align-items: center;
+  color: var(--red-900);
+  font-weight: 950;
+}
+
+.check-row.compact-consent input {
+  margin-top: 0;
+}
+
 .primary-button,
 .secondary-button,
 .available-button,
@@ -2278,13 +2288,56 @@ button:disabled {
   }
 
   .formation-pitch {
-    min-height: 610px;
+    min-height: min(620px, calc(100vh - 170px));
+    border-radius: 18px;
   }
 
   .formation-slot {
-    width: min(128px, 34vw);
-    min-height: 76px;
-    padding: 7px;
+    width: clamp(68px, 22vw, 92px);
+    min-height: 56px;
+    border-radius: 12px;
+    padding: 5px;
+  }
+
+  .formation-slot.editable-slot::after {
+    inset: -4px;
+    border-radius: 15px;
+  }
+
+  .slot-label {
+    min-height: 18px;
+    padding: 0 6px;
+    font-size: 0.62rem;
+  }
+
+  .formation-slot strong {
+    font-size: 0.72rem;
+    line-height: 1.02;
+  }
+
+  .formation-slot small {
+    font-size: 0.58rem;
+    line-height: 1.05;
+  }
+
+  .slot-actions {
+    top: -7px;
+    right: -7px;
+    gap: 3px;
+    transform: scale(0.82);
+    transform-origin: top right;
+  }
+
+  .formation-bench {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .formation-bench > div:first-child {
+    grid-column: 1 / -1;
+  }
+
+  .formation-bench .formation-slot {
+    min-height: 64px;
   }
 
   .date-tile {

@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-25";
+const appVersion = "4.0-live-rollout-26";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -33,6 +33,9 @@ const teams = [
 const legacyTeamIds = new Set(["orange", "blue", "yellow", "", null, undefined]);
 liveTeams = teams;
 const coachRoles = ["coach", "admin"];
+const parentRememberKey = "largs-colts-parent-remember";
+const parentEmailKey = "largs-colts-parent-email";
+const visibleSeasonStart = "2026-08-01";
 
 const coaches = [
   { id: "carl", name: "Carl", teamId: "all", role: "Coach", phone: "07999696043", email: "" },
@@ -223,7 +226,6 @@ function defaultAvailabilityEntry(entry = {}) {
   return {
     status: "unknown",
     note: "",
-    snacks: false,
     liftOffer: false,
     liftSeats: 0,
     liftFrom: "",
@@ -466,6 +468,36 @@ function loadState() {
   });
 }
 
+function parentRememberPreference() {
+  try {
+    const saved = localStorage.getItem(parentRememberKey);
+    return saved !== "false";
+  } catch {
+    return true;
+  }
+}
+
+function parentRememberedEmail() {
+  try {
+    return localStorage.getItem(parentEmailKey) || "";
+  } catch {
+    return "";
+  }
+}
+
+function updateParentRememberPreference(remember, email) {
+  try {
+    localStorage.setItem(parentRememberKey, remember ? "true" : "false");
+    if (remember && email) {
+      localStorage.setItem(parentEmailKey, email);
+    } else if (!remember) {
+      localStorage.removeItem(parentEmailKey);
+    }
+  } catch {
+    // Storage can be blocked in some browsers; Firebase sign-in still works.
+  }
+}
+
 function normalizeState(saved) {
   const merged = {
     ...structuredClone(defaultState),
@@ -700,6 +732,34 @@ function startOfToday() {
   return date;
 }
 
+function addDays(date, days) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function parentEventWindowEnd() {
+  const date = addDays(startOfToday(), 14);
+  date.setHours(23, 59, 59, 999);
+  return date;
+}
+
+function isWithinParentEventWindow(event) {
+  const date = new Date(event?.datetime || "");
+  return !Number.isNaN(date.getTime()) && date >= startOfToday() && date <= parentEventWindowEnd();
+}
+
+function isBeforeVisibleSeason(event) {
+  const dateKey = dateValue(event?.datetime);
+  return Boolean(dateKey) && dateKey < visibleSeasonStart;
+}
+
+function visibleEventsForSession(events = state.events) {
+  const currentSeasonEvents = events.filter((event) => !isBeforeVisibleSeason(event));
+  if (hasCoachAccess()) return currentSeasonEvents;
+  return currentSeasonEvents.filter(isWithinParentEventWindow);
+}
+
 function timeSlots() {
   const slots = [];
   for (let hour = 0; hour < 24; hour += 1) {
@@ -810,15 +870,17 @@ function selectedFixtureForPlayer(event, playerId) {
 
 function availabilityDateOptions() {
   const grouped = new Map();
-  state.events.forEach((event) => {
-    const key = availabilityKeyForEvent(event);
-    if (!key || grouped.has(key)) return;
-    grouped.set(key, {
-      key,
-      event,
-      fixtures: eventsForAvailabilityDate(event),
+  visibleEventsForSession(state.events)
+    .filter((event) => event.type === "Fixture")
+    .forEach((event) => {
+      const key = availabilityKeyForEvent(event);
+      if (!key || grouped.has(key)) return;
+      grouped.set(key, {
+        key,
+        event,
+        fixtures: eventsForAvailabilityDate(event),
+      });
     });
-  });
   return [...grouped.values()].sort((a, b) => new Date(a.event.datetime) - new Date(b.event.datetime));
 }
 
@@ -927,14 +989,13 @@ function availabilityCounts(eventId) {
       const entry = event ? availabilityEntry(event, player.id) : defaultAvailabilityEntry(state.availability[eventId]?.[player.id]);
       const status = entry?.status || "unknown";
       acc[status] += 1;
-      if (entry.snacks) acc.snacks += 1;
       if (entry.liftOffer) {
         acc.lifts += 1;
         acc.liftSeats += Number(entry.liftSeats || 0);
       }
       return acc;
     },
-    { available: 0, unavailable: 0, unknown: 0, snacks: 0, lifts: 0, liftSeats: 0 },
+    { available: 0, unavailable: 0, unknown: 0, lifts: 0, liftSeats: 0 },
   );
 }
 
@@ -1217,31 +1278,17 @@ function authView() {
 }
 
 function parentLoginView() {
+  const remember = parentRememberPreference();
+  const rememberedEmail = remember ? parentRememberedEmail() : "";
   return `
     <form class="auth-form" data-form="parent-login">
       <label>
         <span>Email</span>
-        <input name="email" type="email" autocomplete="email" required placeholder="parent@example.com">
+        <input name="email" type="email" autocomplete="email" required value="${escapeHtml(rememberedEmail)}" placeholder="parent@example.com">
       </label>
       <label>
         <span>Password</span>
         <input name="passcode" type="password" autocomplete="current-password" minlength="6" required placeholder="Your private password">
-      </label>
-      <label>
-        <span>Parent name</span>
-        <input name="parentName" autocomplete="name" required placeholder="Your name">
-      </label>
-      <label>
-        <span>Child name for access request</span>
-        <input name="childName" autocomplete="off" placeholder="Only needed until approved">
-      </label>
-      <label>
-        <span>Relationship</span>
-        <select name="relation">
-          <option>Parent</option>
-          <option>Guardian</option>
-          <option>Carer</option>
-        </select>
       </label>
       <label class="check-row">
         <input name="consent" type="checkbox" required>
@@ -1252,8 +1299,12 @@ function parentLoginView() {
           For support or data queries, contact: ${escapeHtml(supportEmail)}.
         </span>
       </label>
+      <label class="check-row compact-consent">
+        <input name="rememberMe" type="checkbox" ${remember ? "checked" : ""}>
+        <span>Remember me on this device</span>
+      </label>
       <div class="auth-actions">
-        <button class="primary-button" type="submit">Sign in or request access</button>
+        <button class="primary-button" type="submit">Continue</button>
         <button class="secondary-button" type="button" data-action="reset-password">Forgot password</button>
       </div>
       <details class="privacy-preview">
@@ -1484,9 +1535,10 @@ function pageView(route) {
 }
 
 function homeView() {
-  const next = state.events
+  const dashboardEvents = visibleEventsForSession(state.events);
+  const next = dashboardEvents
     .filter((event) => new Date(event.datetime) >= startOfToday())
-    .sort((a, b) => new Date(a.datetime) - new Date(b.datetime))[0] || state.events[0];
+    .sort((a, b) => new Date(a.datetime) - new Date(b.datetime))[0] || (hasCoachAccess() ? state.events[0] : null);
   const child = currentPlayer();
   if (!next) {
     return `
@@ -1597,10 +1649,10 @@ function messageCard() {
 
 function scheduleView() {
   const scheduleType = state.scheduleType || "matches";
-  const period = state.schedulePeriod || "upcoming";
-  const allVisibleEvents = state.events
-    .filter((event) => hasCoachAccess() || event.teamId === "all" || ["Fixture", "Free Week", "Training"].includes(event.type))
-    .filter((event) => state.scheduleFilter === "all" || normalizeTeamId(event.teamId) === normalizeTeamId(state.scheduleFilter) || event.teamId === "all");
+  const period = hasCoachAccess() ? state.schedulePeriod || "upcoming" : "upcoming";
+  const allVisibleEvents = visibleEventsForSession(state.events)
+    .filter((event) => hasCoachAccess() || ["Fixture", "Free Week", "Training"].includes(event.type))
+    .filter((event) => !hasCoachAccess() || state.scheduleFilter === "all" || normalizeTeamId(event.teamId) === normalizeTeamId(state.scheduleFilter) || event.teamId === "all");
   const matchEvents = allVisibleEvents.filter((event) => event.type !== "Training");
   const trainingEvents = allVisibleEvents.filter((event) => event.type === "Training");
   const typeEvents = scheduleType === "training" ? trainingEvents : matchEvents;
@@ -1623,10 +1675,10 @@ function scheduleView() {
           <button type="button" class="${scheduleType === "matches" ? "active" : ""}" data-action="set-schedule-type" data-type="matches">Matches (${matchEvents.length})</button>
           <button type="button" class="${scheduleType === "training" ? "active" : ""}" data-action="set-schedule-type" data-type="training">Training (${trainingEvents.length})</button>
         </div>
-        <div class="segmented light schedule-period">
+        ${hasCoachAccess() ? `<div class="segmented light schedule-period">
           <button type="button" class="${period === "upcoming" ? "active" : ""}" data-action="set-schedule-period" data-period="upcoming">Upcoming (${upcomingCount})</button>
           <button type="button" class="${period === "past" ? "active" : ""}" data-action="set-schedule-period" data-period="past">Past (${pastCount})</button>
-        </div>
+        </div>` : ""}
       ${hasCoachAccess() ? `<div class="segmented light">
         ${["all", ...eventTeamOptions().map((team) => team.id)].map((id) => `
           <button type="button" class="${state.scheduleFilter === id ? "active" : ""}" data-action="set-schedule-filter" data-team-id="${id}">
@@ -1677,7 +1729,7 @@ function eventCard(event) {
         ${isFreeWeek ? "" : venueParkingLine(venue)}
         <div class="mini-stats">
           ${isFreeWeek ? "" : `<span>${counts.available} available</span><span>${counts.unavailable} unavailable</span><span>${counts.unknown} no reply</span>`}
-          ${event.type === "Fixture" ? `<span>${counts.snacks} snacks</span><span>${counts.liftSeats} lift seats</span>` : ""}
+          ${event.type === "Fixture" ? `<span>${counts.liftSeats} lift seats</span>` : ""}
           ${result ? `<span>${escapeHtml(result)}</span>` : ""}
           ${event.resultNotes ? `<span>${escapeHtml(event.resultNotes)}</span>` : ""}
           ${event.kit ? `<span>${escapeHtml(event.kit)}</span>` : ""}
@@ -1694,13 +1746,16 @@ function eventCard(event) {
 }
 
 function availabilityView() {
-  const event = state.events.find((item) => item.id === state.selectedEventId) || state.events[0];
+  const dateOptions = availabilityDateOptions();
+  const requestedEvent = state.events.find((item) => item.id === state.selectedEventId);
+  const selectedOption = dateOptions.find((option) => option.event.id === state.selectedEventId || option.key === availabilityKeyForEvent(requestedEvent)) || dateOptions[0];
+  const event = selectedOption?.event;
   if (!event) return emptyEventsView("Availability");
+  if (state.selectedEventId !== event.id) state.selectedEventId = event.id;
   const child = currentPlayer();
   const players = hasCoachAccess() ? availabilityPlayersForEvent(event) : [child].filter(Boolean);
   const counts = availabilityCounts(event.id);
   const tab = state.availabilityTab || "responses";
-  const dateOptions = availabilityDateOptions();
 
   return `
     <section class="toolbar" data-tour="availability-summary">
@@ -1714,7 +1769,6 @@ function availabilityView() {
         <span>${counts.available} available</span>
         <span>${counts.unavailable} unavailable</span>
         <span>${counts.unknown} no reply</span>
-        <span>${counts.snacks} snack offers</span>
         <span>${counts.liftSeats} lift seats</span>
       </div>
       <div class="segmented light">
@@ -1767,7 +1821,6 @@ function parentAvailabilityCard(event, child) {
     `;
   }
   const entry = availabilityEntry(event, child.id);
-  const venue = eventVenue(event);
   const selectedFixture = selectedFixtureForPlayer(event, child.id);
 
   return `
@@ -1787,7 +1840,7 @@ function parentAvailabilityCard(event, child) {
       `}
       ${availabilityFixtureSummary(event)}
       <div class="choice-row">
-        <button class="secondary-button" type="button" data-modal="directions" data-event-id="${event.id}">Directions</button>
+        <button class="secondary-button" type="button" data-modal="directions" data-mode="availability" data-event-id="${event.id}">Directions</button>
       </div>
       <div class="choice-row">
         <button class="available-button" type="button" data-action="set-availability" data-status="available">Available</button>
@@ -1806,13 +1859,6 @@ function availabilityExtras(entry) {
   const seats = Number(entry.liftSeats || 0);
   return `
     <div class="availability-options">
-      <label class="toggle-card">
-        <input type="checkbox" data-action="snack-volunteer" ${entry.snacks ? "checked" : ""}>
-        <span>
-          <strong>Can bring half-time snacks</strong>
-          <small>Shown to coaches beside the date response.</small>
-        </span>
-      </label>
       <label class="toggle-card">
         <input type="checkbox" data-action="lift-offer" ${entry.liftOffer ? "checked" : ""}>
         <span>
@@ -1842,7 +1888,6 @@ function responseRow(event, player) {
   const entry = availabilityEntry(event, player.id);
   const selectedFixture = selectedFixtureForPlayer(event, player.id);
   const extras = [];
-  if (entry.snacks) extras.push("Snacks");
   if (entry.liftOffer) {
     const seatCount = Number(entry.liftSeats || 0);
     const seatLabel = `${seatCount || "?"} ${seatCount === 1 ? "seat" : "seats"}`;
@@ -2853,7 +2898,7 @@ function parentAccessView() {
             <h3>${state.session.parentName || "Parent account"}</h3>
           </div>
         </div>
-        ${approved.length ? approved.map((link) => accessLinkRow(link)).join("") : '<p class="muted">No verified child links yet.</p>'}
+        ${approved.length ? approved.map((link) => accessLinkRow(link)).join("") : '<p class="muted">No verified child links yet. Add your contact details, then send a child access request for a coach to approve.</p>'}
         ${pending.length ? `<div class="divider"></div>${pending.map((request) => accessRequestRow(request)).join("")}` : ""}
       </article>
       ${parentProfileCard()}
@@ -3232,7 +3277,7 @@ function guideView() {
         <div class="guide-steps">
           <div><strong>1. Sign in</strong><p>Use your own email and password. If you forget it, use the Forgot password button on the sign-in screen.</p></div>
           <div><strong>2. Request your child</strong><p>Ask for access to your child once. A coach checks the request before player details appear.</p></div>
-          <div><strong>3. Mark availability</strong><p>Open Availability, choose the event, then tap Available or Unavailable. For fixtures you can also offer snacks or lifts.</p></div>
+          <div><strong>3. Mark availability</strong><p>Open Availability, choose the event, then tap Available or Unavailable. For fixtures you can also offer lifts.</p></div>
           <div><strong>4. Check venues</strong><p>Use Schedule or Venues for pitch, parking, Google Maps and Apple Maps links.</p></div>
           <div><strong>5. Read messages</strong><p>The message badge clears after you open Messages. Parent alerts for register updates and collection also appear there.</p></div>
           <div><strong>6. Contact coaches</strong><p>Use Contact for private queries, concerns or complaints that should go to the coach inbox.</p></div>
@@ -3330,7 +3375,7 @@ function installView() {
           <span>Upcoming and past event archive added</span>
           <span>Fixture result fields added for completed matches</span>
           <span>Cleaner fixture cards with directions tucked into one button</span>
-          <span>Parents can offer snacks and lifts on fixture availability</span>
+          <span>Parents can offer lifts on fixture availability</span>
           <span>Privacy notice and parent data request process added</span>
           <span>Parent self-edit added for name and phone number</span>
           <span>Forgot password reset added to coach and parent sign-in</span>
@@ -3365,7 +3410,7 @@ function modalView() {
 function modalContent(type) {
   if (type === "event") return eventModal();
   if (type === "edit-event") return eventModal(state.modal.eventId);
-  if (type === "directions") return directionsModal(state.modal.eventId);
+  if (type === "directions") return directionsModal(state.modal.eventId, state.modal.mode);
   if (type === "message") return messageModal();
   if (type === "document") return documentModal();
   if (type === "coach-document") return coachDocumentModal();
@@ -3427,28 +3472,53 @@ function editBuilderSlotModal(slotId = "") {
   `;
 }
 
-function directionsModal(eventId = "") {
+function directionsModal(eventId = "", mode = "single") {
   const event = state.events.find((item) => item.id === eventId);
-  const venue = event ? eventVenue(event) : venueById("bowencraig");
+  const items = directionsEventsForModal(event, mode);
+  const fallbackVenue = event ? eventVenue(event) : venueById("bowencraig");
+  const title = items.length > 1
+    ? `${formatDateOnly(event.datetime)} fixtures`
+    : items[0]?.title || fallbackVenue.name;
   return `
     <p class="eyebrow">Matchday directions</p>
-    <h2 id="modal-title">${escapeHtml(event?.title || venue.name)}</h2>
-    <div class="directions-panel">
-      <div class="venue-location">
-        <strong>Pitch</strong>
-        <span>${escapeHtml(venue.address)}</span>
-      </div>
-      ${venue.parkingAddress ? `
+    <h2 id="modal-title">${escapeHtml(title)}</h2>
+    ${items.map((item) => {
+      const venue = eventVenue(item);
+      return `
+      <div class="directions-panel">
         <div class="venue-location">
-          <strong>Parking</strong>
-          <span>${escapeHtml(venue.parkingAddress)}</span>
+          <strong>${escapeHtml(item.title || venue.name)}</strong>
+          <span>${eventDateLine(item, venue)}</span>
         </div>
-      ` : ""}
-      <div class="direction-actions">
-        ${venueMapActions(venue)}
+        <div class="venue-location">
+          <strong>Pitch</strong>
+          <span>${escapeHtml(venue.address)}</span>
+        </div>
+        ${venue.parkingAddress ? `
+          <div class="venue-location">
+            <strong>Parking</strong>
+            <span>${escapeHtml(venue.parkingAddress)}</span>
+          </div>
+        ` : ""}
+        <div class="direction-actions">
+          ${venueMapActions(venue)}
+        </div>
       </div>
-    </div>
+    `;
+    }).join("")}
   `;
+}
+
+function directionsEventsForModal(event, mode = "single") {
+  if (!event) return [];
+  if (mode === "availability" && !hasCoachAccess()) {
+    const child = currentPlayer();
+    const selectedFixture = child ? selectedFixtureForPlayer(event, child.id) : null;
+    if (selectedFixture) return [selectedFixture];
+    const fixtures = eventsForAvailabilityDate(event);
+    return fixtures.length ? fixtures : [event];
+  }
+  return [event];
 }
 
 function eventModal(eventId = "") {
@@ -3704,6 +3774,7 @@ document.addEventListener("click", async (event) => {
       eventId: target.dataset.eventId,
       coachId: target.dataset.coachId,
       venueId: target.dataset.venueId,
+      mode: target.dataset.mode,
     };
     render();
     return;
@@ -3836,7 +3907,6 @@ document.addEventListener("click", async (event) => {
         status: target.dataset.status,
       };
       if (target.dataset.status === "unavailable") {
-        state.availability[availabilityKey][child.id].snacks = false;
         state.availability[availabilityKey][child.id].liftOffer = false;
         state.availability[availabilityKey][child.id].liftSeats = 0;
         state.availability[availabilityKey][child.id].liftFrom = "";
@@ -4132,7 +4202,7 @@ document.addEventListener("change", async (event) => {
     await assignPlayerToFixture(target.dataset.playerId, target.value || "");
     return;
   }
-  if (["snack-volunteer", "lift-offer", "lift-seats"].includes(target.dataset.action)) {
+  if (["lift-offer", "lift-seats"].includes(target.dataset.action)) {
     const child = currentPlayer();
     if (!child) return;
     const selectedEvent = state.events.find((item) => item.id === state.selectedEventId) || state.events[0];
@@ -4140,9 +4210,6 @@ document.addEventListener("change", async (event) => {
     state.availability[availabilityKey] = state.availability[availabilityKey] || {};
     const entry = availabilityEntry(selectedEvent, child.id);
 
-    if (target.dataset.action === "snack-volunteer") {
-      entry.snacks = target.checked;
-    }
     if (target.dataset.action === "lift-offer") {
       entry.liftOffer = target.checked;
       entry.liftSeats = target.checked ? Number(entry.liftSeats || 1) : 0;
@@ -4255,18 +4322,17 @@ async function sendPasswordReset(target) {
 }
 
 async function handleParentLogin(data) {
-  const parentName = String(data.get("parentName") || "").trim();
-  const childName = String(data.get("childName") || "").trim();
-  const relation = String(data.get("relation") || "Parent");
   const password = String(data.get("passcode") || "");
   const email = String(data.get("email") || "").trim();
+  const rememberMe = data.get("rememberMe") === "on";
 
   if (!backendConfig.enabled) {
     showError("Firebase is not enabled yet. Add the Firebase config before parents can sign in.");
     return;
   }
 
-  await handleFirebaseParentLogin({ email, password, parentName, childName, relation });
+  updateParentRememberPreference(rememberMe, email);
+  await handleFirebaseParentLogin({ email, password, rememberMe });
 }
 
 async function handleCoachLogin(data) {
@@ -4285,6 +4351,7 @@ async function handleFirebaseCoachLogin(email, password) {
   try {
     setBusy("Signing coach in...");
     const runtime = await ensureFirebase();
+    await applyAuthPersistence(runtime, true);
     const credential = await runtime.modules.signInWithEmailAndPassword(runtime.auth, email, password);
     const profileSnap = await runtime.modules.getDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "users", credential.user.uid));
     const profile = profileSnap.exists() ? profileSnap.data() : {};
@@ -4319,24 +4386,24 @@ async function handleFirebaseCoachLogin(email, password) {
   }
 }
 
-async function handleFirebaseParentLogin({ email, password, parentName, childName, relation }) {
+async function handleFirebaseParentLogin({ email, password, rememberMe }) {
   try {
     setBusy("Signing parent in...");
     const runtime = await ensureFirebase();
-    const credential = await signInOrCreateParent(runtime, email, password, parentName);
+    const credential = await signInOrCreateParent(runtime, email, password, rememberMe);
     const profileSnap = await runtime.modules.getDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "users", credential.user.uid));
     const profile = profileSnap.exists() ? profileSnap.data() : {};
     if (!profileSnap.exists()) {
       await runtime.modules.setDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "users", credential.user.uid), {
         role: "parent",
-        name: parentName,
+        name: "",
         email,
         consentAcceptedAt: runtime.modules.serverTimestamp(),
         createdAt: runtime.modules.serverTimestamp(),
         updatedAt: runtime.modules.serverTimestamp(),
       }, { merge: true });
       profile.role = "parent";
-      profile.name = parentName;
+      profile.name = "";
     }
     if (profile.role && profile.role !== "parent") {
       await runtime.modules.signOut(runtime.auth);
@@ -4350,18 +4417,13 @@ async function handleFirebaseParentLogin({ email, password, parentName, childNam
       userId: credential.user.uid,
       email,
       phone: profile.phone || "",
-      parentName: profile.name || parentName,
+      parentName: profile.name || "",
       coachName: "",
       selectedPlayerId: "",
       canSwitchPortal: Boolean(profile.canSwitchPortal),
     };
     state.messageReadAt = profile.messageReadAt || "";
     await loadLiveStateFromFirebase();
-
-    if (!approvedPlayers().length && childName) {
-      await createAccessRequest({ childName, relation, parentName: profile.name || parentName, email });
-      await loadLiveStateFromFirebase();
-    }
 
     await startLiveSubscriptions();
     state.route = approvedPlayers().length ? "home" : "access";
@@ -4376,7 +4438,15 @@ async function handleFirebaseParentLogin({ email, password, parentName, childNam
   }
 }
 
-async function signInOrCreateParent(runtime, email, password, parentName) {
+async function applyAuthPersistence(runtime, remember = true) {
+  if (!runtime?.modules?.setPersistence) return;
+  const persistence = remember ? runtime.modules.browserLocalPersistence : runtime.modules.browserSessionPersistence;
+  if (!persistence) return;
+  await runtime.modules.setPersistence(runtime.auth, persistence);
+}
+
+async function signInOrCreateParent(runtime, email, password, rememberMe) {
+  await applyAuthPersistence(runtime, rememberMe);
   try {
     return await runtime.modules.signInWithEmailAndPassword(runtime.auth, email, password);
   } catch (error) {
@@ -4384,7 +4454,7 @@ async function signInOrCreateParent(runtime, email, password, parentName) {
     const credential = await runtime.modules.createUserWithEmailAndPassword(runtime.auth, email, password);
     await runtime.modules.setDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "users", credential.user.uid), {
       role: "parent",
-      name: parentName,
+      name: "",
       email,
       consentAcceptedAt: runtime.modules.serverTimestamp(),
       createdAt: runtime.modules.serverTimestamp(),
@@ -4395,10 +4465,11 @@ async function signInOrCreateParent(runtime, email, password, parentName) {
 }
 
 async function requestAccess(data) {
+  const parentName = state.session.parentName || state.session.email || "Parent";
   await createAccessRequest({
     childName: String(data.get("childName") || "").trim(),
     relation: String(data.get("relation") || "Parent"),
-    parentName: state.session.parentName,
+    parentName,
     email: state.session.email,
   });
   await loadLiveStateFromFirebase();
@@ -4660,7 +4731,6 @@ async function saveAvailability(playerId) {
     eventId: availabilityKey,
     status: entry.status || "unknown",
     note: entry.note || "",
-    snacks: Boolean(entry.snacks),
     liftOffer: Boolean(entry.liftOffer),
     liftSeats: Number(entry.liftSeats || 0),
     liftFrom: entry.liftFrom || "",
@@ -6114,7 +6184,7 @@ async function bootApp() {
           userId: user.uid,
           email: user.email || "",
           phone: profile.phone || "",
-          parentName: role === "parent" ? profile.name || user.email || "Parent" : "",
+          parentName: role === "parent" ? profile.name || "" : "",
           coachName: ["coach", "admin"].includes(role) ? profile.name || "Coach" : "",
           selectedPlayerId: state.session.selectedPlayerId || "",
           canSwitchPortal: Boolean(profile.canSwitchPortal),
