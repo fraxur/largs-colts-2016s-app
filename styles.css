@@ -1768,6 +1768,17 @@ button:disabled {
   margin-bottom: 14px;
 }
 
+.live-whiteboard-panel {
+  margin-bottom: 14px;
+  border-color: rgba(211, 168, 74, 0.32);
+  background: #fffaf0;
+}
+
+.live-whiteboard-panel.is-live {
+  border-color: rgba(12, 133, 81, 0.28);
+  background: #f3fff8;
+}
+
 .active-filter {
   border-color: var(--red-700);
   background: var(--paper-2);

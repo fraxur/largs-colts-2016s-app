@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-28";
+const appVersion = "4.0-live-rollout-29";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -23,6 +23,8 @@ let liveUnsubscribers = [];
 let eventDataUnsubscribers = [];
 let builderPointerDrag = null;
 let builderArrowDraft = null;
+let whiteboardSyncTimer = null;
+let applyingLiveWhiteboard = false;
 let suppressBuilderClickUntil = 0;
 
 const unassignedTeam = { id: "unassigned", name: "Unassigned", colour: "#6b7280" };
@@ -220,6 +222,13 @@ const defaultState = {
       "9": {},
     },
   },
+  liveWhiteboard: {
+    active: false,
+    joined: false,
+    hostUid: "",
+    hostName: "",
+    remoteState: null,
+  },
   messageReadAt: "",
 };
 
@@ -364,6 +373,126 @@ function builderArrows(format = state.squadBuilder.format) {
   state.squadBuilder.arrows = state.squadBuilder.arrows || { "7": [], "9": [] };
   state.squadBuilder.arrows[format] = state.squadBuilder.arrows[format] || [];
   return state.squadBuilder.arrows[format];
+}
+
+function liveWhiteboardState() {
+  return state.liveWhiteboard || defaultState.liveWhiteboard;
+}
+
+function isLiveWhiteboardPresenter() {
+  const live = liveWhiteboardState();
+  return hasCoachAccess() && live.active && live.joined && live.hostUid === state.session.userId;
+}
+
+function isLiveWhiteboardViewerOnly() {
+  const live = liveWhiteboardState();
+  return hasCoachAccess() && live.active && live.joined && live.hostUid && live.hostUid !== state.session.userId;
+}
+
+function hasWhiteboardControl() {
+  return hasCoachAccess() && !isLiveWhiteboardViewerOnly();
+}
+
+function requireWhiteboardControl() {
+  if (hasWhiteboardControl()) return true;
+  toast("Live whiteboard is controlled by the presenter");
+  return false;
+}
+
+function clampBoardCoordinate(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 50;
+  return Math.round(Math.min(92, Math.max(8, number)) * 10) / 10;
+}
+
+function sanitizeBuilderSelections(source = state.squadBuilder.selections) {
+  const result = {};
+  Object.keys(formationDefinitions).forEach((format) => {
+    const slots = source?.[format] || {};
+    result[format] = {};
+    Object.entries(slots).forEach(([slotId, playerId]) => {
+      if (typeof slotId === "string" && typeof playerId === "string" && playerId) {
+        result[format][slotId] = playerId;
+      }
+    });
+  });
+  return result;
+}
+
+function sanitizeBuilderCustomSlots(source = state.squadBuilder.customSlots) {
+  const result = {};
+  Object.keys(formationDefinitions).forEach((format) => {
+    const slots = source?.[format] || {};
+    result[format] = {};
+    formationDefinitions[format].slots.forEach((baseSlot) => {
+      const custom = slots[baseSlot.id] || {};
+      const position = playerPositions.includes(custom.position) ? custom.position : baseSlot.position;
+      const label = String(custom.label || shortLabelForPosition(position)).trim().toUpperCase().slice(0, 8);
+      const x = Number(custom.x);
+      const y = Number(custom.y);
+      const next = {};
+      if (Number.isFinite(x)) next.x = clampBoardCoordinate(x);
+      if (Number.isFinite(y)) next.y = clampBoardCoordinate(y);
+      if (position !== baseSlot.position) next.position = position;
+      if (label && label !== baseSlot.label) next.label = label;
+      if (Object.keys(next).length) result[format][baseSlot.id] = next;
+    });
+  });
+  return result;
+}
+
+function sanitizeBuilderArrows(source = state.squadBuilder.arrows) {
+  const result = {};
+  Object.keys(formationDefinitions).forEach((format) => {
+    const arrows = Array.isArray(source?.[format]) ? source[format] : [];
+    result[format] = arrows.slice(-40).map((arrow) => ({
+      id: String(arrow.id || uid("arrow")),
+      x1: clampBoardCoordinate(arrow.x1),
+      y1: clampBoardCoordinate(arrow.y1),
+      x2: clampBoardCoordinate(arrow.x2),
+      y2: clampBoardCoordinate(arrow.y2),
+    }));
+  });
+  return result;
+}
+
+function sanitizedSquadBuilderSnapshot(source = state.squadBuilder) {
+  const format = Object.keys(formationDefinitions).includes(String(source.format)) ? String(source.format) : "7";
+  const teamFilter = source.teamFilter === "all" || filterTeamOptions().some((team) => team.id === source.teamFilter) ? source.teamFilter : "all";
+  const levelFilter = source.levelFilter === "all" || developmentLevels.includes(source.levelFilter) ? source.levelFilter : "all";
+  return {
+    format,
+    teamFilter,
+    levelFilter,
+    showDevelopmentLabels: source.showDevelopmentLabels !== false,
+    arrowMode: Boolean(source.arrowMode),
+    selectedPlayerId: typeof source.selectedPlayerId === "string" ? source.selectedPlayerId : "",
+    customSlots: sanitizeBuilderCustomSlots(source.customSlots),
+    arrows: sanitizeBuilderArrows(source.arrows),
+    selections: sanitizeBuilderSelections(source.selections),
+  };
+}
+
+function applyLiveWhiteboardState(boardState = {}) {
+  applyingLiveWhiteboard = true;
+  const snapshot = sanitizedSquadBuilderSnapshot(boardState);
+  state.squadBuilder = {
+    ...state.squadBuilder,
+    ...snapshot,
+    customSlots: {
+      ...defaultState.squadBuilder.customSlots,
+      ...snapshot.customSlots,
+    },
+    arrows: {
+      ...defaultState.squadBuilder.arrows,
+      ...snapshot.arrows,
+    },
+    selections: {
+      ...defaultState.squadBuilder.selections,
+      ...snapshot.selections,
+    },
+  };
+  applyingLiveWhiteboard = false;
 }
 
 const coachGuideSteps = [
@@ -535,6 +664,10 @@ function normalizeState(saved) {
       ...defaultState.squadBuilder.selections,
       ...(saved.squadBuilder?.selections || {}),
     },
+  };
+  merged.liveWhiteboard = {
+    ...defaultState.liveWhiteboard,
+    ...(saved.liveWhiteboard || {}),
   };
   merged.messageReadAt = merged.messageReadAt || "";
   merged.selectedEventId = merged.selectedEventId || merged.events[0]?.id || "";
@@ -2445,6 +2578,8 @@ function squadBuilderView() {
   const pool = builderPlayerPool();
   const selectedPlayer = activePlayers().find((player) => player.id === state.squadBuilder.selectedPlayerId);
   const showDevelopmentLabels = state.squadBuilder.showDevelopmentLabels !== false;
+  const canEditBoard = hasWhiteboardControl();
+  const controlDisabled = canEditBoard ? "" : "disabled";
   return `
     <section class="toolbar builder-toolbar">
       <div>
@@ -2452,24 +2587,25 @@ function squadBuilderView() {
         <h2 class="section-heading">${definition.label} squad whiteboard</h2>
       </div>
       <div class="choice-row">
-        ${Object.keys(formationDefinitions).map((item) => `<button class="secondary-button ${format === item ? "active-filter" : ""}" type="button" data-action="set-builder-format" data-format="${item}">${formationDefinitions[item].label}</button>`).join("")}
-        <button class="secondary-button" type="button" data-action="auto-fill-builder">Auto fill</button>
-        <button class="secondary-button ${state.squadBuilder.arrowMode ? "active-filter" : ""}" type="button" data-action="toggle-whiteboard-arrows">${state.squadBuilder.arrowMode ? "Stop arrows" : "Draw arrows"}</button>
-        <button class="secondary-button" type="button" data-action="undo-whiteboard-arrow">Undo arrow</button>
-        <button class="secondary-button" type="button" data-action="clear-whiteboard-arrows">Clear arrows</button>
-        <button class="secondary-button ${showDevelopmentLabels ? "" : "active-filter"}" type="button" data-action="toggle-whiteboard-ratings">${showDevelopmentLabels ? "Hide ratings" : "Show ratings"}</button>
-        <button class="secondary-button" type="button" data-action="reset-builder-layout">Reset positions</button>
-        <button class="secondary-button danger-button" type="button" data-action="reset-builder">Reset</button>
+        ${Object.keys(formationDefinitions).map((item) => `<button class="secondary-button ${format === item ? "active-filter" : ""}" type="button" data-action="set-builder-format" data-format="${item}" ${controlDisabled}>${formationDefinitions[item].label}</button>`).join("")}
+        <button class="secondary-button" type="button" data-action="auto-fill-builder" ${controlDisabled}>Auto fill</button>
+        <button class="secondary-button ${state.squadBuilder.arrowMode ? "active-filter" : ""}" type="button" data-action="toggle-whiteboard-arrows" ${controlDisabled}>${state.squadBuilder.arrowMode ? "Stop arrows" : "Draw arrows"}</button>
+        <button class="secondary-button" type="button" data-action="undo-whiteboard-arrow" ${controlDisabled}>Undo arrow</button>
+        <button class="secondary-button" type="button" data-action="clear-whiteboard-arrows" ${controlDisabled}>Clear arrows</button>
+        <button class="secondary-button ${showDevelopmentLabels ? "" : "active-filter"}" type="button" data-action="toggle-whiteboard-ratings" ${controlDisabled}>${showDevelopmentLabels ? "Hide ratings" : "Show ratings"}</button>
+        <button class="secondary-button" type="button" data-action="reset-builder-layout" ${controlDisabled}>Reset positions</button>
+        <button class="secondary-button danger-button" type="button" data-action="reset-builder" ${controlDisabled}>Reset</button>
       </div>
     </section>
+    ${liveWhiteboardControls()}
     <section class="builder-filters">
       <div class="segmented light">
-        <button type="button" class="${state.squadBuilder.teamFilter === "all" ? "active" : ""}" data-action="set-builder-team" data-team-id="all">All</button>
-        ${filterTeamOptions().map((team) => `<button type="button" class="${state.squadBuilder.teamFilter === team.id ? "active" : ""}" data-action="set-builder-team" data-team-id="${team.id}">${team.name}</button>`).join("")}
+        <button type="button" class="${state.squadBuilder.teamFilter === "all" ? "active" : ""}" data-action="set-builder-team" data-team-id="all" ${controlDisabled}>All</button>
+        ${filterTeamOptions().map((team) => `<button type="button" class="${state.squadBuilder.teamFilter === team.id ? "active" : ""}" data-action="set-builder-team" data-team-id="${team.id}" ${controlDisabled}>${team.name}</button>`).join("")}
       </div>
       ${showDevelopmentLabels ? `<div class="segmented light">
-        <button type="button" class="${state.squadBuilder.levelFilter === "all" ? "active" : ""}" data-action="set-builder-level" data-level="all">All levels</button>
-        ${developmentLevels.map((level) => `<button type="button" class="${state.squadBuilder.levelFilter === level ? "active" : ""}" data-action="set-builder-level" data-level="${level}">${level}</button>`).join("")}
+        <button type="button" class="${state.squadBuilder.levelFilter === "all" ? "active" : ""}" data-action="set-builder-level" data-level="all" ${controlDisabled}>All levels</button>
+        ${developmentLevels.map((level) => `<button type="button" class="${state.squadBuilder.levelFilter === level ? "active" : ""}" data-action="set-builder-level" data-level="${level}" ${controlDisabled}>${level}</button>`).join("")}
       </div>` : ""}
     </section>
     <section class="squad-builder-layout">
@@ -2482,11 +2618,13 @@ function squadBuilderView() {
           <div class="builder-board-status">
             ${selectedPlayer ? `<span class="status-pill good">Selected: ${escapeHtml(selectedPlayer.name)}</span>` : ""}
             <span class="status-pill warn">Drag markers to change roles</span>
+            ${isLiveWhiteboardPresenter() ? '<span class="status-pill good">Live presenter</span>' : ""}
+            ${isLiveWhiteboardViewerOnly() ? '<span class="status-pill good">Watching live</span>' : ""}
             ${showDevelopmentLabels ? "" : '<span class="status-pill good">Parent-safe view</span>'}
             ${state.squadBuilder.arrowMode ? '<span class="status-pill good">Arrow drawing on</span>' : ""}
           </div>
         </div>
-        <p class="muted builder-hint">Drag any marker to reshape the team. Turn on Draw arrows to sketch player movement for a quick whiteboard plan.</p>
+        <p class="muted builder-hint">${canEditBoard ? "Drag any marker to reshape the team. Turn on Draw arrows to sketch player movement for a quick whiteboard plan." : "You are watching the presenter's live board. Leave live mode if you need to work on a private version."}</p>
         <div class="formation-pitch formation-${format}" data-builder-pitch>
           ${formationArrowLayer(format)}
           ${starterSlots(format).map((slot) => formationSlot(slot, selections[slot.id], { editable: true })).join("")}
@@ -2514,6 +2652,50 @@ function squadBuilderView() {
   `;
 }
 
+function liveWhiteboardControls() {
+  const live = liveWhiteboardState();
+  const active = Boolean(live.active);
+  const joined = Boolean(live.joined);
+  const isHost = active && live.hostUid === state.session.userId;
+  const hostName = live.hostName || "Coach";
+
+  if (!active) {
+    return `
+      <section class="panel live-whiteboard-panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Live collaboration</p>
+            <h3>Share this board with coaches</h3>
+          </div>
+          <span class="status-pill warn">Off</span>
+        </div>
+        <p class="muted">Start a live whiteboard during a call so other coaches can join and watch this formation update in real time.</p>
+        <div class="choice-row">
+          <button class="primary-button" type="button" data-action="start-live-whiteboard">Go live</button>
+        </div>
+      </section>
+    `;
+  }
+
+  return `
+    <section class="panel live-whiteboard-panel ${joined ? "is-live" : ""}">
+      <div class="panel-title">
+        <div>
+          <p class="eyebrow">Live collaboration</p>
+          <h3>${isHost ? "You are presenting" : `${escapeHtml(hostName)} is presenting`}</h3>
+        </div>
+        <span class="status-pill good">${joined ? "Live" : "Available"}</span>
+      </div>
+      <p class="muted">${joined ? "This board is linked to the active coach session. Presenter changes sync through Firebase." : "A coach is presenting a live whiteboard. Join to watch the shared board."}</p>
+      <div class="choice-row">
+        ${joined && !isHost ? '<button class="secondary-button" type="button" data-action="leave-live-whiteboard">Leave live view</button>' : ""}
+        ${!joined ? '<button class="primary-button" type="button" data-action="join-live-whiteboard">Join live board</button>' : ""}
+        ${isHost ? '<button class="secondary-button danger-button" type="button" data-action="end-live-whiteboard">End live session</button>' : ""}
+      </div>
+    </section>
+  `;
+}
+
 function builderPlayerPool() {
   const selected = new Set(Object.values(builderSelections()).filter(Boolean));
   return activePlayers()
@@ -2531,8 +2713,9 @@ function builderPlayerCard(player) {
   const selected = state.squadBuilder.selectedPlayerId === player.id;
   const showDevelopmentLabels = state.squadBuilder.showDevelopmentLabels !== false;
   const meta = showDevelopmentLabels ? `${teamName(player.teamId)} - ${developmentLabel(record)}` : teamName(player.teamId);
+  const canEditBoard = hasWhiteboardControl();
   return `
-    <button class="builder-player-card ${selected ? "selected" : ""} ${player.alreadyPicked ? "picked" : ""}" type="button" draggable="true" data-action="select-builder-player" data-player-id="${escapeHtml(player.id)}" data-player-drag="${escapeHtml(player.id)}">
+    <button class="builder-player-card ${selected ? "selected" : ""} ${player.alreadyPicked ? "picked" : ""}" type="button" draggable="${canEditBoard ? "true" : "false"}" data-action="select-builder-player" data-player-id="${escapeHtml(player.id)}" data-player-drag="${escapeHtml(player.id)}" ${canEditBoard ? "" : "disabled"}>
       <strong>${escapeHtml(player.name)}</strong>
       <span>${escapeHtml(meta)}</span>
       <small>${escapeHtml(record.foot === "Not set" ? "Foot not set" : `${record.foot} foot`)}</small>
@@ -2545,7 +2728,8 @@ function formationSlot(slot, playerId, options = {}) {
   const player = activePlayers().find((item) => item.id === playerId);
   const record = player ? developmentFor(player.id) : null;
   const match = !player || slot.isSub || record.positions.includes(slot.position);
-  const editable = Boolean(options.editable && !slot.isSub);
+  const canEditBoard = hasWhiteboardControl();
+  const editable = Boolean(options.editable && !slot.isSub && canEditBoard);
   const style = slot.isSub ? "" : `style="left:${slot.x}%; top:${slot.y}%;"`;
   const dragMarker = editable ? `data-formation-drag="${escapeHtml(slot.id)}"` : "";
   const showDevelopmentLabels = state.squadBuilder.showDevelopmentLabels !== false;
@@ -2556,7 +2740,7 @@ function formationSlot(slot, playerId, options = {}) {
       ${player && showDevelopmentLabels ? `<small>${escapeHtml(developmentLabel(record))}</small>` : !player && editable ? '<small>Drag to move</small>' : ""}
       <div class="slot-actions">
         ${editable ? `<button class="slot-edit" type="button" data-action="edit-builder-slot" data-slot-id="${escapeHtml(slot.id)}">Edit</button>` : ""}
-        ${player ? `<button class="slot-clear" type="button" data-action="clear-builder-slot" data-slot-id="${escapeHtml(slot.id)}" aria-label="Clear ${escapeHtml(slot.label)}">x</button>` : ""}
+        ${player && canEditBoard ? `<button class="slot-clear" type="button" data-action="clear-builder-slot" data-slot-id="${escapeHtml(slot.id)}" aria-label="Clear ${escapeHtml(slot.label)}">x</button>` : ""}
       </div>
     </div>
   `;
@@ -3437,6 +3621,7 @@ function installView() {
           <span>Venues, pitch pins, parking pins and photo paths can now be updated in the app</span>
           <span>Coach-only player development ratings added</span>
           <span>Coach-only 7-a-side and 9-a-side squad whiteboard added</span>
+          <span>Coach-only live whiteboard collaboration added</span>
           <span>Firestore rules tightened for parent-safe writes</span>
           <span>Coach contacts added with call and text links</span>
           <span>App icons and red splash screen ready for mobile wrapping</span>
@@ -4045,42 +4230,72 @@ document.addEventListener("click", async (event) => {
     return;
   }
 
+  if (action === "start-live-whiteboard") {
+    await startLiveWhiteboard();
+    return;
+  }
+
+  if (action === "join-live-whiteboard") {
+    joinLiveWhiteboard();
+    return;
+  }
+
+  if (action === "leave-live-whiteboard") {
+    leaveLiveWhiteboard();
+    return;
+  }
+
+  if (action === "end-live-whiteboard") {
+    await endLiveWhiteboard();
+    return;
+  }
+
   if (action === "set-builder-format") {
+    if (!requireWhiteboardControl()) return;
     state.squadBuilder.format = target.dataset.format || "7";
     state.squadBuilder.selectedPlayerId = "";
     saveState();
+    scheduleLiveWhiteboardPublish();
     render();
     return;
   }
 
   if (action === "set-builder-team") {
+    if (!requireWhiteboardControl()) return;
     state.squadBuilder.teamFilter = target.dataset.teamId || "all";
     saveState();
+    scheduleLiveWhiteboardPublish();
     render();
     return;
   }
 
   if (action === "set-builder-level") {
+    if (!requireWhiteboardControl()) return;
     state.squadBuilder.levelFilter = target.dataset.level || "all";
     saveState();
+    scheduleLiveWhiteboardPublish();
     render();
     return;
   }
 
   if (action === "select-builder-player") {
+    if (!requireWhiteboardControl()) return;
     state.squadBuilder.selectedPlayerId = target.dataset.playerId || "";
     saveState();
+    scheduleLiveWhiteboardPublish();
     render();
     return;
   }
 
   if (action === "assign-builder-slot") {
+    if (!requireWhiteboardControl()) return;
     if (Date.now() < suppressBuilderClickUntil) return;
     assignBuilderSlot(target.dataset.builderSlot, state.squadBuilder.selectedPlayerId);
     return;
   }
 
   if (action === "edit-builder-slot") {
+    if (!requireWhiteboardControl()) return;
     state.modal = {
       type: "edit-builder-slot",
       slotId: target.dataset.slotId,
@@ -4110,17 +4325,21 @@ document.addEventListener("click", async (event) => {
   }
 
   if (action === "toggle-whiteboard-arrows") {
+    if (!requireWhiteboardControl()) return;
     state.squadBuilder.arrowMode = !state.squadBuilder.arrowMode;
     state.squadBuilder.selectedPlayerId = "";
     saveState();
+    scheduleLiveWhiteboardPublish();
     render();
     return;
   }
 
   if (action === "toggle-whiteboard-ratings") {
+    if (!requireWhiteboardControl()) return;
     state.squadBuilder.showDevelopmentLabels = state.squadBuilder.showDevelopmentLabels === false;
     if (!state.squadBuilder.showDevelopmentLabels) state.squadBuilder.levelFilter = "all";
     saveState();
+    scheduleLiveWhiteboardPublish();
     render();
     return;
   }
@@ -4148,9 +4367,10 @@ document.addEventListener("click", async (event) => {
 
 document.addEventListener("dragstart", (event) => {
   const target = event.target.closest("[data-player-drag]");
-  if (!target || !hasCoachAccess()) return;
+  if (!target || !hasCoachAccess() || !hasWhiteboardControl()) return;
   const playerId = target.dataset.playerDrag;
   state.squadBuilder.selectedPlayerId = playerId;
+  scheduleLiveWhiteboardPublish();
   event.dataTransfer?.setData("text/plain", playerId);
   event.dataTransfer?.setData("playerId", playerId);
 });
@@ -4163,7 +4383,7 @@ document.addEventListener("dragover", (event) => {
 
 document.addEventListener("drop", (event) => {
   const slot = event.target.closest("[data-builder-slot]");
-  if (!slot || !hasCoachAccess()) return;
+  if (!slot || !hasCoachAccess() || !hasWhiteboardControl()) return;
   event.preventDefault();
   const playerId = event.dataTransfer?.getData("playerId") || event.dataTransfer?.getData("text/plain") || state.squadBuilder.selectedPlayerId;
   assignBuilderSlot(slot.dataset.builderSlot, playerId);
@@ -4171,13 +4391,13 @@ document.addEventListener("drop", (event) => {
 
 document.addEventListener("pointerdown", (event) => {
   const pitchForArrow = event.target.closest("[data-builder-pitch]");
-  if (pitchForArrow && state.squadBuilder.arrowMode && hasCoachAccess() && !event.target.closest("button")) {
+  if (pitchForArrow && state.squadBuilder.arrowMode && hasCoachAccess() && hasWhiteboardControl() && !event.target.closest("button")) {
     startBuilderArrow(event, pitchForArrow);
     return;
   }
 
   const marker = event.target.closest("[data-formation-drag]");
-  if (!marker || !hasCoachAccess() || event.target.closest("button")) return;
+  if (!marker || !hasCoachAccess() || !hasWhiteboardControl() || event.target.closest("button")) return;
   const pitch = marker.closest("[data-builder-pitch]");
   if (!pitch) return;
   builderPointerDrag = {
@@ -5537,13 +5757,14 @@ function finishBuilderArrow(event) {
       y2: end.y,
     });
     saveState();
+    scheduleLiveWhiteboardPublish();
   }
   builderArrowDraft = null;
   render();
 }
 
 function moveBuilderSlot(slotId, x, y) {
-  if (!hasCoachAccess() || !slotId) return;
+  if (!hasCoachAccess() || !hasWhiteboardControl() || !slotId) return;
   const baseSlot = formationDefinition().slots.find((slot) => slot.id === slotId);
   if (!baseSlot) return;
   const overrides = formationSlotOverrides();
@@ -5558,11 +5779,12 @@ function moveBuilderSlot(slotId, x, y) {
     label: nextPosition === previousPosition && previous.label ? previous.label : shortLabelForPosition(nextPosition),
   };
   saveState();
+  scheduleLiveWhiteboardPublish();
   render();
 }
 
 function saveBuilderSlotEdit(data) {
-  if (!requireCoach()) return;
+  if (!requireWhiteboardControl()) return;
   const slotId = String(data.get("slotId") || "");
   const position = String(data.get("position") || "");
   const baseSlot = formationDefinition().slots.find((slot) => slot.id === slotId);
@@ -5576,12 +5798,13 @@ function saveBuilderSlotEdit(data) {
   };
   delete state.modal;
   saveState();
+  scheduleLiveWhiteboardPublish();
   render();
   toast("Formation position updated");
 }
 
 function assignBuilderSlot(slotId, playerId) {
-  if (!requireCoach() || !slotId || !playerId) return;
+  if (!requireWhiteboardControl() || !slotId || !playerId) return;
   const player = activePlayers().find((item) => item.id === playerId);
   if (!player) return;
   const selections = builderSelections();
@@ -5591,60 +5814,66 @@ function assignBuilderSlot(slotId, playerId) {
   selections[slotId] = playerId;
   state.squadBuilder.selectedPlayerId = "";
   saveState();
+  scheduleLiveWhiteboardPublish();
   render();
 }
 
 function clearBuilderSlot(slotId) {
-  if (!requireCoach() || !slotId) return;
+  if (!requireWhiteboardControl() || !slotId) return;
   delete builderSelections()[slotId];
   saveState();
+  scheduleLiveWhiteboardPublish();
   render();
 }
 
 function resetBuilder() {
-  if (!requireCoach()) return;
+  if (!requireWhiteboardControl()) return;
   const confirmed = window.confirm("Clear this formation board?");
   if (!confirmed) return;
   state.squadBuilder.selections[state.squadBuilder.format] = {};
   state.squadBuilder.selectedPlayerId = "";
   saveState();
+  scheduleLiveWhiteboardPublish();
   render();
 }
 
 function resetBuilderLayout() {
-  if (!requireCoach()) return;
+  if (!requireWhiteboardControl()) return;
   const confirmed = window.confirm("Reset the marker positions and role labels for this formation?");
   if (!confirmed) return;
   state.squadBuilder.customSlots[state.squadBuilder.format] = {};
   saveState();
+  scheduleLiveWhiteboardPublish();
   render();
   toast("Formation shape reset");
 }
 
 function undoBuilderArrow() {
-  if (!requireCoach()) return;
+  if (!requireWhiteboardControl()) return;
   const arrows = builderArrows();
   if (!arrows.length) return;
   arrows.pop();
   saveState();
+  scheduleLiveWhiteboardPublish();
   render();
   toast("Arrow removed");
 }
 
 function clearBuilderArrows() {
-  if (!requireCoach()) return;
+  if (!requireWhiteboardControl()) return;
   const arrows = builderArrows();
   if (!arrows.length) return;
   const confirmed = window.confirm("Clear all arrows from this formation?");
   if (!confirmed) return;
   state.squadBuilder.arrows[state.squadBuilder.format] = [];
   saveState();
+  scheduleLiveWhiteboardPublish();
   render();
   toast("Arrows cleared");
 }
 
 function autoFillBuilder() {
-  if (!requireCoach()) return;
+  if (!requireWhiteboardControl()) return;
   const selections = {};
   const used = new Set();
   const players = activePlayers()
@@ -5675,8 +5904,171 @@ function autoFillBuilder() {
   state.squadBuilder.selections[state.squadBuilder.format] = selections;
   state.squadBuilder.selectedPlayerId = "";
   saveState();
+  scheduleLiveWhiteboardPublish();
   render();
   toast("Formation filled");
+}
+
+function coachDisplayName() {
+  return state.session.coachName || state.session.parentName || state.session.email || "Coach";
+}
+
+async function writeWhiteboardSession(data, options = {}) {
+  if (!isFirebaseSignedIn()) return;
+  const runtime = await ensureFirebase();
+  const payload = {
+    id: "current",
+    ...data,
+    updatedAt: runtime.modules.serverTimestamp(),
+  };
+  if (options.createdAt) payload.createdAt = runtime.modules.serverTimestamp();
+  if (options.endedAt) payload.endedAt = runtime.modules.serverTimestamp();
+  await runtime.modules.setDoc(await liveDoc("whiteboardSessions", "current"), payload, { merge: true });
+}
+
+async function startLiveWhiteboard() {
+  if (!requireCoach()) return;
+  const live = liveWhiteboardState();
+  if (live.active && live.hostUid && live.hostUid !== state.session.userId) {
+    toast(`${live.hostName || "A coach"} already has a live whiteboard running`);
+    return;
+  }
+
+  const snapshot = sanitizedSquadBuilderSnapshot();
+  state.liveWhiteboard = {
+    active: true,
+    joined: true,
+    hostUid: state.session.userId,
+    hostName: coachDisplayName(),
+    remoteState: snapshot,
+  };
+
+  try {
+    await writeWhiteboardSession({
+      active: true,
+      hostUid: state.session.userId,
+      hostName: coachDisplayName(),
+      state: snapshot,
+    }, { createdAt: true });
+    render();
+    toast("Live whiteboard started");
+  } catch (error) {
+    console.error(error);
+    state.liveWhiteboard = { ...defaultState.liveWhiteboard };
+    showError("Live whiteboard could not be started. Check Firestore rules are deployed.");
+    render();
+  }
+}
+
+function joinLiveWhiteboard() {
+  if (!requireCoach()) return;
+  const live = liveWhiteboardState();
+  if (!live.active) {
+    toast("There is no live whiteboard to join");
+    return;
+  }
+  state.liveWhiteboard = {
+    ...live,
+    joined: true,
+  };
+  if (live.remoteState) applyLiveWhiteboardState(live.remoteState);
+  render();
+  toast("Joined live whiteboard");
+}
+
+function leaveLiveWhiteboard() {
+  if (!requireCoach()) return;
+  const live = liveWhiteboardState();
+  if (live.hostUid === state.session.userId) {
+    toast("End the live session when you are finished presenting");
+    return;
+  }
+  state.liveWhiteboard = {
+    ...live,
+    joined: false,
+  };
+  render();
+  toast("Left live whiteboard");
+}
+
+async function endLiveWhiteboard() {
+  if (!requireCoach()) return;
+  const live = liveWhiteboardState();
+  if (!live.active) return;
+  if (live.hostUid !== state.session.userId) {
+    toast("Only the presenter can end this live session");
+    return;
+  }
+
+  try {
+    await writeWhiteboardSession({
+      active: false,
+      hostUid: state.session.userId,
+      hostName: coachDisplayName(),
+      state: sanitizedSquadBuilderSnapshot(),
+    }, { endedAt: true });
+  } catch (error) {
+    console.error(error);
+    showError("Live whiteboard could not be ended. Check Firestore rules are deployed.");
+    return;
+  }
+
+  state.liveWhiteboard = {
+    ...defaultState.liveWhiteboard,
+    active: false,
+    joined: false,
+  };
+  render();
+  toast("Live whiteboard ended");
+}
+
+function applyLiveWhiteboardSnapshot(session) {
+  const previous = liveWhiteboardState();
+  if (!session || !session.active) {
+    state.liveWhiteboard = {
+      ...defaultState.liveWhiteboard,
+      active: false,
+      joined: false,
+      remoteState: session?.state || null,
+    };
+    return;
+  }
+
+  const isHost = session.hostUid === state.session.userId;
+  const joined = isHost || previous.joined;
+  state.liveWhiteboard = {
+    active: true,
+    joined,
+    hostUid: session.hostUid || "",
+    hostName: session.hostName || "Coach",
+    remoteState: session.state || null,
+  };
+
+  if (joined && session.state) {
+    applyLiveWhiteboardState(session.state);
+  }
+}
+
+function scheduleLiveWhiteboardPublish() {
+  if (applyingLiveWhiteboard || !isLiveWhiteboardPresenter()) return;
+  if (whiteboardSyncTimer) clearTimeout(whiteboardSyncTimer);
+  whiteboardSyncTimer = setTimeout(() => {
+    publishLiveWhiteboardState().catch((error) => {
+      console.error("Live whiteboard sync failed", error);
+    });
+  }, 250);
+}
+
+async function publishLiveWhiteboardState() {
+  if (applyingLiveWhiteboard || !isLiveWhiteboardPresenter()) return;
+  const snapshot = sanitizedSquadBuilderSnapshot();
+  state.liveWhiteboard.remoteState = snapshot;
+  await writeWhiteboardSession({
+    active: true,
+    hostUid: state.session.userId,
+    hostName: coachDisplayName(),
+    state: snapshot,
+  });
 }
 
 async function ensureFirebase() {
@@ -5953,6 +6345,10 @@ async function getEventPlayerDocs(runtime, collectionRef, approvedChunks) {
 }
 
 function clearLiveSubscriptions() {
+  if (whiteboardSyncTimer) {
+    clearTimeout(whiteboardSyncTimer);
+    whiteboardSyncTimer = null;
+  }
   liveUnsubscribers.forEach((unsubscribe) => {
     try {
       unsubscribe();
@@ -6060,6 +6456,7 @@ async function startLiveSubscriptions() {
     watchCollection("coachDocuments", (items) => {
       state.coachDocuments = sortCoachDocuments(items);
     });
+    watchLiveWhiteboardSession(runtime);
   } else {
     const uid = state.session.userId;
     const approvedIds = approvedPlayers().map((player) => player.id).filter(Boolean);
@@ -6113,6 +6510,19 @@ async function startLiveSubscriptions() {
   }
 
   startEventDataSubscriptions(runtime);
+}
+
+function watchLiveWhiteboardSession(runtime) {
+  const sessionRef = runtime.modules.doc(runtime.db, "clubs", clubId, "whiteboardSessions", "current");
+  const unsubscribe = runtime.modules.onSnapshot(
+    sessionRef,
+    (snapshot) => {
+      applyLiveWhiteboardSnapshot(snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null);
+      render();
+    },
+    (error) => console.error(error),
+  );
+  liveUnsubscribers.push(unsubscribe);
 }
 
 function startEventDataSubscriptions(runtime) {
