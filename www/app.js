@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-35";
+const appVersion = "4.0-live-rollout-36";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -46,11 +46,12 @@ const coachClubSectionRoutes = ["coach-inbox", "coaches", "venues", "access", "p
 const parentClubSectionRoutes = ["contact", "coaches", "venues", "access", "privacy", "install", "guide"];
 
 const coaches = [
-  { id: "carl", name: "Carl", teamId: "all", role: "Coach", phone: "07999696043", email: "" },
-  { id: "faroque", name: "Faroque", teamId: "all", role: "Coach", phone: "07791199936", email: "" },
+  { id: "carl", name: "Carl Beckwith", teamId: "all", role: "Coach", phone: "07999696043", email: "" },
+  { id: "faroque", name: "Faroque Hussain", teamId: "all", role: "Coach", phone: "07791199936", email: "" },
   { id: "ed", name: "Edward Dowds", teamId: "all", role: "Coach", phone: "07881597600", email: "" },
-  { id: "martin", name: "Martin", teamId: "all", role: "Coach", phone: "07904718672", email: "" },
-  { id: "gordy", name: "Gordy", teamId: "all", role: "Coach", phone: "07984645328", email: "" },
+  { id: "martin", name: "Martin Fraser", teamId: "all", role: "Coach", phone: "07904718672", email: "" },
+  { id: "gordy", name: "Gordon Auld", teamId: "all", role: "Coach", phone: "07984645328", email: "" },
+  { id: "brandon", name: "Brandon Greenwood", teamId: "all", role: "Coach", phone: "07494913276", email: "" },
 ];
 
 const venues = [
