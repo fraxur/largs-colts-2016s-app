@@ -842,6 +842,15 @@ button:disabled {
   min-width: min(100%, 620px);
 }
 
+.register-toolbar {
+  align-items: end;
+  flex-wrap: wrap;
+}
+
+.register-period-tabs {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .schedule-period {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -1162,6 +1171,41 @@ button:disabled {
   margin-top: 2px;
   color: var(--muted);
   font-weight: 850;
+}
+
+.tally-list {
+  display: grid;
+  gap: 10px;
+}
+
+.tally-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 12px;
+  background: #fffafa;
+}
+
+.tally-row p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.tally-controls {
+  display: grid;
+  grid-template-columns: 42px minmax(42px, auto) 42px;
+  align-items: center;
+  gap: 8px;
+}
+
+.tally-controls > strong {
+  color: var(--red-900);
+  font-size: 1.35rem;
+  text-align: center;
 }
 
 .coach-guide-hint {
@@ -2360,6 +2404,10 @@ button:disabled {
   }
 
   .schedule-controls {
+    width: 100%;
+  }
+
+  .register-toolbar .compact-field {
     width: 100%;
   }
 

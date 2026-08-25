@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-30";
+const appVersion = "4.0-live-rollout-32";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -38,6 +38,7 @@ const coachRoles = ["coach", "admin"];
 const parentRememberKey = "largs-colts-parent-remember";
 const parentEmailKey = "largs-colts-parent-email";
 const visibleSeasonStart = "2026-08-01";
+const resultSeasonStart = "2026-08-22";
 
 const coaches = [
   { id: "carl", name: "Carl", teamId: "all", role: "Coach", phone: "07999696043", email: "" },
@@ -171,8 +172,11 @@ const defaultState = {
   scheduleFilter: "all",
   scheduleType: "matches",
   schedulePeriod: "upcoming",
+  attendancePeriod: "upcoming",
   selectedEventId: "e1",
   selectedResultEventId: "",
+  awardsTab: "weekly",
+  awardTallies: {},
   coachGuide: {
     active: false,
     step: 0,
@@ -730,6 +734,9 @@ function normalizeState(saved) {
   }
   merged.scheduleType = ["matches", "training"].includes(merged.scheduleType) ? merged.scheduleType : "matches";
   merged.schedulePeriod = merged.schedulePeriod || "upcoming";
+  merged.attendancePeriod = ["upcoming", "past"].includes(merged.attendancePeriod) ? merged.attendancePeriod : "upcoming";
+  merged.awardsTab = ["weekly", "tally"].includes(merged.awardsTab) ? merged.awardsTab : "weekly";
+  merged.awardTallies = merged.awardTallies || {};
   merged.coachGuide = {
     ...defaultState.coachGuide,
     ...(saved.coachGuide || {}),
@@ -2244,11 +2251,49 @@ function attendanceTracker(event, players) {
   `;
 }
 
+function isRemovedRegisterEvent(event) {
+  return event?.id === "training-20260818"
+    || (event?.type === "Training" && dateValue(event.datetime) === "2026-08-18");
+}
+
+function registerEventsForSession() {
+  return visibleEventsForSession(state.events)
+    .filter((event) => !isRemovedRegisterEvent(event))
+    .sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
+}
+
+function attendancePeriodTabs(events) {
+  const upcomingCount = events.filter((event) => !isPastEvent(event)).length;
+  const pastCount = events.filter(isPastEvent).length;
+  return `
+    <div class="segmented light register-period-tabs">
+      <button type="button" class="${state.attendancePeriod !== "past" ? "active" : ""}" data-action="set-attendance-period" data-period="upcoming">Current (${upcomingCount})</button>
+      <button type="button" class="${state.attendancePeriod === "past" ? "active" : ""}" data-action="set-attendance-period" data-period="past">History (${pastCount})</button>
+    </div>
+  `;
+}
+
 function attendanceView() {
-  const visibleOptions = visibleEventsForSession(state.events).sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
-  const eventOptions = visibleOptions.length ? visibleOptions : [...state.events].sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
-  const event = eventOptions.find((item) => item.id === state.selectedEventId) || eventOptions[0] || state.events[0];
-  if (!event) return emptyEventsView("Register");
+  const allRegisterEvents = registerEventsForSession();
+  const period = state.attendancePeriod === "past" ? "past" : "upcoming";
+  const eventOptions = allRegisterEvents
+    .filter((event) => period === "past" ? isPastEvent(event) : !isPastEvent(event))
+    .sort((a, b) => period === "past" ? eventEndDate(b) - eventEndDate(a) : eventEndDate(a) - eventEndDate(b));
+  const event = eventOptions.find((item) => item.id === state.selectedEventId) || eventOptions[0];
+  if (event && state.selectedEventId !== event.id) state.selectedEventId = event.id;
+  if (!allRegisterEvents.length) return emptyEventsView("Register");
+  if (!event) {
+    return `
+      <section class="toolbar register-toolbar" data-tour="attendance-session">
+        ${attendancePeriodTabs(allRegisterEvents)}
+      </section>
+      <section class="panel">
+        <p class="eyebrow">Register ${period === "past" ? "history" : "current sessions"}</p>
+        <h3>No ${period === "past" ? "past" : "current"} sessions to show</h3>
+        <p class="muted">${period === "past" ? "Completed training sessions and matches will move here automatically." : "Upcoming sessions and live matchday registers will appear here."}</p>
+      </section>
+    `;
+  }
   const eventPlayers = getPlayersForEvent(event);
   const child = currentPlayer();
   const players = hasCoachAccess()
@@ -2256,9 +2301,10 @@ function attendanceView() {
     : [child].filter(Boolean).filter((player) => eventPlayers.some((eventPlayer) => eventPlayer.id === player.id));
 
   return `
-    <section class="toolbar" data-tour="attendance-session">
+    <section class="toolbar register-toolbar" data-tour="attendance-session">
+      ${attendancePeriodTabs(allRegisterEvents)}
       <label class="field compact-field">
-        <span>Session</span>
+        <span>${period === "past" ? "Past session" : "Session"}</span>
         <select data-action="select-event">
           ${eventOptions.map((item) => `<option value="${item.id}" ${item.id === event.id ? "selected" : ""}>${escapeHtml(attendanceOptionLabel(item))}</option>`).join("")}
         </select>
@@ -2343,6 +2389,19 @@ function nextWednesdayValue() {
 
 function awardsView() {
   if (!hasCoachAccess()) return homeView();
+  const activeTab = state.awardsTab === "tally" ? "tally" : "weekly";
+  return `
+    <section class="toolbar">
+      <div class="segmented light register-period-tabs">
+        <button type="button" class="${activeTab === "weekly" ? "active" : ""}" data-action="set-awards-tab" data-tab="weekly">Weekly winner</button>
+        <button type="button" class="${activeTab === "tally" ? "active" : ""}" data-action="set-awards-tab" data-tab="tally">Vote tally</button>
+      </div>
+    </section>
+    ${activeTab === "tally" ? awardTallyView() : weeklyAwardsView()}
+  `;
+}
+
+function weeklyAwardsView() {
   const players = activePlayers().sort((a, b) => a.name.localeCompare(b.name));
   const awards = sortPlayerAwards(state.playerAwards || []);
 
@@ -2407,10 +2466,79 @@ function awardsView() {
   `;
 }
 
+function awardTallyRows() {
+  const players = activePlayers().sort((a, b) => {
+    const aVotes = Number(state.awardTallies?.[a.id] || 0);
+    const bVotes = Number(state.awardTallies?.[b.id] || 0);
+    return bVotes - aVotes || a.name.localeCompare(b.name);
+  });
+  return players.map((player) => {
+    const votes = Number(state.awardTallies?.[player.id] || 0);
+    return `
+      <div class="tally-row">
+        <div>
+          <strong>${escapeHtml(player.name)}</strong>
+          <p>${escapeHtml(teamName(player.teamId))}</p>
+        </div>
+        <div class="tally-controls">
+          <button class="icon-button" type="button" data-action="adjust-award-tally" data-player-id="${escapeHtml(player.id)}" data-delta="-1" aria-label="Remove vote for ${escapeHtml(player.name)}">-</button>
+          <strong>${votes}</strong>
+          <button class="icon-button" type="button" data-action="adjust-award-tally" data-player-id="${escapeHtml(player.id)}" data-delta="1" aria-label="Add vote for ${escapeHtml(player.name)}">+</button>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+function awardTallyView() {
+  const tallies = state.awardTallies || {};
+  const totalVotes = Object.values(tallies).reduce((sum, value) => sum + Number(value || 0), 0);
+  const leader = activePlayers()
+    .map((player) => ({ player, votes: Number(tallies[player.id] || 0) }))
+    .sort((a, b) => b.votes - a.votes || a.player.name.localeCompare(b.player.name))[0];
+
+  return `
+    <section class="content-grid two-col">
+      <article class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Temporary tool</p>
+            <h3>Player of the Week vote tally</h3>
+          </div>
+          <span class="status-pill warn">Not saved</span>
+        </div>
+        <p class="muted">Use this while the kids give verbal votes. It stays on this device while the app is open, then can be cleared once the winner is decided.</p>
+        <div class="metric-grid attendance-summary">
+          <article>
+            <strong>${totalVotes}</strong>
+            <span>Total votes</span>
+          </article>
+          <article>
+            <strong>${leader?.votes || 0}</strong>
+            <span>${leader?.votes ? escapeHtml(leader.player.name) : "Top vote"}</span>
+          </article>
+        </div>
+        <button class="secondary-button danger-button" type="button" data-action="clear-award-tallies">Clear tallies</button>
+      </article>
+      <article class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Live counter</p>
+            <h3>Votes by player</h3>
+          </div>
+        </div>
+        <div class="tally-list">
+          ${activePlayers().length ? awardTallyRows() : '<p class="muted">No active players available to tally.</p>'}
+        </div>
+      </article>
+    </section>
+  `;
+}
+
 function resultFixtureEvents() {
   return state.events
-    .filter((event) => event.type === "Fixture" && !isBeforeVisibleSeason(event))
-    .sort((a, b) => new Date(b.datetime) - new Date(a.datetime));
+    .filter((event) => event.type === "Fixture" && !isBeforeVisibleSeason(event) && dateValue(event.datetime) >= resultSeasonStart)
+    .sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
 }
 
 function resultPlayersForEvent(event) {
@@ -4434,6 +4562,46 @@ document.addEventListener("click", async (event) => {
     state.schedulePeriod = target.dataset.period || "upcoming";
     saveState();
     render();
+    return;
+  }
+
+  if (action === "set-attendance-period") {
+    state.attendancePeriod = target.dataset.period === "past" ? "past" : "upcoming";
+    const options = registerEventsForSession()
+      .filter((item) => state.attendancePeriod === "past" ? isPastEvent(item) : !isPastEvent(item))
+      .sort((a, b) => state.attendancePeriod === "past" ? eventEndDate(b) - eventEndDate(a) : eventEndDate(a) - eventEndDate(b));
+    state.selectedEventId = options[0]?.id || "";
+    saveState();
+    render();
+    return;
+  }
+
+  if (action === "set-awards-tab") {
+    state.awardsTab = target.dataset.tab === "tally" ? "tally" : "weekly";
+    saveState();
+    render();
+    return;
+  }
+
+  if (action === "adjust-award-tally") {
+    if (!requireCoach()) return;
+    const playerId = target.dataset.playerId;
+    const delta = Number(target.dataset.delta || 0);
+    if (!playerId || !delta) return;
+    state.awardTallies = state.awardTallies || {};
+    state.awardTallies[playerId] = Math.max(0, Number(state.awardTallies[playerId] || 0) + delta);
+    if (!state.awardTallies[playerId]) delete state.awardTallies[playerId];
+    render();
+    return;
+  }
+
+  if (action === "clear-award-tallies") {
+    if (!requireCoach()) return;
+    const confirmed = window.confirm("Clear all Player of the Week vote tallies?");
+    if (!confirmed) return;
+    state.awardTallies = {};
+    render();
+    toast("Vote tallies cleared");
     return;
   }
 
