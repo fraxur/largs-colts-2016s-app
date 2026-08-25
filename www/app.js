@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-37";
+const appVersion = "4.0-live-rollout-38";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -2083,12 +2083,20 @@ function availabilityView() {
 function availabilityFixtureSummary(event) {
   const fixtures = eventsForAvailabilityDate(event);
   if (!fixtures.length) return '<p class="muted">Availability is collected for this date.</p>';
+  const selectedPlayerIds = new Set(fixtures.flatMap((fixture) => fixture.selectedPlayerIds || []));
+  const availablePlayerIds = new Set(
+    activePlayers()
+      .filter((player) => availabilityEntry(event, player.id).status === "available")
+      .map((player) => player.id)
+  );
+  const unpickedCount = [...availablePlayerIds].filter((playerId) => !selectedPlayerIds.has(playerId)).length;
   return `
     <div class="availability-fixture-list">
       ${fixtures.map((fixture) => {
         const selectedCount = Array.isArray(fixture.selectedPlayerIds) ? fixture.selectedPlayerIds.length : 0;
-        return `<span>${escapeHtml(fixture.title)}${selectedCount ? ` - ${selectedCount} picked` : ""}</span>`;
+        return `<span>${escapeHtml(fixture.title)}${hasCoachAccess() || selectedCount ? ` - ${selectedCount} picked` : ""}</span>`;
       }).join("")}
+      ${hasCoachAccess() ? `<span class="attention">${unpickedCount} available unpicked</span>` : ""}
     </div>
   `;
 }
