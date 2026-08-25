@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-29";
+const appVersion = "4.0-live-rollout-30";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -172,6 +172,7 @@ const defaultState = {
   scheduleType: "matches",
   schedulePeriod: "upcoming",
   selectedEventId: "e1",
+  selectedResultEventId: "",
   coachGuide: {
     active: false,
     step: 0,
@@ -185,6 +186,8 @@ const defaultState = {
   coachQueries: [],
   playerDocuments: [],
   coachDocuments: [],
+  playerAwards: [],
+  matchStats: [],
   liftOffers: [],
   documentFilter: "all",
   documentSort: "newest",
@@ -253,6 +256,51 @@ function defaultDevelopmentRecord(playerId = "", record = {}) {
     positions: Array.isArray(record.positions) ? record.positions.filter((position) => playerPositions.includes(position)) : [],
     notes: record.notes || "",
   };
+}
+
+function normalizeMatchStat(record = {}) {
+  const eventId = record.eventId || "";
+  const playerId = record.playerId || "";
+  return {
+    id: record.id || (eventId && playerId ? `${eventId}_${playerId}` : ""),
+    eventId,
+    playerId,
+    playerName: record.playerName || "",
+    teamId: normalizeTeamId(record.teamId),
+    goals: Math.max(0, Number(record.goals || 0)),
+    assists: Math.max(0, Number(record.assists || 0)),
+    status: record.status || "active",
+    createdAt: record.createdAt || "",
+    updatedAt: record.updatedAt || "",
+  };
+}
+
+function sortMatchStats(items = [], events = state.events) {
+  return (items || []).map(normalizeMatchStat).sort((a, b) => {
+    const aEvent = events.find((event) => event.id === a.eventId);
+    const bEvent = events.find((event) => event.id === b.eventId);
+    return new Date(bEvent?.datetime || 0) - new Date(aEvent?.datetime || 0) || a.playerName.localeCompare(b.playerName);
+  });
+}
+
+function normalizePlayerAward(record = {}) {
+  return {
+    id: record.id || (record.date ? `potw-${record.date}` : ""),
+    date: record.date || "",
+    playerId: record.playerId || "",
+    playerName: record.playerName || "",
+    teamId: normalizeTeamId(record.teamId),
+    trophyWithPlayerId: record.trophyWithPlayerId || record.playerId || "",
+    trophyWithName: record.trophyWithName || record.playerName || "",
+    notes: record.notes || "",
+    status: record.status || "active",
+    createdAt: record.createdAt || "",
+    updatedAt: record.updatedAt || "",
+  };
+}
+
+function sortPlayerAwards(items = []) {
+  return (items || []).map(normalizePlayerAward).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
 }
 
 function developmentFor(playerId) {
@@ -645,6 +693,8 @@ function normalizeState(saved) {
   merged.notifications = merged.notifications || [];
   merged.dataRequests = merged.dataRequests || [];
   merged.coachQueries = merged.coachQueries || [];
+  merged.playerAwards = sortPlayerAwards(merged.playerAwards || []);
+  merged.matchStats = sortMatchStats(merged.matchStats || [], merged.events || []);
   merged.users = merged.users || [];
   merged.coachContacts = merged.coachContacts || [];
   merged.venues = merged.venues || [];
@@ -706,6 +756,11 @@ function normalizeState(saved) {
     });
     merged.attendance[event.id] = merged.attendance[event.id] || {};
   });
+  const resultEvents = merged.events.filter((event) => event.type === "Fixture");
+  merged.selectedResultEventId = merged.selectedResultEventId || resultEvents[0]?.id || "";
+  if (!resultEvents.some((event) => event.id === merged.selectedResultEventId)) {
+    merged.selectedResultEventId = resultEvents[0]?.id || "";
+  }
 
   return merged;
 }
@@ -1550,6 +1605,8 @@ function navRoutes(pendingOnly = false) {
     { id: "schedule", label: "Schedule", mark: "S" },
     { id: "availability", label: "Availability", mobileLabel: "Avail.", mark: "AV" },
     { id: "attendance", label: "Register", mark: "R" },
+    { id: "awards", label: "Awards", mark: "AW" },
+    { id: "results", label: "Results", mark: "RS" },
     { id: "squads", label: "Teams", mark: "T" },
     { id: "development", label: "Development", mark: "D" },
     { id: "documents", label: "Documents", mobileLabel: "Docs", mark: "DOC" },
@@ -1563,7 +1620,7 @@ function navRoutes(pendingOnly = false) {
     { id: "install", label: "Install", mark: "I" },
   ];
   const parentRoutes = [
-    ...coachRoutes.filter((item) => !["squads", "development", "squad-builder", "coach-inbox"].includes(item.id)),
+    ...coachRoutes.filter((item) => !["awards", "results", "squads", "development", "squad-builder", "coach-inbox"].includes(item.id)),
     { id: "contact", label: "Contact", mark: "CT" },
     { id: "guide", label: "Guide", mark: "G" },
   ];
@@ -1606,6 +1663,8 @@ function pageTitle(route) {
     schedule: "Schedule",
     availability: "Availability",
     attendance: "Register",
+    awards: "Player of the Week",
+    results: "Results & Stats",
     squads: "Teams",
     development: "Player Development",
     documents: "Documents",
@@ -1646,13 +1705,15 @@ function pendingBanner() {
 function pageView(route) {
   const pendingOnly = state.session.role === "parent" && !approvedPlayers().length;
   if (pendingOnly && !["access", "contact", "privacy", "install", "guide"].includes(route)) return accessView();
-  if (!hasCoachAccess() && ["squads", "development", "squad-builder", "coach-inbox"].includes(route)) return homeView();
+  if (!hasCoachAccess() && ["awards", "results", "squads", "development", "squad-builder", "coach-inbox"].includes(route)) return homeView();
   if (hasCoachAccess() && route === "contact") return coachInboxView();
   return {
     home: homeView,
     schedule: scheduleView,
     availability: availabilityView,
     attendance: attendanceView,
+    awards: awardsView,
+    results: resultsView,
     squads: squadsView,
     development: developmentView,
     documents: documentsView,
@@ -2141,8 +2202,52 @@ function parentMatchLiftPanel(event, childFixture, offers) {
   `;
 }
 
+function attendanceOptionLabel(event) {
+  if (!event) return "Session";
+  const finish = event.finishTime ? ` to ${event.finishTime}` : "";
+  return `${formatDate(event.datetime)}${finish} - ${event.title}`;
+}
+
+function attendanceSummary(event, players = []) {
+  const register = state.attendance[event.id] || {};
+  return players.reduce((acc, player) => {
+    const value = register[player.id] || "unknown";
+    if (value === "present" || value === "collected") acc.inAttendance += 1;
+    if (value === "collected") acc.collected += 1;
+    if (value === "absent") acc.absent += 1;
+    if (!["present", "collected", "absent"].includes(value)) acc.unmarked += 1;
+    return acc;
+  }, { inAttendance: 0, collected: 0, absent: 0, unmarked: 0, total: players.length });
+}
+
+function attendanceTracker(event, players) {
+  const summary = attendanceSummary(event, players);
+  return `
+    <section class="metric-grid attendance-summary">
+      <article>
+        <strong>${summary.inAttendance}</strong>
+        <span>Currently here</span>
+      </article>
+      <article>
+        <strong>${summary.collected}</strong>
+        <span>Collected</span>
+      </article>
+      <article>
+        <strong>${summary.absent}</strong>
+        <span>Marked absent</span>
+      </article>
+      <article>
+        <strong>${summary.unmarked}</strong>
+        <span>Still to mark</span>
+      </article>
+    </section>
+  `;
+}
+
 function attendanceView() {
-  const event = state.events.find((item) => item.id === state.selectedEventId) || state.events[0];
+  const visibleOptions = visibleEventsForSession(state.events).sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
+  const eventOptions = visibleOptions.length ? visibleOptions : [...state.events].sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
+  const event = eventOptions.find((item) => item.id === state.selectedEventId) || eventOptions[0] || state.events[0];
   if (!event) return emptyEventsView("Register");
   const eventPlayers = getPlayersForEvent(event);
   const child = currentPlayer();
@@ -2155,10 +2260,11 @@ function attendanceView() {
       <label class="field compact-field">
         <span>Session</span>
         <select data-action="select-event">
-          ${state.events.map((item) => `<option value="${item.id}" ${item.id === event.id ? "selected" : ""}>${escapeHtml(item.title)}</option>`).join("")}
+          ${eventOptions.map((item) => `<option value="${item.id}" ${item.id === event.id ? "selected" : ""}>${escapeHtml(attendanceOptionLabel(item))}</option>`).join("")}
         </select>
       </label>
     </section>
+    ${hasCoachAccess() ? attendanceTracker(event, players) : ""}
     <div class="attendance-grid" data-tour="attendance-grid">
       ${players.map((player) => attendanceCard(event, player)).join("")}
     </div>
@@ -2221,6 +2327,223 @@ function parentAlertLog(event) {
         </div>
       `).join("") : '<p class="muted">No Firebase parent alerts recorded for this session yet.</p>'}
     </article>
+  `;
+}
+
+function inputDateValue(date = new Date()) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function nextWednesdayValue() {
+  const date = new Date();
+  const diff = (3 - date.getDay() + 7) % 7;
+  date.setDate(date.getDate() + diff);
+  return inputDateValue(date);
+}
+
+function awardsView() {
+  if (!hasCoachAccess()) return homeView();
+  const players = activePlayers().sort((a, b) => a.name.localeCompare(b.name));
+  const awards = sortPlayerAwards(state.playerAwards || []);
+
+  return `
+    <section class="content-grid two-col">
+      <article class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Coach only</p>
+            <h3>Player of the Week</h3>
+          </div>
+          <span class="status-pill good">Wednesday</span>
+        </div>
+        <form class="stacked-form" data-form="player-award">
+          <label class="field">
+            <span>Wednesday date</span>
+            <input name="date" type="date" value="${nextWednesdayValue()}" required>
+          </label>
+          <label class="field">
+            <span>Winner</span>
+            <select name="playerId" required>
+              <option value="">Select player</option>
+              ${players.map((player) => `<option value="${escapeHtml(player.id)}">${escapeHtml(player.name)} - ${escapeHtml(teamName(player.teamId))}</option>`).join("")}
+            </select>
+          </label>
+          <label class="field">
+            <span>Trophy with</span>
+            <select name="trophyWithPlayerId">
+              <option value="">Same as winner</option>
+              ${players.map((player) => `<option value="${escapeHtml(player.id)}">${escapeHtml(player.name)}</option>`).join("")}
+            </select>
+          </label>
+          <label class="field">
+            <span>Notes</span>
+            <textarea name="notes" rows="3" placeholder="Optional reason, behaviour note or handover detail"></textarea>
+          </label>
+          <button class="primary-button" type="submit">Save weekly winner</button>
+        </form>
+      </article>
+      <article class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Trophy history</p>
+            <h3>Recent winners</h3>
+          </div>
+          <span class="status-pill warn">${awards.length} saved</span>
+        </div>
+        <div class="award-timeline">
+          ${awards.length ? awards.map((award) => `
+            <div class="person-row">
+              <div>
+                <strong>${escapeHtml(award.playerName)}</strong>
+                <p>${escapeHtml(formatDateOnly(`${award.date}T12:00`))} - Trophy with ${escapeHtml(award.trophyWithName || award.playerName)}</p>
+                ${award.notes ? `<p>${escapeHtml(award.notes)}</p>` : ""}
+              </div>
+              <button class="tiny-button" type="button" data-action="delete-award" data-award-id="${escapeHtml(award.id)}">Remove</button>
+            </div>
+          `).join("") : '<p class="muted">No weekly winners saved yet.</p>'}
+        </div>
+      </article>
+    </section>
+  `;
+}
+
+function resultFixtureEvents() {
+  return state.events
+    .filter((event) => event.type === "Fixture" && !isBeforeVisibleSeason(event))
+    .sort((a, b) => new Date(b.datetime) - new Date(a.datetime));
+}
+
+function resultPlayersForEvent(event) {
+  const selected = getPlayersForEvent(event);
+  return (selected.length ? selected : activePlayers()).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function matchStatFor(eventId, playerId) {
+  return normalizeMatchStat((state.matchStats || []).find((stat) => stat.eventId === eventId && stat.playerId === playerId) || { eventId, playerId });
+}
+
+function resultStatEntryRow(event, player) {
+  const stat = matchStatFor(event.id, player.id);
+  const development = developmentFor(player.id);
+  const positionText = development.positions.length ? development.positions.join(", ") : "Positions not set";
+  return `
+    <div class="stat-entry-row">
+      <div>
+        <strong>${escapeHtml(player.name)}</strong>
+        <p>${escapeHtml(teamName(player.teamId))} - ${escapeHtml(positionText)}</p>
+      </div>
+      <label class="field">
+        <span>Goals</span>
+        <input name="goals:${escapeHtml(player.id)}" type="number" min="0" max="50" inputmode="numeric" value="${stat.goals}">
+      </label>
+      <label class="field">
+        <span>Assists</span>
+        <input name="assists:${escapeHtml(player.id)}" type="number" min="0" max="50" inputmode="numeric" value="${stat.assists}">
+      </label>
+    </div>
+  `;
+}
+
+function playerStatsRows() {
+  const fixtures = state.events.filter((event) => event.type === "Fixture");
+  const totals = activePlayers().map((player) => {
+    const stats = (state.matchStats || []).filter((stat) => stat.playerId === player.id && stat.status !== "archived");
+    const appearances = fixtures.filter((event) => ["present", "collected"].includes(state.attendance[event.id]?.[player.id])).length;
+    const goals = stats.reduce((sum, stat) => sum + Number(stat.goals || 0), 0);
+    const assists = stats.reduce((sum, stat) => sum + Number(stat.assists || 0), 0);
+    return { player, appearances, goals, assists, total: goals + assists };
+  }).sort((a, b) => b.total - a.total || b.goals - a.goals || a.player.name.localeCompare(b.player.name));
+
+  return totals.map((row) => `
+    <div class="stats-table-row">
+      <span><strong>${escapeHtml(row.player.name)}</strong><small>${escapeHtml(teamName(row.player.teamId))}</small></span>
+      <span>${row.appearances}</span>
+      <span>${row.goals}</span>
+      <span>${row.assists}</span>
+      <span>${row.total}</span>
+    </div>
+  `).join("");
+}
+
+function resultsView() {
+  if (!hasCoachAccess()) return homeView();
+  const fixtures = resultFixtureEvents();
+  if (!fixtures.length) {
+    return `
+      <section class="panel">
+        <p class="eyebrow">Coach only</p>
+        <h3>No fixtures to score yet</h3>
+        <p class="muted">Add fixtures on the Schedule page, then use Results to record scores, goals and assists.</p>
+        <button class="primary-button" type="button" data-modal="event">Add fixture</button>
+      </section>
+    `;
+  }
+
+  const selected = fixtures.find((event) => event.id === state.selectedResultEventId) || fixtures[0];
+  state.selectedResultEventId = selected.id;
+  const players = resultPlayersForEvent(selected);
+
+  return `
+    <section class="toolbar">
+      <label class="field compact-field">
+        <span>Match</span>
+        <select data-action="select-result-event">
+          ${fixtures.map((event) => `<option value="${escapeHtml(event.id)}" ${event.id === selected.id ? "selected" : ""}>${escapeHtml(`${formatDateOnly(event.datetime)} - ${event.title}`)}</option>`).join("")}
+        </select>
+      </label>
+    </section>
+    <section class="content-grid two-col">
+      <article class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Match result</p>
+            <h3>${escapeHtml(selected.title)}</h3>
+            <p>${escapeHtml(formatDate(selected.datetime))} - ${escapeHtml(teamName(selected.teamId))}</p>
+          </div>
+          <span class="status-pill ${resultSummary(selected) ? "good" : "warn"}">${escapeHtml(resultSummary(selected) || "Score needed")}</span>
+        </div>
+        <form class="stacked-form" data-form="match-stats">
+          <input type="hidden" name="eventId" value="${escapeHtml(selected.id)}">
+          <div class="score-fields">
+            <label class="field">
+              <span>Largs score</span>
+              <input name="homeScore" type="number" min="0" max="99" inputmode="numeric" value="${escapeHtml(selected.homeScore ?? "")}" placeholder="0">
+            </label>
+            <label class="field">
+              <span>Opposition score</span>
+              <input name="awayScore" type="number" min="0" max="99" inputmode="numeric" value="${escapeHtml(selected.awayScore ?? "")}" placeholder="0">
+            </label>
+          </div>
+          <label class="field">
+            <span>Result notes</span>
+            <input name="resultNotes" value="${escapeHtml(selected.resultNotes || "")}" placeholder="Optional match note">
+          </label>
+          <div class="stats-entry-list">
+            ${players.length ? players.map((player) => resultStatEntryRow(selected, player)).join("") : '<p class="muted">No players are currently available for this fixture.</p>'}
+          </div>
+          <button class="primary-button" type="submit">Save result and stats</button>
+        </form>
+      </article>
+      <article class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Player stats</p>
+            <h3>Goals and assists</h3>
+          </div>
+          <span class="status-pill good">${activePlayers().length} players</span>
+        </div>
+        <div class="stats-table" role="table" aria-label="Player stats">
+          <div class="stats-table-header">
+            <span>Player</span>
+            <span>Apps</span>
+            <span>Goals</span>
+            <span>Assists</span>
+            <span>Total</span>
+          </div>
+          ${playerStatsRows()}
+        </div>
+      </article>
+    </section>
   `;
 }
 
@@ -3622,6 +3945,9 @@ function installView() {
           <span>Coach-only player development ratings added</span>
           <span>Coach-only 7-a-side and 9-a-side squad whiteboard added</span>
           <span>Coach-only live whiteboard collaboration added</span>
+          <span>Coach-only Player of the Week trophy tracker added</span>
+          <span>Coach-only match results and player stats added</span>
+          <span>Register page live attendance count added</span>
           <span>Firestore rules tightened for parent-safe writes</span>
           <span>Coach contacts added with call and text links</span>
           <span>App icons and red splash screen ready for mobile wrapping</span>
@@ -4138,6 +4464,11 @@ document.addEventListener("click", async (event) => {
     return;
   }
 
+  if (action === "delete-award") {
+    await deletePlayerAward(target.dataset.awardId);
+    return;
+  }
+
   if (action === "download-document") {
     await downloadPlayerDocument(target.dataset.documentId);
     return;
@@ -4466,6 +4797,12 @@ document.addEventListener("change", async (event) => {
     render();
     return;
   }
+  if (target.dataset.action === "select-result-event") {
+    state.selectedResultEventId = target.value;
+    saveState();
+    render();
+    return;
+  }
   if (target.dataset.action === "venue-choice") {
     toggleAwayFields();
     return;
@@ -4601,6 +4938,8 @@ document.addEventListener("submit", async (event) => {
     if (form.dataset.form === "edit-coach") await editCoach(data);
     if (form.dataset.form === "edit-venue") await editVenue(data);
     if (form.dataset.form === "development-player") await savePlayerDevelopment(data);
+    if (form.dataset.form === "player-award") await savePlayerAward(data);
+    if (form.dataset.form === "match-stats") await saveMatchStats(data);
     if (form.dataset.form === "edit-builder-slot") saveBuilderSlotEdit(data);
     saveState();
     render();
@@ -5246,6 +5585,102 @@ async function setAttendance(playerId, status) {
   saveState();
   render();
   toast(["present", "collected"].includes(status) ? "Register updated and parent push queued" : "Register updated");
+}
+
+async function savePlayerAward(data) {
+  if (!requireCoach()) return;
+  const date = String(data.get("date") || "").trim();
+  const playerId = String(data.get("playerId") || "").trim();
+  const player = activePlayers().find((item) => item.id === playerId);
+  if (!date || !player) {
+    showError("Choose the Wednesday date and player before saving.");
+    return;
+  }
+  const trophyWithPlayerId = String(data.get("trophyWithPlayerId") || playerId).trim() || playerId;
+  const trophyPlayer = activePlayers().find((item) => item.id === trophyWithPlayerId) || player;
+  const award = {
+    id: `potw-${date}`,
+    date,
+    playerId,
+    playerName: player.name,
+    teamId: player.teamId,
+    trophyWithPlayerId: trophyPlayer.id,
+    trophyWithName: trophyPlayer.name,
+    notes: String(data.get("notes") || "").trim(),
+    status: "active",
+    createdBy: state.session.userId,
+    createdByName: state.session.coachName || "Coach",
+  };
+  await saveLiveDocument("playerAwards", award.id, award);
+  state.playerAwards = sortPlayerAwards([award, ...state.playerAwards.filter((item) => item.id !== award.id)]);
+  const day = new Date(`${date}T12:00`).getDay();
+  toast(day === 3 ? "Player of the Week saved" : "Winner saved. Note: that date is not a Wednesday.");
+}
+
+async function deletePlayerAward(awardId) {
+  if (!requireCoach() || !awardId) return;
+  const award = state.playerAwards.find((item) => item.id === awardId);
+  const confirmed = window.confirm(`Remove ${award?.playerName || "this weekly winner"} from the trophy history?`);
+  if (!confirmed) return;
+  await deleteLiveDocument("playerAwards", awardId);
+  state.playerAwards = state.playerAwards.filter((item) => item.id !== awardId);
+  saveState();
+  render();
+  toast("Weekly winner removed");
+}
+
+async function saveMatchStats(data) {
+  if (!requireCoach()) return;
+  const eventId = String(data.get("eventId") || "").trim();
+  const eventIndex = state.events.findIndex((item) => item.id === eventId);
+  if (eventIndex === -1) {
+    showError("Pick a valid fixture before saving stats.");
+    return;
+  }
+
+  const event = state.events[eventIndex];
+  const updatedEvent = {
+    ...event,
+    homeScore: String(data.get("homeScore") || "").trim(),
+    awayScore: String(data.get("awayScore") || "").trim(),
+    resultNotes: String(data.get("resultNotes") || "").trim(),
+  };
+  await saveLiveDocument("events", eventId, updatedEvent);
+
+  const players = resultPlayersForEvent(event);
+  const playerIds = new Set(players.map((player) => player.id));
+  const nextStats = [...state.matchStats.filter((stat) => stat.eventId !== eventId || !playerIds.has(stat.playerId))];
+  await Promise.all(players.map(async (player) => {
+    const goals = Math.max(0, Number(data.get(`goals:${player.id}`) || 0));
+    const assists = Math.max(0, Number(data.get(`assists:${player.id}`) || 0));
+    const statId = `${eventId}_${player.id}`;
+    const existing = state.matchStats.find((stat) => stat.id === statId);
+    if (!goals && !assists) {
+      if (existing) await deleteLiveDocument("matchStats", statId);
+      return;
+    }
+    const stat = {
+      id: statId,
+      eventId,
+      playerId: player.id,
+      playerName: player.name,
+      teamId: player.teamId,
+      goals,
+      assists,
+      status: "active",
+      createdBy: state.session.userId,
+      createdByName: state.session.coachName || "Coach",
+    };
+    await saveLiveDocument("matchStats", statId, stat);
+    nextStats.push(stat);
+  }));
+
+  state.events[eventIndex] = updatedEvent;
+  state.matchStats = sortMatchStats(nextStats);
+  state.selectedResultEventId = eventId;
+  saveState();
+  render();
+  toast("Result and player stats saved");
 }
 
 async function deleteEvent(eventId) {
@@ -6167,7 +6602,7 @@ async function loadLiveStateFromFirebase() {
     state.liftOffers = liftOfferDocs;
 
     if (hasCoachAccess(role)) {
-      const [players, parentLinks, accessRequests, notifications, users, dataRequests, coachQueries, playerDevelopment, playerDocuments, coachDocuments] = await Promise.all([
+      const [players, parentLinks, accessRequests, notifications, users, dataRequests, coachQueries, playerDevelopment, playerDocuments, coachDocuments, playerAwards, matchStats] = await Promise.all([
         loadDocs("players"),
         loadDocs("parentLinks"),
         loadDocs("accessRequests"),
@@ -6178,6 +6613,8 @@ async function loadLiveStateFromFirebase() {
         loadDocs("playerDevelopment"),
         loadOptionalDocs("playerDocuments"),
         loadOptionalDocs("coachDocuments"),
+        loadOptionalDocs("playerAwards"),
+        loadOptionalDocs("matchStats"),
       ]);
       state.players = players.map(normalizePlayerRecord).sort((a, b) => a.name.localeCompare(b.name));
       state.parentLinks = parentLinks;
@@ -6189,6 +6626,8 @@ async function loadLiveStateFromFirebase() {
       state.playerDevelopment = Object.fromEntries(playerDevelopment.map((record) => [record.playerId || record.id, defaultDevelopmentRecord(record.playerId || record.id, record)]));
       state.playerDocuments = sortPlayerDocuments(playerDocuments);
       state.coachDocuments = sortCoachDocuments(coachDocuments);
+      state.playerAwards = sortPlayerAwards(playerAwards);
+      state.matchStats = sortMatchStats(matchStats);
     } else {
       const uid = runtime.user.uid;
       const [parentLinks, accessRequests, notifications, dataRequests, coachQueries] = await Promise.all([
@@ -6206,11 +6645,17 @@ async function loadLiveStateFromFirebase() {
       state.players = await loadApprovedPlayerDocs(parentLinks);
       state.playerDocuments = await loadPlayerDocumentsForParent(parentLinks);
       state.playerDevelopment = {};
+      state.playerAwards = [];
+      state.matchStats = [];
     }
 
     await loadEventSubcollections();
     if (!state.selectedEventId || !state.events.some((event) => event.id === state.selectedEventId)) {
       state.selectedEventId = state.events[0]?.id || "";
+    }
+    const resultEvents = resultFixtureEvents();
+    if (!state.selectedResultEventId || !resultEvents.some((event) => event.id === state.selectedResultEventId)) {
+      state.selectedResultEventId = resultEvents[0]?.id || "";
     }
     if (state.session.role === "parent" && !state.session.selectedPlayerId) {
       state.session.selectedPlayerId = approvedPlayers()[0]?.id || "";
@@ -6410,6 +6855,10 @@ async function startLiveSubscriptions() {
     if (!state.selectedEventId || !state.events.some((event) => event.id === state.selectedEventId)) {
       state.selectedEventId = state.events[0]?.id || "";
     }
+    const resultEvents = resultFixtureEvents();
+    if (!state.selectedResultEventId || !resultEvents.some((event) => event.id === state.selectedResultEventId)) {
+      state.selectedResultEventId = resultEvents[0]?.id || "";
+    }
     await loadEventSubcollections();
     startEventDataSubscriptions(runtime);
   });
@@ -6455,6 +6904,12 @@ async function startLiveSubscriptions() {
     });
     watchCollection("coachDocuments", (items) => {
       state.coachDocuments = sortCoachDocuments(items);
+    });
+    watchCollection("playerAwards", (items) => {
+      state.playerAwards = sortPlayerAwards(items);
+    });
+    watchCollection("matchStats", (items) => {
+      state.matchStats = sortMatchStats(items);
     });
     watchLiveWhiteboardSession(runtime);
   } else {

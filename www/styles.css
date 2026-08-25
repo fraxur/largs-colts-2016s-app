@@ -1089,10 +1089,79 @@ button:disabled {
   display: none;
 }
 
+.attendance-summary {
+  margin-bottom: 16px;
+}
+
 .score-fields {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+}
+
+.stats-entry-list,
+.award-timeline {
+  display: grid;
+  gap: 10px;
+}
+
+.stat-entry-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 90px 90px;
+  align-items: end;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 12px;
+  background: #fffafa;
+}
+
+.stat-entry-row p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.stats-table {
+  display: grid;
+  overflow-x: auto;
+  scrollbar-color: rgba(152, 0, 12, 0.42) transparent;
+  scrollbar-width: thin;
+}
+
+.stats-table-header,
+.stats-table-row {
+  display: grid;
+  grid-template-columns: minmax(170px, 1.45fr) repeat(4, minmax(70px, 0.55fr));
+  align-items: center;
+  gap: 10px;
+  min-width: 560px;
+  border-bottom: 1px solid var(--line);
+  padding: 12px 0;
+}
+
+.stats-table-header {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.stats-table-row:last-child {
+  border-bottom: 0;
+}
+
+.stats-table-row span:not(:first-child),
+.stats-table-header span:not(:first-child) {
+  text-align: center;
+  font-weight: 950;
+}
+
+.stats-table-row small {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-weight: 850;
 }
 
 .coach-guide-hint {
@@ -2204,6 +2273,7 @@ button:disabled {
   .venue-media-grid,
   .lift-fields,
   .direction-actions,
+  .stat-entry-row,
   .score-fields {
     grid-template-columns: 1fr;
   }

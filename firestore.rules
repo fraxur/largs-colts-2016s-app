@@ -62,6 +62,45 @@ service cloud.firestore {
       return request.resource.data.keys().hasOnly(["id", "category", "title", "originalFileName", "storagePath", "contentType", "size", "uploadedBy", "uploadedByName", "status", "createdAt", "updatedAt"]);
     }
 
+    function playerAwardKeys() {
+      return request.resource.data.keys().hasOnly(["id", "date", "playerId", "playerName", "teamId", "trophyWithPlayerId", "trophyWithName", "notes", "status", "createdBy", "createdByName", "createdAt", "updatedAt"]);
+    }
+
+    function validPlayerAward(awardId) {
+      return request.resource.data.id == awardId
+        && request.resource.data.date is string
+        && request.resource.data.playerId is string
+        && request.resource.data.playerName is string
+        && request.resource.data.teamId is string
+        && request.resource.data.trophyWithPlayerId is string
+        && request.resource.data.trophyWithName is string
+        && request.resource.data.notes is string
+        && request.resource.data.status in ["active", "archived"]
+        && request.resource.data.createdBy == request.auth.uid
+        && playerAwardKeys();
+    }
+
+    function matchStatKeys() {
+      return request.resource.data.keys().hasOnly(["id", "eventId", "playerId", "playerName", "teamId", "goals", "assists", "status", "createdBy", "createdByName", "createdAt", "updatedAt"]);
+    }
+
+    function validMatchStat(statId) {
+      return request.resource.data.id == statId
+        && request.resource.data.eventId is string
+        && request.resource.data.playerId is string
+        && request.resource.data.playerName is string
+        && request.resource.data.teamId is string
+        && request.resource.data.goals is number
+        && request.resource.data.goals >= 0
+        && request.resource.data.goals <= 50
+        && request.resource.data.assists is number
+        && request.resource.data.assists >= 0
+        && request.resource.data.assists <= 50
+        && request.resource.data.status in ["active", "archived"]
+        && request.resource.data.createdBy == request.auth.uid
+        && matchStatKeys();
+    }
+
     function whiteboardSessionKeys() {
       return request.resource.data.keys().hasOnly(["id", "active", "hostUid", "hostName", "state", "createdAt", "updatedAt", "endedAt"]);
     }
@@ -190,6 +229,20 @@ service cloud.firestore {
           && validWhiteboardSession(sessionId)
           && ((!resource.data.active && request.resource.data.hostUid == request.auth.uid)
             || resource.data.hostUid == request.auth.uid);
+        allow delete: if isCoach(clubId);
+      }
+
+      match /playerAwards/{awardId} {
+        allow read: if isCoach(clubId);
+        allow create, update: if isCoach(clubId)
+          && validPlayerAward(awardId);
+        allow delete: if isCoach(clubId);
+      }
+
+      match /matchStats/{statId} {
+        allow read: if isCoach(clubId);
+        allow create, update: if isCoach(clubId)
+          && validMatchStat(statId);
         allow delete: if isCoach(clubId);
       }
 
