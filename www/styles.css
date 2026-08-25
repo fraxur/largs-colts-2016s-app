@@ -427,6 +427,11 @@ button:disabled {
 .side-nav nav {
   display: grid;
   gap: 6px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+  scrollbar-color: rgba(255, 255, 255, 0.34) transparent;
+  scrollbar-width: thin;
 }
 
 .side-nav a:not(.brand),
@@ -849,6 +854,16 @@ button:disabled {
 
 .register-period-tabs {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.section-toolbar {
+  align-items: stretch;
+}
+
+.section-tabs {
+  width: min(100%, 760px);
+  min-width: min(100%, 760px);
+  grid-template-columns: repeat(auto-fit, minmax(108px, 1fr));
 }
 
 .schedule-period {

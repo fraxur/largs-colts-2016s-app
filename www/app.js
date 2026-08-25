@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-33";
+const appVersion = "4.0-live-rollout-35";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -40,6 +40,10 @@ const parentEmailKey = "largs-colts-parent-email";
 const visibleSeasonStart = "2026-08-01";
 const resultSeasonStart = "2026-08-22";
 const registerHistoryStart = "2026-08-25";
+
+const squadSectionRoutes = ["squads", "development", "squad-builder", "awards", "results"];
+const coachClubSectionRoutes = ["coach-inbox", "coaches", "venues", "access", "privacy", "install"];
+const parentClubSectionRoutes = ["contact", "coaches", "venues", "access", "privacy", "install", "guide"];
 
 const coaches = [
   { id: "carl", name: "Carl", teamId: "all", role: "Coach", phone: "07999696043", email: "" },
@@ -975,7 +979,11 @@ function timeOptions(selected = "", includeBlank = false) {
 }
 
 function dateValue(datetime = "") {
-  return datetime ? String(datetime).slice(0, 10) : "";
+  if (!datetime) return "";
+  if (typeof datetime === "string" && /^\d{4}-\d{2}-\d{2}/.test(datetime)) return datetime.slice(0, 10);
+  const date = typeof datetime.toDate === "function" ? datetime.toDate() : new Date(datetime);
+  if (Number.isNaN(date.getTime())) return String(datetime).slice(0, 10);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
 function timeValue(datetime = "") {
@@ -1613,33 +1621,29 @@ function navRoutes(pendingOnly = false) {
     { id: "schedule", label: "Schedule", mark: "S" },
     { id: "availability", label: "Availability", mobileLabel: "Avail.", mark: "AV" },
     { id: "attendance", label: "Register", mark: "R" },
-    { id: "awards", label: "Awards", mark: "AW" },
-    { id: "results", label: "Results", mark: "RS" },
-    { id: "squads", label: "Teams", mark: "T" },
-    { id: "development", label: "Development", mark: "D" },
+    { id: "squad-section", label: "Squad", mark: "SQ", group: squadSectionRoutes },
     { id: "documents", label: "Documents", mobileLabel: "Docs", mark: "DOC" },
-    { id: "squad-builder", label: "Whiteboard", mark: "WB" },
     { id: "messages", label: "Messages", mark: "M" },
-    { id: "coach-inbox", label: "Inbox", mark: "IN" },
-    { id: "coaches", label: "Coaches", mark: "C" },
-    { id: "venues", label: "Venues", mark: "V" },
-    { id: "access", label: "Requests", mark: "RQ" },
-    { id: "privacy", label: "Privacy", mark: "P" },
-    { id: "install", label: "Install", mark: "I" },
+    { id: "club-section", label: "Club", mark: "CL", group: coachClubSectionRoutes },
   ];
   const parentRoutes = [
-    ...coachRoutes.filter((item) => !["awards", "results", "squads", "development", "squad-builder", "coach-inbox"].includes(item.id)),
-    { id: "contact", label: "Contact", mark: "CT" },
-    { id: "guide", label: "Guide", mark: "G" },
+    { id: "home", label: "Home", mark: "H" },
+    { id: "schedule", label: "Schedule", mark: "S" },
+    { id: "availability", label: "Availability", mobileLabel: "Avail.", mark: "AV" },
+    { id: "attendance", label: "Register", mark: "R" },
+    { id: "documents", label: "Documents", mobileLabel: "Docs", mark: "DOC" },
+    { id: "messages", label: "Messages", mark: "M" },
+    { id: "club-section", label: "Club", mark: "CL", group: parentClubSectionRoutes },
   ];
   const base = hasCoachAccess() ? coachRoutes : parentRoutes;
-  return pendingOnly ? base.filter((item) => ["access", "contact", "privacy", "install", "guide"].includes(item.id)) : base;
+  return pendingOnly ? base.filter((item) => item.id === "club-section") : base;
 }
 
 function navItem(item, route, compact = false) {
   const label = compact ? item.mobileLabel || item.label : item.label;
+  const active = route === item.id || (Array.isArray(item.group) && item.group.includes(route));
   return `
-    <button class="nav-link ${route === item.id ? "active" : ""}" type="button" data-route-target="${item.id}" data-tour="nav-${item.id}">
+    <button class="nav-link ${active ? "active" : ""}" type="button" data-route-target="${item.id}" data-tour="nav-${item.id}">
       <span class="nav-mark">${escapeHtml(item.mark || item.label.slice(0, 1))}</span>
       <span>${escapeHtml(label)}</span>
     </button>
@@ -1655,7 +1659,7 @@ function mobileNav(routes, route) {
     : ["home", "schedule", "availability", "messages"];
   const primary = primaryIds.map((id) => routes.find((item) => item.id === id)).filter(Boolean);
   const hidden = routes.filter((item) => !primaryIds.includes(item.id));
-  const moreActive = hidden.some((item) => item.id === route);
+  const moreActive = hidden.some((item) => item.id === route || (Array.isArray(item.group) && item.group.includes(route)));
   return `
     ${primary.map((item) => navItem(item, route, true)).join("")}
     <button class="nav-link ${moreActive ? "active" : ""}" type="button" data-modal="mobile-nav" data-tour="nav-more">
@@ -1671,6 +1675,8 @@ function pageTitle(route) {
     schedule: "Schedule",
     availability: "Availability",
     attendance: "Register",
+    "squad-section": "Squad",
+    "club-section": "Club",
     awards: "Player of the Week",
     results: "Results & Stats",
     squads: "Teams",
@@ -1710,11 +1716,82 @@ function pendingBanner() {
   `;
 }
 
+function defaultClubRoute() {
+  if (hasCoachAccess()) return "coach-inbox";
+  if (state.session.role === "parent" && !approvedPlayers().length) return "access";
+  return "contact";
+}
+
+function tabButton(route, label, activeRoute) {
+  return `<button type="button" class="${route === activeRoute ? "active" : ""}" data-route-target="${route}">${escapeHtml(label)}</button>`;
+}
+
+function resolveRouteTarget(route) {
+  if (route === "squad-section") return "squads";
+  if (route === "club-section") return defaultClubRoute();
+  return route;
+}
+
+function squadSectionView(route = "squads") {
+  const activeRoute = squadSectionRoutes.includes(route) ? route : "squads";
+  const views = {
+    squads: squadsView,
+    development: developmentView,
+    "squad-builder": squadBuilderView,
+    awards: awardsView,
+    results: resultsView,
+  };
+  return `
+    <section class="toolbar section-toolbar">
+      <div class="segmented light section-tabs">
+        ${tabButton("squads", "Teams", activeRoute)}
+        ${tabButton("development", "Development", activeRoute)}
+        ${tabButton("squad-builder", "Whiteboard", activeRoute)}
+        ${tabButton("awards", "Awards", activeRoute)}
+        ${tabButton("results", "Results", activeRoute)}
+      </div>
+    </section>
+    ${views[activeRoute]?.() || squadsView()}
+  `;
+}
+
+function clubSectionView(route = defaultClubRoute()) {
+  const allowedRoutes = hasCoachAccess() ? coachClubSectionRoutes : parentClubSectionRoutes;
+  const activeRoute = allowedRoutes.includes(route) ? route : defaultClubRoute();
+  const views = {
+    "coach-inbox": coachInboxView,
+    contact: contactCoachesView,
+    coaches: coachesView,
+    venues: venuesView,
+    access: accessView,
+    privacy: privacyView,
+    install: installView,
+    guide: guideView,
+  };
+  return `
+    <section class="toolbar section-toolbar">
+      <div class="segmented light section-tabs club-section-tabs">
+        ${hasCoachAccess() ? tabButton("coach-inbox", "Inbox", activeRoute) : tabButton("contact", "Contact", activeRoute)}
+        ${tabButton("coaches", "Coaches", activeRoute)}
+        ${tabButton("venues", "Venues", activeRoute)}
+        ${tabButton("access", hasCoachAccess() ? "Requests" : "Access", activeRoute)}
+        ${tabButton("privacy", "Privacy", activeRoute)}
+        ${tabButton("install", "Install", activeRoute)}
+        ${hasCoachAccess() ? "" : tabButton("guide", "Guide", activeRoute)}
+      </div>
+    </section>
+    ${views[activeRoute]?.() || accessView()}
+  `;
+}
+
 function pageView(route) {
   const pendingOnly = state.session.role === "parent" && !approvedPlayers().length;
+  if (pendingOnly && route === "club-section") return clubSectionView("access");
   if (pendingOnly && !["access", "contact", "privacy", "install", "guide"].includes(route)) return accessView();
   if (!hasCoachAccess() && ["awards", "results", "squads", "development", "squad-builder", "coach-inbox"].includes(route)) return homeView();
   if (hasCoachAccess() && route === "contact") return coachInboxView();
+  if (hasCoachAccess() && (route === "squad-section" || squadSectionRoutes.includes(route))) return squadSectionView(route);
+  if (route === "club-section" || coachClubSectionRoutes.includes(route) || parentClubSectionRoutes.includes(route)) return clubSectionView(route);
   return {
     home: homeView,
     schedule: scheduleView,
@@ -4477,7 +4554,7 @@ document.addEventListener("click", async (event) => {
 
   if (target.dataset.route) {
     event.preventDefault();
-    state.route = target.dataset.route;
+    state.route = resolveRouteTarget(target.dataset.route);
     delete state.modal;
     if (state.route === "messages") await markMessagesRead();
     saveState();
@@ -4486,7 +4563,7 @@ document.addEventListener("click", async (event) => {
   }
 
   if (target.dataset.routeTarget) {
-    state.route = target.dataset.routeTarget;
+    state.route = resolveRouteTarget(target.dataset.routeTarget);
     delete state.modal;
     if (state.route === "messages") await markMessagesRead();
     saveState();
