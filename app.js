@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-36";
+const appVersion = "4.0-live-rollout-37";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -2074,6 +2074,7 @@ function availabilityView() {
           ${players.map((player) => responseRow(event, player)).join("")}
         </div>
       </article>
+      ${hasCoachAccess() ? selectionBalancePanel(event) : ""}
     </section>
     `}
   `;
@@ -2202,6 +2203,75 @@ function fixtureAllocationControl(event, player) {
         ${fixtures.map((fixture) => `<option value="${escapeHtml(fixture.id)}" ${selected === fixture.id ? "selected" : ""}>${escapeHtml(fixture.title)}</option>`).join("")}
       </select>
     </label>
+  `;
+}
+
+function matchdayDateKeys() {
+  return [...new Set(state.events
+    .filter((event) => event.type === "Fixture" && dateValue(event.datetime) >= resultSeasonStart)
+    .map(availabilityKeyForEvent)
+    .filter(Boolean))]
+    .sort();
+}
+
+function fixturesOnDate(dateKey) {
+  return state.events.filter((event) => event.type === "Fixture" && availabilityKeyForEvent(event) === dateKey);
+}
+
+function playerPickedOnDate(playerId, dateKey) {
+  return fixturesOnDate(dateKey).some((fixture) => Array.isArray(fixture.selectedPlayerIds) && fixture.selectedPlayerIds.includes(playerId));
+}
+
+function selectionBalanceRows(currentEvent) {
+  const currentDateKey = availabilityKeyForEvent(currentEvent);
+  const dateKeys = matchdayDateKeys();
+  return activePlayers().map((player) => {
+    const availableDates = dateKeys.filter((dateKey) => defaultAvailabilityEntry(state.availability[dateKey]?.[player.id]).status === "available");
+    const pickedDates = dateKeys.filter((dateKey) => playerPickedOnDate(player.id, dateKey));
+    const currentStatus = defaultAvailabilityEntry(state.availability[currentDateKey]?.[player.id]).status;
+    const pickedThisDate = playerPickedOnDate(player.id, currentDateKey);
+    return {
+      player,
+      available: availableDates.length,
+      picked: pickedDates.length,
+      waiting: Math.max(0, availableDates.length - pickedDates.length),
+      currentStatus,
+      pickedThisDate,
+    };
+  }).sort((a, b) => b.waiting - a.waiting || a.picked - b.picked || a.player.name.localeCompare(b.player.name));
+}
+
+function selectionBalancePanel(event) {
+  const rows = selectionBalanceRows(event);
+  return `
+    <article class="panel selection-balance-panel">
+      <div class="panel-title">
+        <div>
+          <p class="eyebrow">Game time balance</p>
+          <h3>Available vs selected weekends</h3>
+        </div>
+        <span class="status-pill warn">Coach only</span>
+      </div>
+      <p class="muted">Use this to keep an eye on who has made themselves available and who has actually been picked for weekend fixtures.</p>
+      <div class="stats-table selection-balance-table" role="table" aria-label="Selection balance">
+        <div class="stats-table-header">
+          <span>Player</span>
+          <span>Avail.</span>
+          <span>Picked</span>
+          <span>Waiting</span>
+          <span>This date</span>
+        </div>
+        ${rows.map((row) => `
+          <div class="stats-table-row">
+            <span><strong>${escapeHtml(row.player.name)}</strong><small>${escapeHtml(teamName(row.player.teamId))}</small></span>
+            <span>${row.available}</span>
+            <span>${row.picked}</span>
+            <span>${row.waiting}</span>
+            <span>${row.currentStatus === "available" ? (row.pickedThisDate ? "Picked" : "Available") : statusText(row.currentStatus || "unknown")}</span>
+          </div>
+        `).join("")}
+      </div>
+    </article>
   `;
 }
 
