@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-32";
+const appVersion = "4.0-live-rollout-33";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -39,6 +39,7 @@ const parentRememberKey = "largs-colts-parent-remember";
 const parentEmailKey = "largs-colts-parent-email";
 const visibleSeasonStart = "2026-08-01";
 const resultSeasonStart = "2026-08-22";
+const registerHistoryStart = "2026-08-25";
 
 const coaches = [
   { id: "carl", name: "Carl", teamId: "all", role: "Coach", phone: "07999696043", email: "" },
@@ -2256,6 +2257,15 @@ function isRemovedRegisterEvent(event) {
     || (event?.type === "Training" && dateValue(event.datetime) === "2026-08-18");
 }
 
+function attendanceHasRegisterMarks(event) {
+  const values = Object.values(state.attendance[event.id] || {});
+  return values.some((value) => ["present", "absent", "collected"].includes(value));
+}
+
+function isRegisterHistoryEvent(event) {
+  return isPastEvent(event) && dateValue(event.datetime) >= registerHistoryStart && attendanceHasRegisterMarks(event);
+}
+
 function registerEventsForSession() {
   return visibleEventsForSession(state.events)
     .filter((event) => !isRemovedRegisterEvent(event))
@@ -2264,7 +2274,7 @@ function registerEventsForSession() {
 
 function attendancePeriodTabs(events) {
   const upcomingCount = events.filter((event) => !isPastEvent(event)).length;
-  const pastCount = events.filter(isPastEvent).length;
+  const pastCount = events.filter(isRegisterHistoryEvent).length;
   return `
     <div class="segmented light register-period-tabs">
       <button type="button" class="${state.attendancePeriod !== "past" ? "active" : ""}" data-action="set-attendance-period" data-period="upcoming">Current (${upcomingCount})</button>
@@ -2277,7 +2287,7 @@ function attendanceView() {
   const allRegisterEvents = registerEventsForSession();
   const period = state.attendancePeriod === "past" ? "past" : "upcoming";
   const eventOptions = allRegisterEvents
-    .filter((event) => period === "past" ? isPastEvent(event) : !isPastEvent(event))
+    .filter((event) => period === "past" ? isRegisterHistoryEvent(event) : !isPastEvent(event))
     .sort((a, b) => period === "past" ? eventEndDate(b) - eventEndDate(a) : eventEndDate(a) - eventEndDate(b));
   const event = eventOptions.find((item) => item.id === state.selectedEventId) || eventOptions[0];
   if (event && state.selectedEventId !== event.id) state.selectedEventId = event.id;
@@ -2290,7 +2300,7 @@ function attendanceView() {
       <section class="panel">
         <p class="eyebrow">Register ${period === "past" ? "history" : "current sessions"}</p>
         <h3>No ${period === "past" ? "past" : "current"} sessions to show</h3>
-        <p class="muted">${period === "past" ? "Completed training sessions and matches will move here automatically." : "Upcoming sessions and live matchday registers will appear here."}</p>
+        <p class="muted">${period === "past" ? "Completed sessions move here once a register has actually been taken." : "Upcoming sessions and live matchday registers will appear here."}</p>
       </section>
     `;
   }
@@ -4568,7 +4578,7 @@ document.addEventListener("click", async (event) => {
   if (action === "set-attendance-period") {
     state.attendancePeriod = target.dataset.period === "past" ? "past" : "upcoming";
     const options = registerEventsForSession()
-      .filter((item) => state.attendancePeriod === "past" ? isPastEvent(item) : !isPastEvent(item))
+      .filter((item) => state.attendancePeriod === "past" ? isRegisterHistoryEvent(item) : !isPastEvent(item))
       .sort((a, b) => state.attendancePeriod === "past" ? eventEndDate(b) - eventEndDate(a) : eventEndDate(a) - eventEndDate(b));
     state.selectedEventId = options[0]?.id || "";
     saveState();
