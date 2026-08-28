@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-38";
+const appVersion = "4.0-live-rollout-39";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -1497,15 +1497,21 @@ function parentLoginView() {
         <span>Password</span>
         <input name="passcode" type="password" autocomplete="current-password" minlength="6" required placeholder="Your private password">
       </label>
-      <label class="check-row">
-        <input name="consent" type="checkbox" required>
-        <span>
-          I confirm that I am a parent, guardian, or otherwise authorised to request access for this child.
-          I understand that Largs Colts 2016 will store and use the child's profile information, attendance records, availability status, and app notification data for the legitimate purpose of managing football training, matches, team communication, player welfare, and general team administration.
-          I understand that this information will only be accessible to authorised coaches and team administrators and will not be shared outside the club except where required for football administration or safeguarding purposes.
-          For support or data queries, contact: ${escapeHtml(supportEmail)}.
-        </span>
-      </label>
+      <div class="consent-control">
+        <label class="check-row compact-consent" for="parentConsent">
+          <input id="parentConsent" name="consent" type="checkbox" required>
+          <span>I confirm that I am authorised to request access for my child.</span>
+        </label>
+        <details class="consent-details">
+          <summary>View full consent statement</summary>
+          <div class="privacy-copy">
+            <p>I confirm that I am a parent, guardian, or otherwise authorised to request access for this child.</p>
+            <p>I understand that Largs Colts 2016 will store and use the child's profile information, attendance records, availability status, and app notification data for the legitimate purpose of managing football training, matches, team communication, player welfare, and general team administration.</p>
+            <p>I understand that this information will only be accessible to authorised coaches and team administrators and will not be shared outside the club except where required for football administration or safeguarding purposes.</p>
+            <p>For support or data queries, contact: ${escapeHtml(supportEmail)}.</p>
+          </div>
+        </details>
+      </div>
       <label class="check-row compact-consent">
         <input name="rememberMe" type="checkbox" ${remember ? "checked" : ""}>
         <span>Remember me on this device</span>

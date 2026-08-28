@@ -167,6 +167,7 @@ a {
 }
 
 .auth-form .check-row,
+.auth-form .consent-control,
 .auth-actions {
   grid-column: 1 / -1;
 }
@@ -302,6 +303,47 @@ textarea:focus {
 
 .check-row.compact-consent input {
   margin-top: 0;
+}
+
+.consent-control {
+  display: grid;
+  gap: 8px;
+}
+
+.consent-control .check-row {
+  align-items: center;
+  min-height: 48px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.consent-control .check-row input {
+  flex: 0 0 auto;
+}
+
+.consent-control .check-row span {
+  line-height: 1.35;
+}
+
+.consent-details {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 10px 12px;
+  background: #fff8f6;
+}
+
+.consent-details summary {
+  min-height: 30px;
+  color: var(--red-900);
+  font-weight: 950;
+  cursor: pointer;
+}
+
+.consent-details .privacy-copy {
+  padding-top: 8px;
+  font-size: 0.84rem;
 }
 
 .primary-button,
