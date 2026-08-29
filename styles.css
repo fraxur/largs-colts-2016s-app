@@ -1456,6 +1456,26 @@ button:disabled {
   white-space: nowrap;
 }
 
+.coach-metric-key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  margin: 0 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.coach-metric-key strong,
+.coach-metric-key b {
+  color: var(--red-900);
+}
+
 .coach-metric-tags span.attention {
   background: #fff2d9;
   color: var(--warn);
@@ -1951,15 +1971,22 @@ button:disabled {
 
 .documents-toolbar,
 .document-controls,
-.squad-list-controls {
+.squad-list-controls,
+.squad-toolbar,
+.squad-board-controls {
   align-items: end;
 }
 
 .document-controls,
-.squad-list-controls {
+.squad-list-controls,
+.squad-board-controls {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.squad-board-controls {
+  flex: 1 1 auto;
 }
 
 .document-grid {
