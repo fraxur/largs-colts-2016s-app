@@ -1436,6 +1436,69 @@ button:disabled {
   font-weight: 950;
 }
 
+.coach-metric-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.coach-metric-tags span {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0 8px;
+  background: #eef6ff;
+  color: #1e3a8a;
+  font-size: 0.7rem;
+  font-weight: 950;
+  white-space: nowrap;
+}
+
+.coach-metric-tags span.attention {
+  background: #fff2d9;
+  color: var(--warn);
+}
+
+.coach-player-profile-metrics {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 14px;
+  background: linear-gradient(135deg, #ffffff, #fff8f6);
+}
+
+.profile-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.profile-metric-grid div {
+  display: grid;
+  gap: 5px;
+  min-height: 72px;
+  align-content: center;
+  border-radius: 14px;
+  padding: 10px;
+  background: var(--paper-2);
+}
+
+.profile-metric-grid span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.profile-metric-grid strong {
+  color: var(--red-900);
+  font-size: 1rem;
+  line-height: 1.15;
+}
+
 .person-row {
   display: flex;
   align-items: center;
@@ -2366,6 +2429,7 @@ button:disabled {
   .auth-form,
   .two-col,
   .metric-grid,
+  .profile-metric-grid,
   .mobile-menu-grid,
   .attendance-grid,
   .team-board,

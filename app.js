@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-39";
+const appVersion = "4.0-live-rollout-40";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -181,6 +181,7 @@ const defaultState = {
   attendancePeriod: "upcoming",
   selectedEventId: "e1",
   selectedResultEventId: "",
+  resultDrafts: {},
   awardsTab: "weekly",
   awardTallies: {},
   coachGuide: {
@@ -774,6 +775,7 @@ function normalizeState(saved) {
   if (!resultEvents.some((event) => event.id === merged.selectedResultEventId)) {
     merged.selectedResultEventId = resultEvents[0]?.id || "";
   }
+  merged.resultDrafts = merged.resultDrafts || {};
 
   return merged;
 }
@@ -1204,6 +1206,125 @@ function availabilityCounts(eventId) {
     },
     { available: 0, unavailable: 0, unknown: 0, lifts: 0, liftSeats: 0 },
   );
+}
+
+function currentMonthKey() {
+  const date = new Date();
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function percentValue(value, total) {
+  return total ? Math.round((Number(value || 0) / total) * 100) : 0;
+}
+
+function metricCountLabel(value, total) {
+  return `${value}/${total}${total ? ` (${percentValue(value, total)}%)` : ""}`;
+}
+
+function trainingMetricEvents() {
+  const monthKey = currentMonthKey();
+  return state.events
+    .filter((event) => event.type === "Training"
+      && !isRemovedRegisterEvent(event)
+      && dateValue(event.datetime).startsWith(monthKey)
+      && attendanceHasRegisterMarks(event))
+    .sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
+}
+
+function matchdayHasTracking(dateKey) {
+  const availability = state.availability[dateKey] || {};
+  const hasAvailability = activePlayers().some((player) => {
+    const status = defaultAvailabilityEntry(availability[player.id]).status;
+    return ["available", "unavailable"].includes(status);
+  });
+  const hasSelection = fixturesOnDate(dateKey).some((fixture) => Array.isArray(fixture.selectedPlayerIds) && fixture.selectedPlayerIds.length);
+  return hasAvailability || hasSelection;
+}
+
+function trackedMatchdayDateKeys() {
+  return matchdayDateKeys().filter(matchdayHasTracking);
+}
+
+function playerTrainingMetrics(playerId) {
+  const sessions = trainingMetricEvents();
+  const attended = sessions.filter((event) => ["present", "collected"].includes(state.attendance[event.id]?.[playerId])).length;
+  const absent = sessions.filter((event) => state.attendance[event.id]?.[playerId] === "absent").length;
+  return {
+    total: sessions.length,
+    attended,
+    absent,
+    percent: percentValue(attended, sessions.length),
+  };
+}
+
+function playerMatchAvailabilityMetrics(playerId) {
+  const dateKeys = trackedMatchdayDateKeys();
+  const availableDateKeys = dateKeys.filter((dateKey) => defaultAvailabilityEntry(state.availability[dateKey]?.[playerId]).status === "available");
+  const unavailableDateKeys = dateKeys.filter((dateKey) => defaultAvailabilityEntry(state.availability[dateKey]?.[playerId]).status === "unavailable");
+  const selectedDateKeys = dateKeys.filter((dateKey) => playerPickedOnDate(playerId, dateKey));
+  const selectedWhenAvailable = availableDateKeys.filter((dateKey) => playerPickedOnDate(playerId, dateKey)).length;
+  return {
+    total: dateKeys.length,
+    available: availableDateKeys.length,
+    unavailable: unavailableDateKeys.length,
+    noReply: Math.max(0, dateKeys.length - availableDateKeys.length - unavailableDateKeys.length),
+    selected: selectedDateKeys.length,
+    selectedWhenAvailable,
+    waiting: Math.max(0, availableDateKeys.length - selectedWhenAvailable),
+    availablePercent: percentValue(availableDateKeys.length, dateKeys.length),
+    selectedWhenAvailablePercent: percentValue(selectedWhenAvailable, availableDateKeys.length),
+  };
+}
+
+function coachPlayerMetrics(player) {
+  return {
+    training: playerTrainingMetrics(player.id),
+    match: playerMatchAvailabilityMetrics(player.id),
+  };
+}
+
+function coachPlayerMetricTags(player, mode = "compact") {
+  if (!hasCoachAccess()) return "";
+  const metrics = coachPlayerMetrics(player);
+  const tags = [
+    `Training ${metricCountLabel(metrics.training.attended, metrics.training.total)}`,
+    `Available ${metricCountLabel(metrics.match.available, metrics.match.total)}`,
+    `Picked ${metricCountLabel(metrics.match.selectedWhenAvailable, metrics.match.available)}`,
+  ];
+  if (metrics.match.waiting) tags.push(`${metrics.match.waiting} available unpicked`);
+  return `
+    <div class="coach-metric-tags ${escapeHtml(mode)}">
+      ${tags.map((tag, index) => `<span class="${index === 3 ? "attention" : ""}">${escapeHtml(tag)}</span>`).join("")}
+    </div>
+  `;
+}
+
+function coachPlayerProfileMetrics(player) {
+  if (!hasCoachAccess() || !player) return "";
+  const metrics = coachPlayerMetrics(player);
+  return `
+    <section class="coach-player-profile-metrics">
+      <p class="eyebrow">Coach-only availability profile</p>
+      <div class="profile-metric-grid">
+        <div>
+          <span>Training this month</span>
+          <strong>${metricCountLabel(metrics.training.attended, metrics.training.total)}</strong>
+        </div>
+        <div>
+          <span>Match availability</span>
+          <strong>${metricCountLabel(metrics.match.available, metrics.match.total)}</strong>
+        </div>
+        <div>
+          <span>Selected when available</span>
+          <strong>${metricCountLabel(metrics.match.selectedWhenAvailable, metrics.match.available)}</strong>
+        </div>
+        <div>
+          <span>Available not picked</span>
+          <strong>${metrics.match.waiting}</strong>
+        </div>
+      </div>
+    </section>
+  `;
 }
 
 function messageTimestamp(message) {
@@ -2195,6 +2316,7 @@ function responseRow(event, player) {
       <div>
         <strong>${escapeHtml(player.name)}</strong>
         <p>${teamName(player.teamId)} - ${escapeHtml(player.role)}${selectedFixture ? ` - Picked for ${escapeHtml(selectedFixture.title)}` : ""}${entry.note ? ` - ${escapeHtml(entry.note)}` : ""}</p>
+        ${coachPlayerMetricTags(player, "availability")}
         ${extras.length ? `<div class="availability-tags">${extras.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}
       </div>
       <div class="inline-actions availability-row-actions">
@@ -2238,17 +2360,15 @@ function playerPickedOnDate(playerId, dateKey) {
 
 function selectionBalanceRows(currentEvent) {
   const currentDateKey = availabilityKeyForEvent(currentEvent);
-  const dateKeys = matchdayDateKeys();
   return activePlayers().map((player) => {
-    const availableDates = dateKeys.filter((dateKey) => defaultAvailabilityEntry(state.availability[dateKey]?.[player.id]).status === "available");
-    const pickedDates = dateKeys.filter((dateKey) => playerPickedOnDate(player.id, dateKey));
+    const metrics = playerMatchAvailabilityMetrics(player.id);
     const currentStatus = defaultAvailabilityEntry(state.availability[currentDateKey]?.[player.id]).status;
     const pickedThisDate = playerPickedOnDate(player.id, currentDateKey);
     return {
       player,
-      available: availableDates.length,
-      picked: pickedDates.length,
-      waiting: Math.max(0, availableDates.length - pickedDates.length),
+      available: metrics.available,
+      picked: metrics.selectedWhenAvailable,
+      waiting: metrics.waiting,
       currentStatus,
       pickedThisDate,
     };
@@ -2722,10 +2842,17 @@ function matchStatFor(eventId, playerId) {
   return normalizeMatchStat((state.matchStats || []).find((stat) => stat.eventId === eventId && stat.playerId === playerId) || { eventId, playerId });
 }
 
+function resultDraftValue(eventId, fieldName, fallback = "") {
+  const draft = state.resultDrafts?.[eventId] || {};
+  return Object.prototype.hasOwnProperty.call(draft, fieldName) ? draft[fieldName] : fallback;
+}
+
 function resultStatEntryRow(event, player) {
   const stat = matchStatFor(event.id, player.id);
   const development = developmentFor(player.id);
   const positionText = development.positions.length ? development.positions.join(", ") : "Positions not set";
+  const goalsName = `goals:${player.id}`;
+  const assistsName = `assists:${player.id}`;
   return `
     <div class="stat-entry-row">
       <div>
@@ -2734,11 +2861,11 @@ function resultStatEntryRow(event, player) {
       </div>
       <label class="field">
         <span>Goals</span>
-        <input name="goals:${escapeHtml(player.id)}" type="number" min="0" max="50" inputmode="numeric" value="${stat.goals}">
+        <input name="${escapeHtml(goalsName)}" type="number" min="0" max="50" inputmode="numeric" value="${escapeHtml(resultDraftValue(event.id, goalsName, stat.goals))}">
       </label>
       <label class="field">
         <span>Assists</span>
-        <input name="assists:${escapeHtml(player.id)}" type="number" min="0" max="50" inputmode="numeric" value="${stat.assists}">
+        <input name="${escapeHtml(assistsName)}" type="number" min="0" max="50" inputmode="numeric" value="${escapeHtml(resultDraftValue(event.id, assistsName, stat.assists))}">
       </label>
     </div>
   `;
@@ -2807,16 +2934,16 @@ function resultsView() {
           <div class="score-fields">
             <label class="field">
               <span>Largs score</span>
-              <input name="homeScore" type="number" min="0" max="99" inputmode="numeric" value="${escapeHtml(selected.homeScore ?? "")}" placeholder="0">
+              <input name="homeScore" type="number" min="0" max="99" inputmode="numeric" value="${escapeHtml(resultDraftValue(selected.id, "homeScore", selected.homeScore ?? ""))}" placeholder="0">
             </label>
             <label class="field">
               <span>Opposition score</span>
-              <input name="awayScore" type="number" min="0" max="99" inputmode="numeric" value="${escapeHtml(selected.awayScore ?? "")}" placeholder="0">
+              <input name="awayScore" type="number" min="0" max="99" inputmode="numeric" value="${escapeHtml(resultDraftValue(selected.id, "awayScore", selected.awayScore ?? ""))}" placeholder="0">
             </label>
           </div>
           <label class="field">
             <span>Result notes</span>
-            <input name="resultNotes" value="${escapeHtml(selected.resultNotes || "")}" placeholder="Optional match note">
+            <input name="resultNotes" value="${escapeHtml(resultDraftValue(selected.id, "resultNotes", selected.resultNotes || ""))}" placeholder="Optional match note">
           </label>
           <div class="stats-entry-list">
             ${players.length ? players.map((player) => resultStatEntryRow(selected, player)).join("") : '<p class="muted">No players are currently available for this fixture.</p>'}
@@ -2876,6 +3003,7 @@ function teamColumn(team) {
               <strong>${escapeHtml(player.name)}</strong>
               <p>${escapeHtml(player.role)}</p>
               ${hasCoachAccess() ? `<p>${escapeHtml(player.parentName)} - ${escapeHtml(player.parentPhone)}</p>` : ""}
+              ${coachPlayerMetricTags(player, "squad")}
             </div>
             ${hasCoachAccess() ? `
               <div class="inline-actions">
@@ -3160,6 +3288,7 @@ function developmentCard(player) {
           </div>
           <span class="level-pill ${developmentClass(record)}">${escapeHtml(developmentLabel(record))}</span>
         </div>
+        ${coachPlayerMetricTags(player, "development")}
         <div class="development-fields">
           <label class="field">
             <span>Level</span>
@@ -4559,6 +4688,7 @@ function editPlayerModal(playerId) {
       <label class="field"><span>Role</span><input name="role" required value="${escapeHtml(player?.role || "Player")}"></label>
       <label class="field"><span>Parent name</span><input name="parentName" required value="${escapeHtml(player?.parentName || placeholderParent)}"></label>
       <label class="field"><span>Parent phone</span><input name="parentPhone" required value="${escapeHtml(player?.parentPhone || placeholderPhone)}"></label>
+      ${coachPlayerProfileMetrics(player)}
       <button class="primary-button" type="submit">Save player</button>
     </form>
   `;
@@ -5221,6 +5351,17 @@ document.addEventListener("change", async (event) => {
 
 document.addEventListener("input", (event) => {
   const target = event.target;
+  const matchStatsForm = target.closest?.('[data-form="match-stats"]');
+  if (matchStatsForm && target.name) {
+    const eventId = matchStatsForm.elements.eventId?.value || state.selectedResultEventId;
+    if (!eventId) return;
+    state.resultDrafts = state.resultDrafts || {};
+    state.resultDrafts[eventId] = {
+      ...(state.resultDrafts[eventId] || {}),
+      [target.name]: target.value,
+    };
+    return;
+  }
   if (target.dataset.action === "availability-note") {
     const child = currentPlayer();
     if (!child) return;
@@ -6018,6 +6159,7 @@ async function saveMatchStats(data) {
   state.events[eventIndex] = updatedEvent;
   state.matchStats = sortMatchStats(nextStats);
   state.selectedResultEventId = eventId;
+  if (state.resultDrafts) delete state.resultDrafts[eventId];
   saveState();
   render();
   toast("Result and player stats saved");
