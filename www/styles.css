@@ -1405,6 +1405,11 @@ button:disabled {
   margin: 0;
 }
 
+.availability-status-field {
+  min-width: min(100%, 150px);
+  margin: 0;
+}
+
 .fixture-lift-group {
   display: grid;
   gap: 8px;

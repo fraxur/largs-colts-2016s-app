@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-41";
+const appVersion = "4.0-live-rollout-42";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -2361,10 +2361,25 @@ function responseRow(event, player) {
         ${extras.length ? `<div class="availability-tags">${extras.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}
       </div>
       <div class="inline-actions availability-row-actions">
+        ${hasCoachAccess() ? coachAvailabilityControl(entry, player) : ""}
         ${hasCoachAccess() ? fixtureAllocationControl(event, player) : ""}
         <span class="status-pill ${statusClass(entry.status)}">${statusText(entry.status)}</span>
       </div>
     </div>
+  `;
+}
+
+function coachAvailabilityControl(entry, player) {
+  const current = defaultAvailabilityEntry(entry).status;
+  return `
+    <label class="field compact-field availability-status-field">
+      <span>Response</span>
+      <select data-action="set-coach-availability-status" data-player-id="${escapeHtml(player.id)}">
+        <option value="unknown" ${current === "unknown" ? "selected" : ""}>No reply</option>
+        <option value="available" ${current === "available" ? "selected" : ""}>Available</option>
+        <option value="unavailable" ${current === "unavailable" ? "selected" : ""}>Unavailable</option>
+      </select>
+    </label>
   `;
 }
 
@@ -5512,6 +5527,10 @@ document.addEventListener("change", async (event) => {
     await assignPlayerToFixture(target.dataset.playerId, target.value || "");
     return;
   }
+  if (target.dataset.action === "set-coach-availability-status") {
+    await saveCoachAvailability(target.dataset.playerId, target.value || "unknown");
+    return;
+  }
   if (["lift-offer", "lift-seats"].includes(target.dataset.action)) {
     const child = currentPlayer();
     if (!child) return;
@@ -6092,7 +6111,7 @@ async function saveLiftOfferForAvailability(playerId, event, entry) {
   ];
 }
 
-async function assignPlayerToFixture(playerId, fixtureId) {
+async function assignPlayerToFixture(playerId, fixtureId, options = {}) {
   if (!requireCoach() || !playerId) return;
   const event = state.events.find((item) => item.id === state.selectedEventId) || state.events[0];
   const fixtures = eventsForAvailabilityDate(event);
@@ -6115,8 +6134,58 @@ async function assignPlayerToFixture(playerId, fixtureId) {
   await Promise.all(changedFixtures.map((fixture) => saveLiveDocument("events", fixture.id, fixture)));
   state.events = state.events.map((item) => changedFixtures.find((fixture) => fixture.id === item.id) || item);
   saveState();
+  if (options.render !== false) render();
+  if (options.toast !== false) toast(fixtureId ? "Player picked for fixture" : "Player removed from fixture");
+}
+
+async function saveCoachAvailability(playerId, status) {
+  if (!requireCoach() || !playerId) return;
+  const event = state.events.find((item) => item.id === state.selectedEventId) || state.events[0];
+  const availabilityKey = availabilityKeyForEvent(event);
+  if (!event || !availabilityKey) return;
+
+  state.availability[availabilityKey] = state.availability[availabilityKey] || {};
+  const previous = availabilityEntry(event, playerId);
+  const next = {
+    ...previous,
+    status: ["available", "unavailable", "unknown"].includes(status) ? status : "unknown",
+  };
+  if (next.status !== "available") {
+    next.liftOffer = false;
+    next.liftSeats = 0;
+    next.liftFrom = "";
+  }
+
+  state.availability[availabilityKey][playerId] = next;
+  try {
+    await saveAvailability(playerId);
+    if (next.status !== "available") {
+      await assignPlayerToFixture(playerId, "", { render: false, toast: false });
+      await deactivateLiftOfferForCoach(playerId, event);
+    }
+  } catch {
+    state.availability[availabilityKey][playerId] = previous;
+    render();
+    return;
+  }
+  saveState();
   render();
-  toast(fixtureId ? "Player picked for fixture" : "Player removed from fixture");
+  toast("Availability response saved");
+}
+
+async function deactivateLiftOfferForCoach(playerId, event) {
+  if (!hasCoachAccess() || !event) return;
+  const dateKey = availabilityKeyForEvent(event);
+  const existing = state.liftOffers.find((offer) => offer.dateKey === dateKey && offer.playerId === playerId);
+  if (!existing || existing.status !== "active") return;
+  const record = {
+    ...existing,
+    liftSeats: 0,
+    liftFrom: "",
+    status: "inactive",
+  };
+  await saveLiveDocument("liftOffers", record.id || liftOfferId(dateKey, playerId), record);
+  state.liftOffers = state.liftOffers.map((offer) => offer.id === record.id ? record : offer);
 }
 
 function eventTitle(type, teamId, opponent, venueId) {
