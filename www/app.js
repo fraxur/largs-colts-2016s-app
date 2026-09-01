@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-42";
+const appVersion = "4.0-live-rollout-44";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -217,7 +217,7 @@ const defaultState = {
   squadListSort: "name",
   squadListPositionFilter: "all",
   squadPlayerFilter: "all",
-  squadPlayerSort: "name",
+  squadPlayerSort: "selection-priority",
   squadAvailabilityDateKey: "",
   squadBuilder: {
     format: "7",
@@ -760,8 +760,8 @@ function normalizeState(saved) {
   if (!["all", "available-date", "available-unpicked-date", "picked-date", "trained-month", "missed-training-month", "waiting-selection"].includes(merged.squadPlayerFilter)) {
     merged.squadPlayerFilter = "all";
   }
-  if (!["name", "training-high", "training-low", "availability-high", "picked-low", "waiting-high"].includes(merged.squadPlayerSort)) {
-    merged.squadPlayerSort = "name";
+  if (!["name", "selection-priority", "training-high", "training-low", "availability-high", "picked-low", "waiting-high"].includes(merged.squadPlayerSort)) {
+    merged.squadPlayerSort = "selection-priority";
   }
   merged.squadAvailabilityDateKey = merged.squadAvailabilityDateKey || "";
 
@@ -1218,11 +1218,6 @@ function availabilityCounts(eventId) {
   );
 }
 
-function currentMonthKey() {
-  const date = new Date();
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
-}
-
 function percentValue(value, total) {
   return total ? Math.round((Number(value || 0) / total) * 100) : 0;
 }
@@ -1236,12 +1231,20 @@ function dateKeysToText(dateKeys = []) {
   return dateKeys.map((dateKey) => formatDateOnly(`${dateKey}T12:00:00`)).join(", ");
 }
 
+function registerHistoryStartLabel() {
+  return formatDateOnly(`${registerHistoryStart}T12:00:00`);
+}
+
+function isPastMatchdayDateKey(dateKey) {
+  const date = new Date(`${dateKey}T23:59:59`);
+  return !Number.isNaN(date.getTime()) && date < startOfToday();
+}
+
 function trainingMetricEvents() {
-  const monthKey = currentMonthKey();
   return state.events
     .filter((event) => event.type === "Training"
       && !isRemovedRegisterEvent(event)
-      && dateValue(event.datetime).startsWith(monthKey)
+      && dateValue(event.datetime) >= registerHistoryStart
       && attendanceHasRegisterMarks(event))
     .sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
 }
@@ -1281,7 +1284,7 @@ function playerMatchAvailabilityMetrics(playerId) {
   const unavailableDateKeys = dateKeys.filter((dateKey) => defaultAvailabilityEntry(state.availability[dateKey]?.[playerId]).status === "unavailable");
   const selectedDateKeys = dateKeys.filter((dateKey) => playerPickedOnDate(playerId, dateKey));
   const selectedWhenAvailableDateKeys = availableDateKeys.filter((dateKey) => playerPickedOnDate(playerId, dateKey));
-  const availableUnpickedDateKeys = availableDateKeys.filter((dateKey) => !playerPickedOnDate(playerId, dateKey));
+  const availableUnpickedDateKeys = availableDateKeys.filter((dateKey) => isPastMatchdayDateKey(dateKey) && !playerPickedOnDate(playerId, dateKey));
   return {
     total: dateKeys.length,
     available: availableDateKeys.length,
@@ -1301,20 +1304,99 @@ function playerMatchAvailabilityMetrics(playerId) {
   };
 }
 
+function playerSelectedMatchAttendanceMetrics(playerId) {
+  const selectedFixtures = resultFixtureEvents().filter((event) => Array.isArray(event.selectedPlayerIds) && event.selectedPlayerIds.includes(playerId));
+  const markedFixtures = selectedFixtures.filter((event) => ["present", "collected", "absent"].includes(state.attendance[event.id]?.[playerId]));
+  const attendedFixtures = markedFixtures.filter((event) => ["present", "collected"].includes(state.attendance[event.id]?.[playerId]));
+  const absentFixtures = markedFixtures.filter((event) => state.attendance[event.id]?.[playerId] === "absent");
+  return {
+    total: markedFixtures.length,
+    attended: attendedFixtures.length,
+    absent: absentFixtures.length,
+    selectedDateKeys: selectedFixtures.map((event) => dateValue(event.datetime)).filter(Boolean),
+    markedDateKeys: markedFixtures.map((event) => dateValue(event.datetime)).filter(Boolean),
+    attendedDateKeys: attendedFixtures.map((event) => dateValue(event.datetime)).filter(Boolean),
+    absentDateKeys: absentFixtures.map((event) => dateValue(event.datetime)).filter(Boolean),
+    percent: percentValue(attendedFixtures.length, markedFixtures.length),
+  };
+}
+
+function selectionPriorityForPlayer(player, dateKey = selectedSquadAvailabilityDateKey()) {
+  const training = playerTrainingMetrics(player.id);
+  const match = playerMatchAvailabilityMetrics(player.id);
+  const matchAttendance = playerSelectedMatchAttendanceMetrics(player.id);
+  const currentStatus = dateKey ? defaultAvailabilityEntry(state.availability[dateKey]?.[player.id]).status : "available";
+  const currentAvailabilityPercent = dateKey
+    ? currentStatus === "available"
+      ? 100
+      : currentStatus === "unavailable"
+        ? 0
+        : 35
+    : 100;
+  const trainingPercent = training.total ? training.percent : 100;
+  const availabilityPercent = match.total ? match.availablePercent : 100;
+  const matchAttendancePercent = matchAttendance.total ? matchAttendance.percent : 100;
+  const fairnessPercent = match.available ? percentValue(match.waiting, match.available) : 0;
+  const rawScore = Math.round(
+    currentAvailabilityPercent * 0.3
+    + trainingPercent * 0.25
+    + availabilityPercent * 0.15
+    + matchAttendancePercent * 0.15
+    + fairnessPercent * 0.15,
+  );
+  const cappedScore = dateKey && currentStatus === "unavailable"
+    ? Math.min(rawScore, 20)
+    : dateKey && currentStatus === "unknown"
+      ? Math.min(rawScore, 45)
+      : rawScore;
+  const currentStatusRank = currentStatus === "available" ? 2 : currentStatus === "unknown" ? 1 : 0;
+  return {
+    score: Math.max(0, Math.min(100, cappedScore)),
+    currentStatusRank,
+    currentStatus,
+    training,
+    match,
+    matchAttendance,
+    currentAvailabilityPercent,
+    trainingPercent,
+    availabilityPercent,
+    matchAttendancePercent,
+    fairnessPercent,
+    dateKey,
+  };
+}
+
+function selectionPriorityTitle(priority) {
+  const dateText = priority.dateKey ? formatDateOnly(`${priority.dateKey}T12:00`) : "the selected weekend";
+  return [
+    `Priority ${priority.score}/100 for ${dateText}. Higher means a stronger selection case.`,
+    `Current response: ${statusText(priority.currentStatus)}. It weighs current availability, season training attendance, match availability, turning up when picked, and fairness for past available unpicked weekends.`,
+    `Training: ${priority.training.attended} of ${priority.training.total}. Available: ${priority.match.available} of ${priority.match.total}. Picked when available: ${priority.match.selectedWhenAvailable} of ${priority.match.available}.`,
+    `Past weekends available but not selected: ${dateKeysToText(priority.match.availableUnpickedDateKeys)}.`,
+  ].join(" ");
+}
+
 function coachPlayerMetrics(player) {
   return {
     training: playerTrainingMetrics(player.id),
     match: playerMatchAvailabilityMetrics(player.id),
+    matchAttendance: playerSelectedMatchAttendanceMetrics(player.id),
   };
 }
 
-function coachPlayerMetricTags(player, mode = "compact") {
+function coachPlayerMetricTags(player, mode = "compact", dateKey = selectedSquadAvailabilityDateKey()) {
   if (!hasCoachAccess()) return "";
   const metrics = coachPlayerMetrics(player);
+  const priority = selectionPriorityForPlayer(player, dateKey);
   const tags = [
     {
+      label: `Priority ${priority.score}/100`,
+      title: selectionPriorityTitle(priority),
+      className: "priority",
+    },
+    {
       label: `Trained ${metrics.training.attended} of ${metrics.training.total}`,
-      title: `Training this month with a saved register. Attended: ${dateKeysToText(metrics.training.attendedDateKeys)}. Marked absent: ${dateKeysToText(metrics.training.absentDateKeys)}.`,
+      title: `Training season so far from ${registerHistoryStartLabel()} with a saved register. Attended: ${dateKeysToText(metrics.training.attendedDateKeys)}. Marked absent: ${dateKeysToText(metrics.training.absentDateKeys)}.`,
     },
     {
       label: `Available ${metrics.match.available} of ${metrics.match.total} weekends`,
@@ -1322,13 +1404,13 @@ function coachPlayerMetricTags(player, mode = "compact") {
     },
     {
       label: `Picked ${metrics.match.selectedWhenAvailable} of ${metrics.match.available} available`,
-      title: `Selected after saying available: ${dateKeysToText(metrics.match.selectedWhenAvailableDateKeys)}. Available but not selected: ${dateKeysToText(metrics.match.availableUnpickedDateKeys)}.`,
+      title: `Selected after saying available: ${dateKeysToText(metrics.match.selectedWhenAvailableDateKeys)}. Past weekends available but not selected: ${dateKeysToText(metrics.match.availableUnpickedDateKeys)}.`,
     },
   ];
   if (metrics.match.waiting) {
     tags.push({
-      label: `${metrics.match.waiting} available unpicked`,
-      title: `They said they were available but were not selected on: ${dateKeysToText(metrics.match.availableUnpickedDateKeys)}.`,
+      label: `${metrics.match.waiting} past unpicked`,
+      title: `Past weekends where they said they were available but were not selected: ${dateKeysToText(metrics.match.availableUnpickedDateKeys)}.`,
       className: "attention",
     });
   }
@@ -1342,13 +1424,22 @@ function coachPlayerMetricTags(player, mode = "compact") {
 function coachPlayerProfileMetrics(player) {
   if (!hasCoachAccess() || !player) return "";
   const metrics = coachPlayerMetrics(player);
+  const priority = selectionPriorityForPlayer(player);
   return `
     <section class="coach-player-profile-metrics">
       <p class="eyebrow">Coach-only availability profile</p>
       <div class="profile-metric-grid">
+        <div title="${escapeHtml(selectionPriorityTitle(priority))}">
+          <span>Selection priority</span>
+          <strong>${priority.score}/100</strong>
+        </div>
         <div>
-          <span>Training this month</span>
+          <span>Training season</span>
           <strong>Trained ${metrics.training.attended} of ${metrics.training.total}</strong>
+        </div>
+        <div>
+          <span>Match turn-up</span>
+          <strong>${metrics.matchAttendance.total ? `Turned up ${metrics.matchAttendance.attended} of ${metrics.matchAttendance.total}` : "No match registers"}</strong>
         </div>
         <div>
           <span>Match availability</span>
@@ -1596,6 +1687,16 @@ function render() {
   }
   bindFormDefaults();
   highlightCoachGuideTarget();
+  keepActiveBottomNavVisible();
+}
+
+function keepActiveBottomNavVisible() {
+  const nav = document.querySelector(".bottom-nav");
+  const active = nav?.querySelector(".nav-link.active");
+  if (!nav || !active) return;
+  requestAnimationFrame(() => {
+    active.scrollIntoView({ block: "nearest", inline: "center" });
+  });
 }
 
 function loadingView() {
@@ -2257,6 +2358,7 @@ function availabilityFixtureSummary(event) {
       .filter((player) => availabilityEntry(event, player.id).status === "available")
       .map((player) => player.id)
   );
+  const showPastUnpicked = isPastMatchdayDateKey(availabilityKeyForEvent(event));
   const unpickedCount = [...availablePlayerIds].filter((playerId) => !selectedPlayerIds.has(playerId)).length;
   return `
     <div class="availability-fixture-list">
@@ -2264,7 +2366,7 @@ function availabilityFixtureSummary(event) {
         const selectedCount = Array.isArray(fixture.selectedPlayerIds) ? fixture.selectedPlayerIds.length : 0;
         return `<span>${escapeHtml(fixture.title)}${hasCoachAccess() || selectedCount ? ` - ${selectedCount} picked` : ""}</span>`;
       }).join("")}
-      ${hasCoachAccess() ? `<span class="attention">${unpickedCount} available unpicked</span>` : ""}
+      ${hasCoachAccess() && showPastUnpicked ? `<span class="attention">${unpickedCount} available unpicked</span>` : ""}
     </div>
   `;
 }
@@ -2346,6 +2448,7 @@ function availabilityExtras(entry) {
 function responseRow(event, player) {
   const entry = availabilityEntry(event, player.id);
   const selectedFixture = selectedFixtureForPlayer(event, player.id);
+  const dateKey = availabilityKeyForEvent(event);
   const extras = [];
   if (entry.liftOffer) {
     const seatCount = Number(entry.liftSeats || 0);
@@ -2357,7 +2460,7 @@ function responseRow(event, player) {
       <div>
         <strong>${escapeHtml(player.name)}</strong>
         <p>${teamName(player.teamId)} - ${escapeHtml(player.role)}${selectedFixture ? ` - Picked for ${escapeHtml(selectedFixture.title)}` : ""}${entry.note ? ` - ${escapeHtml(entry.note)}` : ""}</p>
-        ${coachPlayerMetricTags(player, "availability")}
+        ${coachPlayerMetricTags(player, "availability", dateKey)}
         ${extras.length ? `<div class="availability-tags">${extras.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}
       </div>
       <div class="inline-actions availability-row-actions">
@@ -2418,17 +2521,19 @@ function selectionBalanceRows(currentEvent) {
   const currentDateKey = availabilityKeyForEvent(currentEvent);
   return activePlayers().map((player) => {
     const metrics = playerMatchAvailabilityMetrics(player.id);
+    const priority = selectionPriorityForPlayer(player, currentDateKey);
     const currentStatus = defaultAvailabilityEntry(state.availability[currentDateKey]?.[player.id]).status;
     const pickedThisDate = playerPickedOnDate(player.id, currentDateKey);
     return {
       player,
+      priority,
       available: metrics.available,
       picked: metrics.selectedWhenAvailable,
       waiting: metrics.waiting,
       currentStatus,
       pickedThisDate,
     };
-  }).sort((a, b) => b.waiting - a.waiting || a.picked - b.picked || a.player.name.localeCompare(b.player.name));
+  }).sort((a, b) => b.priority.currentStatusRank - a.priority.currentStatusRank || b.priority.score - a.priority.score || b.waiting - a.waiting || a.picked - b.picked || a.player.name.localeCompare(b.player.name));
 }
 
 function selectionBalancePanel(event) {
@@ -2446,6 +2551,7 @@ function selectionBalancePanel(event) {
       <div class="stats-table selection-balance-table" role="table" aria-label="Selection balance">
         <div class="stats-table-header">
           <span>Player</span>
+          <span>Priority</span>
           <span>Avail.</span>
           <span>Picked</span>
           <span>Waiting</span>
@@ -2454,6 +2560,7 @@ function selectionBalancePanel(event) {
         ${rows.map((row) => `
           <div class="stats-table-row">
             <span><strong>${escapeHtml(row.player.name)}</strong><small>${escapeHtml(teamName(row.player.teamId))}</small></span>
+            <span title="${escapeHtml(selectionPriorityTitle(row.priority))}">${row.priority.score}/100</span>
             <span>${row.available}</span>
             <span>${row.picked}</span>
             <span>${row.waiting}</span>
@@ -2470,10 +2577,11 @@ function coachMetricKey() {
   return `
     <section class="coach-metric-key" aria-label="Player number key">
       <strong>Player number key</strong>
-      <span><b>Trained</b> means training sessions attended this month.</span>
+      <span><b>Trained</b> means training sessions attended since ${registerHistoryStartLabel()}.</span>
       <span><b>Available</b> means weekends they said yes to matches.</span>
       <span><b>Picked</b> means selected on weekends they were available.</span>
-      <span><b>Unpicked</b> means available but not selected.</span>
+      <span><b>Unpicked</b> means available but not selected on past weekends only.</span>
+      <span><b>Priority</b> ranks players for selection using current availability, season training, match availability, turning up when picked, and fairness for past available unpicked weekends.</span>
     </section>
   `;
 }
@@ -2697,7 +2805,7 @@ function attendanceCard(event, player) {
       <div class="panel-title">
         <div>
           <h3>${escapeHtml(player.name)}</h3>
-          <p>${teamName(player.teamId)} - ${attendancePercent(player.id)}% this month</p>
+          <p>${teamName(player.teamId)} - ${attendancePercent(player.id)}% season</p>
         </div>
         <span class="status-pill ${statusClass(value)}">${statusText(value)}</span>
       </div>
@@ -3006,11 +3114,20 @@ function squadFilterMatches(player, dateKey) {
   return true;
 }
 
-function squadSortPlayers(players) {
-  const sortMode = state.squadPlayerSort || "name";
+function squadSortPlayers(players, dateKey = selectedSquadAvailabilityDateKey()) {
+  const sortMode = state.squadPlayerSort || "selection-priority";
   return [...players].sort((a, b) => {
     const aMetrics = coachPlayerMetrics(a);
     const bMetrics = coachPlayerMetrics(b);
+    if (sortMode === "selection-priority") {
+      const aPriority = selectionPriorityForPlayer(a, dateKey);
+      const bPriority = selectionPriorityForPlayer(b, dateKey);
+      return bPriority.currentStatusRank - aPriority.currentStatusRank
+        || bPriority.score - aPriority.score
+        || bPriority.match.waiting - aPriority.match.waiting
+        || bMetrics.training.percent - aMetrics.training.percent
+        || a.name.localeCompare(b.name);
+    }
     if (sortMode === "training-high") return bMetrics.training.percent - aMetrics.training.percent || a.name.localeCompare(b.name);
     if (sortMode === "training-low") return aMetrics.training.percent - bMetrics.training.percent || a.name.localeCompare(b.name);
     if (sortMode === "availability-high") return bMetrics.match.availablePercent - aMetrics.match.availablePercent || a.name.localeCompare(b.name);
@@ -3033,7 +3150,7 @@ function squadPlayersForTeam(team) {
   const players = activePlayers()
     .filter((player) => normalizeTeamId(player.teamId) === team.id)
     .filter((player) => !hasCoachAccess() || squadFilterMatches(player, dateKey));
-  return squadSortPlayers(players);
+  return squadSortPlayers(players, dateKey);
 }
 
 function squadBoardControls() {
@@ -3041,7 +3158,7 @@ function squadBoardControls() {
   const dateOptions = squadAvailabilityDateOptions();
   const selectedDateKey = selectedSquadAvailabilityDateKey();
   const filter = state.squadPlayerFilter || "all";
-  const sort = state.squadPlayerSort || "name";
+  const sort = state.squadPlayerSort || "selection-priority";
   return `
     <div class="squad-board-controls">
       <label class="field compact-field">
@@ -3057,20 +3174,21 @@ function squadBoardControls() {
           <option value="available-date" ${filter === "available-date" ? "selected" : ""}>Available this weekend</option>
           <option value="available-unpicked-date" ${filter === "available-unpicked-date" ? "selected" : ""}>Available but not picked</option>
           <option value="picked-date" ${filter === "picked-date" ? "selected" : ""}>Picked this weekend</option>
-          <option value="trained-month" ${filter === "trained-month" ? "selected" : ""}>Trained this month</option>
-          <option value="missed-training-month" ${filter === "missed-training-month" ? "selected" : ""}>No training this month</option>
-          <option value="waiting-selection" ${filter === "waiting-selection" ? "selected" : ""}>Has available unpicked dates</option>
+          <option value="trained-month" ${filter === "trained-month" ? "selected" : ""}>Trained this season</option>
+          <option value="missed-training-month" ${filter === "missed-training-month" ? "selected" : ""}>No training this season</option>
+          <option value="waiting-selection" ${filter === "waiting-selection" ? "selected" : ""}>Past available unpicked</option>
         </select>
       </label>
       <label class="field compact-field">
         <span>Sort</span>
         <select data-action="set-squad-player-sort">
+          <option value="selection-priority" ${sort === "selection-priority" ? "selected" : ""}>Selection priority</option>
           <option value="name" ${sort === "name" ? "selected" : ""}>Name A-Z</option>
           <option value="training-high" ${sort === "training-high" ? "selected" : ""}>Training highest first</option>
           <option value="training-low" ${sort === "training-low" ? "selected" : ""}>Training lowest first</option>
           <option value="availability-high" ${sort === "availability-high" ? "selected" : ""}>Availability highest first</option>
           <option value="picked-low" ${sort === "picked-low" ? "selected" : ""}>Picked least often first</option>
-          <option value="waiting-high" ${sort === "waiting-high" ? "selected" : ""}>Most available unpicked</option>
+          <option value="waiting-high" ${sort === "waiting-high" ? "selected" : ""}>Most past available unpicked</option>
         </select>
       </label>
     </div>
@@ -3174,6 +3292,7 @@ function squadsView() {
 
 function teamColumn(team) {
   const totalPlayers = activePlayers().filter((player) => normalizeTeamId(player.teamId) === team.id).length;
+  const dateKey = selectedSquadAvailabilityDateKey();
   const players = hasCoachAccess()
     ? squadPlayersForTeam(team)
     : activePlayers().filter((player) => normalizeTeamId(player.teamId) === team.id);
@@ -3193,7 +3312,7 @@ function teamColumn(team) {
               <strong>${escapeHtml(player.name)}</strong>
               <p>${escapeHtml(player.role)}</p>
               ${hasCoachAccess() ? `<p>${escapeHtml(player.parentName)} - ${escapeHtml(player.parentPhone)}</p>` : ""}
-              ${coachPlayerMetricTags(player, "squad")}
+              ${coachPlayerMetricTags(player, "squad", dateKey)}
             </div>
             ${hasCoachAccess() ? `
               <div class="inline-actions">
@@ -5518,7 +5637,7 @@ document.addEventListener("change", async (event) => {
     return;
   }
   if (target.dataset.action === "set-squad-player-sort") {
-    state.squadPlayerSort = target.value || "name";
+    state.squadPlayerSort = target.value || "selection-priority";
     saveState();
     render();
     return;
