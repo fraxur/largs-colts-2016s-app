@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-45";
+const appVersion = "4.0-live-rollout-46";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -5031,9 +5031,9 @@ function playerModal() {
     <form class="stacked-form" data-form="player">
       <label class="field"><span>Name</span><input name="name" required placeholder="Player name"></label>
       <label class="field"><span>Team</span><select name="teamId">${playerTeamOptions().map((team) => `<option value="${team.id}" ${team.id === "unassigned" ? "selected" : ""}>${team.name}</option>`).join("")}</select></label>
-      <label class="field"><span>Role</span><input name="role" required placeholder="Player"></label>
-      <label class="field"><span>Parent name</span><input name="parentName" required placeholder="Parent Placeholder"></label>
-      <label class="field"><span>Parent phone</span><input name="parentPhone" required placeholder="07000 000000"></label>
+      <label class="field"><span>Position</span><input name="role" placeholder="Unassigned"></label>
+      <label class="field"><span>Parent name</span><input name="parentName" placeholder="Can be added later"></label>
+      <label class="field"><span>Parent phone</span><input name="parentPhone" placeholder="Can be added later"></label>
       <button class="primary-button" type="submit">Add player</button>
     </form>
   `;
@@ -5061,9 +5061,9 @@ function editPlayerModal(playerId) {
       <input type="hidden" name="playerId" value="${escapeHtml(playerId)}">
       <label class="field"><span>Name</span><input name="name" required value="${escapeHtml(player?.name || "")}"></label>
       <label class="field"><span>Team</span><select name="teamId">${playerTeamOptions().map((team) => `<option value="${team.id}" ${team.id === normalizeTeamId(player?.teamId) ? "selected" : ""}>${team.name}</option>`).join("")}</select></label>
-      <label class="field"><span>Role</span><input name="role" required value="${escapeHtml(player?.role || "Player")}"></label>
-      <label class="field"><span>Parent name</span><input name="parentName" required value="${escapeHtml(player?.parentName || placeholderParent)}"></label>
-      <label class="field"><span>Parent phone</span><input name="parentPhone" required value="${escapeHtml(player?.parentPhone || placeholderPhone)}"></label>
+      <label class="field"><span>Position</span><input name="role" value="${escapeHtml(player?.role || "Unassigned")}"></label>
+      <label class="field"><span>Parent name</span><input name="parentName" value="${escapeHtml(player?.parentName || placeholderParent)}"></label>
+      <label class="field"><span>Parent phone</span><input name="parentPhone" value="${escapeHtml(player?.parentPhone || placeholderPhone)}"></label>
       ${coachPlayerProfileMetrics(player)}
       <button class="primary-button" type="submit">Save player</button>
     </form>
@@ -6989,19 +6989,33 @@ async function deleteCoachDocument(documentId) {
 
 async function addPlayer(data) {
   if (!requireCoach()) return;
+  const playerId = uid("player");
+  const playerName = String(data.get("name") || "").trim();
+  const teamId = normalizeTeamId(data.get("teamId"));
   const player = {
-    id: uid("player"),
-    name: data.get("name"),
-    teamId: normalizeTeamId(data.get("teamId")),
-    role: data.get("role"),
-    parentName: data.get("parentName"),
-    parentPhone: data.get("parentPhone"),
+    id: playerId,
+    name: playerName,
+    teamId,
+    role: String(data.get("role") || "").trim() || "Unassigned",
+    parentName: String(data.get("parentName") || "").trim() || placeholderParent,
+    parentPhone: String(data.get("parentPhone") || "").trim() || placeholderPhone,
     status: "active",
   };
   await saveLiveDocument("players", player.id, player);
+  const development = {
+    ...defaultDevelopmentRecord(player.id, {}),
+    playerName,
+    teamId,
+    reviewedBy: "",
+    reviewedByName: "",
+  };
+  await saveLiveDocument("playerDevelopment", player.id, development);
   state.players.push(player);
+  state.playerDevelopment[player.id] = development;
   state.events.forEach((event) => {
     if (event.teamId === "all" || normalizeTeamId(event.teamId) === normalizeTeamId(player.teamId)) {
+      state.availability[event.id] = state.availability[event.id] || {};
+      state.attendance[event.id] = state.attendance[event.id] || {};
       state.availability[event.id][player.id] = defaultAvailabilityEntry();
       state.attendance[event.id][player.id] = "unknown";
     }
@@ -7027,11 +7041,11 @@ async function editPlayer(data) {
   if (!player) return;
   const updated = {
     ...player,
-    name: data.get("name"),
+    name: String(data.get("name") || "").trim(),
     teamId: normalizeTeamId(data.get("teamId")),
-    role: data.get("role"),
-    parentName: data.get("parentName"),
-    parentPhone: data.get("parentPhone"),
+    role: String(data.get("role") || "").trim() || "Unassigned",
+    parentName: String(data.get("parentName") || "").trim() || placeholderParent,
+    parentPhone: String(data.get("parentPhone") || "").trim() || placeholderPhone,
   };
   await saveLiveDocument("players", player.id, updated);
   Object.assign(player, updated);
