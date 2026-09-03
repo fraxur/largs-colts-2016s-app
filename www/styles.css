@@ -160,6 +160,7 @@ a {
 .stacked-form {
   display: grid;
   gap: 14px;
+  touch-action: pan-y;
 }
 
 .auth-form {
@@ -289,8 +290,8 @@ textarea:focus {
 }
 
 .check-row input {
-  width: 18px;
-  height: 18px;
+  width: 22px;
+  height: 22px;
   margin-top: 2px;
   accent-color: var(--red-700);
 }

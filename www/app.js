@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-44";
+const appVersion = "4.0-live-rollout-45";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -26,6 +26,8 @@ let builderArrowDraft = null;
 let whiteboardSyncTimer = null;
 let applyingLiveWhiteboard = false;
 let suppressBuilderClickUntil = 0;
+let formScrollGesture = null;
+const transientFormDrafts = new Map();
 
 const unassignedTeam = { id: "unassigned", name: "Unassigned", colour: "#6b7280" };
 const teams = [
@@ -794,6 +796,69 @@ function saveState() {}
 
 function $(selector, root = document) {
   return root.querySelector(selector);
+}
+
+function formDraftKey(form) {
+  if (!form?.dataset?.form) return "";
+  const parts = [state?.route || "auth", form.dataset.form];
+  ["eventId", "playerId", "coachId", "venueId", "slotId"].forEach((name) => {
+    const field = form.elements?.[name];
+    const value = field && !field.length ? field.value : "";
+    if (value) parts.push(`${name}:${value}`);
+  });
+  if (state?.modal?.type) parts.push(`modal:${state.modal.type}`);
+  return parts.join("|");
+}
+
+function formDraftControls(form) {
+  return [...(form?.elements || [])].filter((control) => {
+    if (!control.name || control.disabled) return false;
+    const type = String(control.type || "").toLowerCase();
+    return !["button", "submit", "reset", "file", "hidden"].includes(type);
+  });
+}
+
+function rememberFormDraft(form) {
+  const key = formDraftKey(form);
+  if (!key) return;
+  transientFormDrafts.set(key, {
+    controls: formDraftControls(form).map((control) => ({
+      name: control.name,
+      type: String(control.type || "").toLowerCase(),
+      value: control.value,
+      checked: Boolean(control.checked),
+    })),
+    details: [...form.querySelectorAll("details")].map((node) => Boolean(node.open)),
+  });
+}
+
+function rememberVisibleFormDrafts() {
+  document.querySelectorAll("form[data-form]").forEach(rememberFormDraft);
+}
+
+function restoreFormDrafts(root = document) {
+  root.querySelectorAll("form[data-form]").forEach((form) => {
+    const draft = transientFormDrafts.get(formDraftKey(form));
+    if (!draft) return;
+    const controls = formDraftControls(form);
+    controls.forEach((control, index) => {
+      const saved = draft.controls[index];
+      if (!saved || saved.name !== control.name) return;
+      if (["checkbox", "radio"].includes(saved.type)) {
+        control.checked = saved.checked;
+      } else {
+        control.value = saved.value;
+      }
+    });
+    form.querySelectorAll("details").forEach((node, index) => {
+      node.open = Boolean(draft.details[index]);
+    });
+  });
+}
+
+function clearFormDraft(formOrKey) {
+  const key = typeof formOrKey === "string" ? formOrKey : formDraftKey(formOrKey);
+  if (key) transientFormDrafts.delete(key);
 }
 
 function escapeHtml(value) {
@@ -1674,6 +1739,7 @@ function highlightCoachGuideTarget() {
 }
 
 function render() {
+  rememberVisibleFormDrafts();
   applyCoachGuideStep();
   const app = $("#app");
   if (state.loading) {
@@ -1685,6 +1751,7 @@ function render() {
   } else {
     app.innerHTML = shellView();
   }
+  restoreFormDrafts(app);
   bindFormDefaults();
   highlightCoachGuideTarget();
   keepActiveBottomNavVisible();
@@ -1760,10 +1827,10 @@ function parentLoginView() {
         <input name="passcode" type="password" autocomplete="current-password" minlength="6" required placeholder="Your private password">
       </label>
       <div class="consent-control">
-        <label class="check-row compact-consent" for="parentConsent">
-          <input id="parentConsent" name="consent" type="checkbox" required>
-          <span>I confirm that I am authorised to request access for my child.</span>
-        </label>
+        <div class="check-row compact-consent">
+          <input id="parentConsent" name="consent" type="checkbox" required aria-describedby="parentConsentText">
+          <span id="parentConsentText">I confirm that I am authorised to request access for my child.</span>
+        </div>
         <details class="consent-details">
           <summary>View full consent statement</summary>
           <div class="privacy-copy">
@@ -1774,10 +1841,10 @@ function parentLoginView() {
           </div>
         </details>
       </div>
-      <label class="check-row compact-consent">
-        <input name="rememberMe" type="checkbox" ${remember ? "checked" : ""}>
-        <span>Remember me on this device</span>
-      </label>
+      <div class="check-row compact-consent">
+        <input id="parentRememberMe" name="rememberMe" type="checkbox" ${remember ? "checked" : ""} aria-describedby="parentRememberMeText">
+        <span id="parentRememberMeText">Remember me on this device</span>
+      </div>
       <div class="auth-actions">
         <button class="primary-button" type="submit">Continue</button>
         <button class="secondary-button" type="button" data-action="reset-password">Forgot password</button>
@@ -5475,6 +5542,40 @@ document.addEventListener("click", async (event) => {
   }
 });
 
+document.addEventListener("pointerdown", (event) => {
+  if (event.pointerType === "mouse" || !event.target.closest("form[data-form]")) return;
+  formScrollGesture = {
+    x: event.clientX,
+    y: event.clientY,
+    moved: false,
+  };
+}, true);
+
+document.addEventListener("pointermove", (event) => {
+  if (!formScrollGesture) return;
+  const distance = Math.hypot(event.clientX - formScrollGesture.x, event.clientY - formScrollGesture.y);
+  if (distance > 8) formScrollGesture.moved = true;
+}, true);
+
+document.addEventListener("click", (event) => {
+  if (!formScrollGesture?.moved) return;
+  const accidentalTapTarget = event.target.closest("form[data-form] label, form[data-form] input, form[data-form] select, form[data-form] textarea, form[data-form] button, form[data-form] summary");
+  if (!accidentalTapTarget) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  formScrollGesture = null;
+}, true);
+
+document.addEventListener("pointerup", () => {
+  window.setTimeout(() => {
+    formScrollGesture = null;
+  }, 0);
+}, true);
+
+document.addEventListener("pointercancel", () => {
+  formScrollGesture = null;
+}, true);
+
 document.addEventListener("dragstart", (event) => {
   const target = event.target.closest("[data-player-drag]");
   if (!target || !hasCoachAccess() || !hasWhiteboardControl()) return;
@@ -5564,6 +5665,7 @@ document.addEventListener("pointercancel", () => {
 
 document.addEventListener("change", async (event) => {
   const target = event.target;
+  if (target.form?.dataset?.form) rememberFormDraft(target.form);
   if (target.dataset.action === "select-child") {
     state.session.selectedPlayerId = target.value;
     saveState();
@@ -5682,6 +5784,7 @@ document.addEventListener("change", async (event) => {
 
 document.addEventListener("input", (event) => {
   const target = event.target;
+  if (target.form?.dataset?.form) rememberFormDraft(target.form);
   const matchStatsForm = target.closest?.('[data-form="match-stats"]');
   if (matchStatsForm && target.name) {
     const eventId = matchStatsForm.elements.eventId?.value || state.selectedResultEventId;
@@ -5729,6 +5832,8 @@ document.addEventListener("submit", async (event) => {
   const form = event.target.closest("[data-form]");
   if (!form) return;
   event.preventDefault();
+  rememberFormDraft(form);
+  const draftKey = formDraftKey(form);
   const data = new FormData(form);
 
   try {
@@ -5753,6 +5858,9 @@ document.addEventListener("submit", async (event) => {
     if (form.dataset.form === "player-award") await savePlayerAward(data);
     if (form.dataset.form === "match-stats") await saveMatchStats(data);
     if (form.dataset.form === "edit-builder-slot") saveBuilderSlotEdit(data);
+    if (!["parent-login", "coach-login"].includes(form.dataset.form) || state.session.loggedIn) {
+      clearFormDraft(draftKey);
+    }
     saveState();
     render();
   } catch (error) {
@@ -8049,6 +8157,7 @@ async function signOutLive(nextAuthRole = "parent") {
   } catch (error) {
     console.error(error);
   }
+  transientFormDrafts.clear();
   state = loadState();
   state.loading = false;
   state.route = "home";
