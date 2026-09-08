@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-47";
+const appVersion = "4.0-live-rollout-49";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -890,10 +890,23 @@ function restoreScrollSnapshot(snapshot) {
       node.scrollTop = saved.top;
       node.scrollLeft = saved.left;
     });
-    if (!isCoachGuide()) {
-      window.scrollTo({ top: snapshot.top, left: snapshot.left, behavior: "auto" });
-    }
   });
+}
+
+function scrollableContainerForTarget(target) {
+  const node = target.closest?.("[data-scroll-key]");
+  if (!node) return null;
+  const canScrollY = node.scrollHeight > node.clientHeight + 1;
+  const canScrollX = node.scrollWidth > node.clientWidth + 1;
+  return canScrollY || canScrollX ? node : null;
+}
+
+function touchScrollGuardForTarget(target) {
+  const node = target.closest?.("[data-touch-scroll-guard]");
+  if (!node) return null;
+  const canScrollY = node.scrollHeight > node.clientHeight + 1;
+  const canScrollX = node.scrollWidth > node.clientWidth + 1;
+  return canScrollY || canScrollX ? node : null;
 }
 
 function useNativeDrag() {
@@ -3922,7 +3935,7 @@ function squadBuilderView() {
             <h3>${pool.length} available</h3>
           </div>
         </div>
-        <div class="builder-player-pool" data-scroll-key="builder-pool-${format}-${state.squadBuilder.teamFilter}-${state.squadBuilder.levelFilter}-${showDevelopmentLabels ? "ratings" : "plain"}">
+        <div class="builder-player-pool" data-scroll-key="builder-pool-${format}-${state.squadBuilder.teamFilter}-${state.squadBuilder.levelFilter}-${showDevelopmentLabels ? "ratings" : "plain"}" data-touch-scroll-guard>
           ${pool.length ? pool.map(builderPlayerCard).join("") : '<p class="muted">No players match the selected filters.</p>'}
         </div>
       </article>
@@ -5735,7 +5748,7 @@ document.addEventListener("pointercancel", () => {
 }, true);
 
 document.addEventListener("pointerdown", (event) => {
-  if (event.pointerType === "mouse" || !event.target.closest("[data-scroll-key]")) return;
+  if (event.pointerType === "mouse" || !touchScrollGuardForTarget(event.target)) return;
   listScrollGesture = {
     x: event.clientX,
     y: event.clientY,
@@ -5972,7 +5985,7 @@ document.addEventListener("change", async (event) => {
     target.blur();
     target.disabled = true;
     try {
-      await assignPlayerToFixture(target.dataset.playerId, target.value || "");
+      await assignPlayerToFixture(target.dataset.playerId, target.value || "", { render: useNativeDrag() });
     } finally {
       if (target.isConnected) target.disabled = false;
     }
