@@ -902,6 +902,10 @@ button:disabled {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.register-filter-field {
+  min-width: min(100%, 220px);
+}
+
 .section-toolbar {
   align-items: stretch;
 }
@@ -1410,6 +1414,10 @@ button:disabled {
   justify-content: flex-end;
 }
 
+.availability-filter-field {
+  min-width: min(100%, 240px);
+}
+
 .allocation-field {
   min-width: min(100%, 210px);
   margin: 0;
@@ -1503,8 +1511,8 @@ button:disabled {
 
 .selection-balance-table .stats-table-header,
 .selection-balance-table .stats-table-row {
-  grid-template-columns: minmax(170px, 1.45fr) repeat(5, minmax(70px, 0.55fr));
-  min-width: 660px;
+  grid-template-columns: minmax(170px, 1.45fr) minmax(80px, 0.7fr) repeat(4, minmax(78px, 0.6fr));
+  min-width: 720px;
 }
 
 .coach-player-profile-metrics {
@@ -2196,6 +2204,10 @@ button:disabled {
   cursor: grabbing;
 }
 
+.formation-slot.dragging-player-only {
+  transform: translate(var(--drag-x, 0), var(--drag-y, 0)) scale(1.04);
+}
+
 .formation-slot.filled {
   border-color: var(--gold);
   background: #ffffff;
@@ -2306,8 +2318,15 @@ button:disabled {
   display: grid;
   gap: 10px;
   max-height: 690px;
-  overflow: auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
   padding-right: 4px;
+  scrollbar-color: rgba(152, 0, 12, 0.42) transparent;
+  scrollbar-width: thin;
+  touch-action: pan-y;
 }
 
 .builder-player-card {
@@ -2320,6 +2339,13 @@ button:disabled {
   background: var(--paper);
   color: var(--ink);
   text-align: left;
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.builder-player-card[draggable="true"] {
+  cursor: grab;
 }
 
 .builder-player-card.selected {
@@ -2661,6 +2687,10 @@ button:disabled {
 
   .formation-bench .formation-slot {
     min-height: 64px;
+  }
+
+  .builder-player-pool {
+    max-height: min(48vh, 380px);
   }
 
   .date-tile {

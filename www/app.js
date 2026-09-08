@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-46";
+const appVersion = "4.0-live-rollout-47";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -27,6 +27,7 @@ let whiteboardSyncTimer = null;
 let applyingLiveWhiteboard = false;
 let suppressBuilderClickUntil = 0;
 let formScrollGesture = null;
+let listScrollGesture = null;
 const transientFormDrafts = new Map();
 
 const unassignedTeam = { id: "unassigned", name: "Unassigned", colour: "#6b7280" };
@@ -181,6 +182,7 @@ const defaultState = {
   scheduleType: "matches",
   schedulePeriod: "upcoming",
   attendancePeriod: "upcoming",
+  attendanceStatusFilter: "all",
   selectedEventId: "e1",
   selectedResultEventId: "",
   resultDrafts: {},
@@ -207,6 +209,7 @@ const defaultState = {
   coachDocumentCategory: "handbooks",
   coachSectionTab: "contacts",
   availabilityTab: "responses",
+  availabilityResponseFilter: "all",
   events: [],
   availability: {},
   attendance: {},
@@ -747,6 +750,8 @@ function normalizeState(saved) {
   merged.scheduleType = ["matches", "training"].includes(merged.scheduleType) ? merged.scheduleType : "matches";
   merged.schedulePeriod = merged.schedulePeriod || "upcoming";
   merged.attendancePeriod = ["upcoming", "past"].includes(merged.attendancePeriod) ? merged.attendancePeriod : "upcoming";
+  merged.attendanceStatusFilter = ["all", "present", "unmarked", "absent"].includes(merged.attendanceStatusFilter) ? merged.attendanceStatusFilter : "all";
+  merged.availabilityResponseFilter = merged.availabilityResponseFilter || "all";
   merged.awardsTab = ["weekly", "tally"].includes(merged.awardsTab) ? merged.awardsTab : "weekly";
   merged.awardTallies = merged.awardTallies || {};
   merged.coachGuide = {
@@ -859,6 +864,40 @@ function restoreFormDrafts(root = document) {
 function clearFormDraft(formOrKey) {
   const key = typeof formOrKey === "string" ? formOrKey : formDraftKey(formOrKey);
   if (key) transientFormDrafts.delete(key);
+}
+
+function scrollSnapshot() {
+  const root = document.scrollingElement || document.documentElement;
+  return {
+    route: state?.route || "",
+    top: root?.scrollTop || 0,
+    left: root?.scrollLeft || 0,
+    keyed: [...document.querySelectorAll("[data-scroll-key]")].map((node) => ({
+      key: node.dataset.scrollKey,
+      top: node.scrollTop,
+      left: node.scrollLeft,
+    })),
+  };
+}
+
+function restoreScrollSnapshot(snapshot) {
+  if (!snapshot || snapshot.route !== (state?.route || "")) return;
+  requestAnimationFrame(() => {
+    const keyed = new Map(snapshot.keyed.map((item) => [item.key, item]));
+    document.querySelectorAll("[data-scroll-key]").forEach((node) => {
+      const saved = keyed.get(node.dataset.scrollKey);
+      if (!saved) return;
+      node.scrollTop = saved.top;
+      node.scrollLeft = saved.left;
+    });
+    if (!isCoachGuide()) {
+      window.scrollTo({ top: snapshot.top, left: snapshot.left, behavior: "auto" });
+    }
+  });
+}
+
+function useNativeDrag() {
+  return !window.matchMedia?.("(hover: none) and (pointer: coarse)")?.matches;
 }
 
 function escapeHtml(value) {
@@ -1739,6 +1778,7 @@ function highlightCoachGuideTarget() {
 }
 
 function render() {
+  const snapshot = scrollSnapshot();
   rememberVisibleFormDrafts();
   applyCoachGuideStep();
   const app = $("#app");
@@ -1753,6 +1793,7 @@ function render() {
   }
   restoreFormDrafts(app);
   bindFormDefaults();
+  restoreScrollSnapshot(snapshot);
   highlightCoachGuideTarget();
   keepActiveBottomNavVisible();
 }
@@ -2370,7 +2411,11 @@ function availabilityView() {
   if (!event) return emptyEventsView("Availability");
   if (state.selectedEventId !== event.id) state.selectedEventId = event.id;
   const child = currentPlayer();
-  const players = hasCoachAccess() ? availabilityPlayersForEvent(event) : [child].filter(Boolean);
+  const allPlayers = hasCoachAccess() ? availabilityPlayersForEvent(event) : [child].filter(Boolean);
+  if (hasCoachAccess() && !availabilityResponseFilters(event).some((filter) => filter.id === state.availabilityResponseFilter)) {
+    state.availabilityResponseFilter = "all";
+  }
+  const players = hasCoachAccess() ? availabilityFilteredPlayers(event, allPlayers) : allPlayers;
   const counts = availabilityCounts(event.id);
   const tab = state.availabilityTab || "responses";
 
@@ -2388,6 +2433,7 @@ function availabilityView() {
         <span>${counts.unknown} no reply</span>
         <span>${counts.liftSeats} lift seats</span>
       </div>
+      ${hasCoachAccess() && tab === "responses" ? availabilityResponseFilterControl(event) : ""}
       <div class="segmented light">
         <button type="button" class="${tab === "responses" ? "active" : ""}" data-action="set-availability-tab" data-tab="responses">Responses</button>
         <button type="button" class="${tab === "lifts" ? "active" : ""}" data-action="set-availability-tab" data-tab="lifts">Lifts</button>
@@ -2404,10 +2450,11 @@ function availabilityView() {
             <p class="eyebrow">Responses</p>
             <h3>${escapeHtml(availabilityDateLabel(event))}</h3>
           </div>
+          ${hasCoachAccess() ? `<span class="status-pill warn">${players.length} shown</span>` : ""}
         </div>
         ${availabilityFixtureSummary(event)}
-        <div class="response-list">
-          ${players.map((player) => responseRow(event, player)).join("")}
+        <div class="response-list" data-scroll-key="availability-${availabilityKeyForEvent(event)}-${state.availabilityResponseFilter}">
+          ${players.length ? players.map((player) => responseRow(event, player)).join("") : '<p class="muted">No players match this availability view.</p>'}
         </div>
       </article>
       ${hasCoachAccess() ? selectionBalancePanel(event) : ""}
@@ -2436,6 +2483,62 @@ function availabilityFixtureSummary(event) {
       ${hasCoachAccess() && showPastUnpicked ? `<span class="attention">${unpickedCount} available unpicked</span>` : ""}
     </div>
   `;
+}
+
+function availabilityResponseFilters(event) {
+  const fixtureFilters = eventsForAvailabilityDate(event).map((fixture) => ({
+    id: `fixture:${fixture.id}`,
+    label: `${teamName(fixture.teamId)} selected`,
+  }));
+  return [
+    { id: "all", label: "All players" },
+    { id: "available", label: "Available" },
+    { id: "available-unpicked", label: "Available not picked" },
+    ...fixtureFilters,
+    { id: "unknown", label: "No reply" },
+    { id: "unavailable", label: "Unavailable" },
+  ];
+}
+
+function availabilityResponseFilterControl(event) {
+  const filters = availabilityResponseFilters(event);
+  const active = filters.some((filter) => filter.id === state.availabilityResponseFilter) ? state.availabilityResponseFilter : "all";
+  return `
+    <label class="field compact-field availability-filter-field">
+      <span>Show</span>
+      <select data-action="set-availability-response-filter">
+        ${filters.map((filter) => `<option value="${escapeHtml(filter.id)}" ${active === filter.id ? "selected" : ""}>${escapeHtml(filter.label)}</option>`).join("")}
+      </select>
+    </label>
+  `;
+}
+
+function availabilityFilteredPlayers(event, players = availabilityPlayersForEvent(event)) {
+  const filter = state.availabilityResponseFilter || "all";
+  const fixtures = eventsForAvailabilityDate(event);
+  const selectedIds = new Set(fixtures.flatMap((fixture) => fixture.selectedPlayerIds || []));
+  const dateKey = availabilityKeyForEvent(event);
+  const sorted = [...players].sort((a, b) => {
+    const aPriority = selectionPriorityForPlayer(a, dateKey);
+    const bPriority = selectionPriorityForPlayer(b, dateKey);
+    return bPriority.currentStatusRank - aPriority.currentStatusRank || bPriority.score - aPriority.score || a.name.localeCompare(b.name);
+  });
+
+  if (filter.startsWith("fixture:")) {
+    const fixtureId = filter.slice("fixture:".length);
+    const fixture = fixtures.find((item) => item.id === fixtureId);
+    const orderedIds = fixture?.selectedPlayerIds || [];
+    return orderedIds
+      .map((playerId) => players.find((player) => player.id === playerId))
+      .filter(Boolean);
+  }
+
+  return sorted.filter((player) => {
+    const entry = availabilityEntry(event, player.id);
+    if (filter === "available-unpicked") return entry.status === "available" && !selectedIds.has(player.id);
+    if (["available", "unavailable", "unknown"].includes(filter)) return entry.status === filter;
+    return true;
+  });
 }
 
 function parentAvailabilityCard(event, child) {
@@ -2615,7 +2718,7 @@ function selectionBalancePanel(event) {
         <span class="status-pill warn">Coach only</span>
       </div>
       <p class="muted">Use this to keep an eye on who has made themselves available and who has actually been picked for weekend fixtures.</p>
-      <div class="stats-table selection-balance-table" role="table" aria-label="Selection balance">
+      <div class="stats-table selection-balance-table" role="table" aria-label="Selection balance" data-scroll-key="selection-balance-${availabilityKeyForEvent(event)}">
         <div class="stats-table-header">
           <span>Player</span>
           <span>Priority</span>
@@ -2809,6 +2912,52 @@ function attendancePeriodTabs(events) {
   `;
 }
 
+function attendanceFilterControl() {
+  const options = [
+    { id: "all", label: "All players" },
+    { id: "unmarked", label: "Still to mark" },
+    { id: "present", label: "Present or collected" },
+    { id: "absent", label: "Absent" },
+  ];
+  const active = options.some((option) => option.id === state.attendanceStatusFilter) ? state.attendanceStatusFilter : "all";
+  return `
+    <label class="field compact-field register-filter-field">
+      <span>Show</span>
+      <select data-action="set-attendance-filter">
+        ${options.map((option) => `<option value="${option.id}" ${active === option.id ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
+      </select>
+    </label>
+  `;
+}
+
+function attendanceStatusForPlayer(event, playerId) {
+  return state.attendance[event.id]?.[playerId] || "unknown";
+}
+
+function attendanceStatusRank(status) {
+  if (status === "present" || status === "collected") return 0;
+  if (status === "unknown") return 1;
+  if (status === "absent") return 2;
+  return 3;
+}
+
+function attendancePlayersForView(event, players = getPlayersForEvent(event)) {
+  const filter = state.attendanceStatusFilter || "all";
+  return [...players]
+    .filter((player) => {
+      const status = attendanceStatusForPlayer(event, player.id);
+      if (filter === "present") return status === "present" || status === "collected";
+      if (filter === "unmarked") return !["present", "collected", "absent"].includes(status);
+      if (filter === "absent") return status === "absent";
+      return true;
+    })
+    .sort((a, b) => {
+      const aStatus = attendanceStatusForPlayer(event, a.id);
+      const bStatus = attendanceStatusForPlayer(event, b.id);
+      return attendanceStatusRank(aStatus) - attendanceStatusRank(bStatus) || a.name.localeCompare(b.name);
+    });
+}
+
 function attendanceView() {
   const allRegisterEvents = registerEventsForSession();
   const period = state.attendancePeriod === "past" ? "past" : "upcoming";
@@ -2833,7 +2982,7 @@ function attendanceView() {
   const eventPlayers = getPlayersForEvent(event);
   const child = currentPlayer();
   const players = hasCoachAccess()
-    ? eventPlayers
+    ? attendancePlayersForView(event, eventPlayers)
     : [child].filter(Boolean).filter((player) => eventPlayers.some((eventPlayer) => eventPlayer.id === player.id));
 
   return `
@@ -2845,10 +2994,11 @@ function attendanceView() {
           ${eventOptions.map((item) => `<option value="${item.id}" ${item.id === event.id ? "selected" : ""}>${escapeHtml(attendanceOptionLabel(item))}</option>`).join("")}
         </select>
       </label>
+      ${hasCoachAccess() ? attendanceFilterControl() : ""}
     </section>
-    ${hasCoachAccess() ? attendanceTracker(event, players) : ""}
-    <div class="attendance-grid" data-tour="attendance-grid">
-      ${players.map((player) => attendanceCard(event, player)).join("")}
+    ${hasCoachAccess() ? attendanceTracker(event, eventPlayers) : ""}
+    <div class="attendance-grid" data-tour="attendance-grid" data-scroll-key="register-${event.id}-${state.attendanceStatusFilter}">
+      ${players.length ? players.map((player) => attendanceCard(event, player)).join("") : '<article class="panel"><p class="muted">No players match this register filter.</p></article>'}
     </div>
     ${hasCoachAccess() ? parentAlertLog(event) : ""}
   `;
@@ -3772,7 +3922,7 @@ function squadBuilderView() {
             <h3>${pool.length} available</h3>
           </div>
         </div>
-        <div class="builder-player-pool">
+        <div class="builder-player-pool" data-scroll-key="builder-pool-${format}-${state.squadBuilder.teamFilter}-${state.squadBuilder.levelFilter}-${showDevelopmentLabels ? "ratings" : "plain"}">
           ${pool.length ? pool.map(builderPlayerCard).join("") : '<p class="muted">No players match the selected filters.</p>'}
         </div>
       </article>
@@ -3842,8 +3992,9 @@ function builderPlayerCard(player) {
   const showDevelopmentLabels = state.squadBuilder.showDevelopmentLabels !== false;
   const meta = showDevelopmentLabels ? `${teamName(player.teamId)} - ${developmentLabel(record)}` : teamName(player.teamId);
   const canEditBoard = hasWhiteboardControl();
+  const draggable = canEditBoard && useNativeDrag();
   return `
-    <button class="builder-player-card ${selected ? "selected" : ""} ${player.alreadyPicked ? "picked" : ""}" type="button" draggable="${canEditBoard ? "true" : "false"}" data-action="select-builder-player" data-player-id="${escapeHtml(player.id)}" data-player-drag="${escapeHtml(player.id)}" ${canEditBoard ? "" : "disabled"}>
+    <button class="builder-player-card ${selected ? "selected" : ""} ${player.alreadyPicked ? "picked" : ""}" type="button" draggable="${draggable ? "true" : "false"}" data-action="select-builder-player" data-player-id="${escapeHtml(player.id)}" data-player-drag="${escapeHtml(player.id)}" ${canEditBoard ? "" : "disabled"}>
       <strong>${escapeHtml(player.name)}</strong>
       <span>${escapeHtml(meta)}</span>
       <small>${escapeHtml(record.foot === "Not set" ? "Foot not set" : `${record.foot} foot`)}</small>
@@ -3862,7 +4013,7 @@ function formationSlot(slot, playerId, options = {}) {
   const dragMarker = editable ? `data-formation-drag="${escapeHtml(slot.id)}"` : "";
   const showDevelopmentLabels = state.squadBuilder.showDevelopmentLabels !== false;
   return `
-    <div class="formation-slot ${slot.isSub ? "sub-slot" : ""} ${editable ? "editable-slot" : ""} ${player ? "filled" : ""} ${match ? "" : "position-warning"}" ${style} data-builder-slot="${escapeHtml(slot.id)}" data-position="${escapeHtml(slot.position)}" data-action="assign-builder-slot" ${dragMarker}>
+    <div class="formation-slot ${slot.isSub ? "sub-slot" : ""} ${editable ? "editable-slot" : ""} ${player ? "filled" : ""} ${match ? "" : "position-warning"}" ${style} data-builder-slot="${escapeHtml(slot.id)}" data-slot-player-id="${escapeHtml(player?.id || "")}" data-position="${escapeHtml(slot.position)}" data-action="assign-builder-slot" ${dragMarker}>
       <span class="slot-label">${escapeHtml(slot.label)}</span>
       <strong>${player ? escapeHtml(player.name) : escapeHtml(slot.position)}</strong>
       ${player && showDevelopmentLabels ? `<small>${escapeHtml(developmentLabel(record))}</small>` : !player && editable ? '<small>Drag to move</small>' : ""}
@@ -5467,6 +5618,13 @@ document.addEventListener("click", async (event) => {
   if (action === "assign-builder-slot") {
     if (!requireWhiteboardControl()) return;
     if (Date.now() < suppressBuilderClickUntil) return;
+    if (!state.squadBuilder.selectedPlayerId && target.dataset.slotPlayerId) {
+      state.squadBuilder.selectedPlayerId = target.dataset.slotPlayerId;
+      saveState();
+      scheduleLiveWhiteboardPublish();
+      render();
+      return;
+    }
     assignBuilderSlot(target.dataset.builderSlot, state.squadBuilder.selectedPlayerId);
     return;
   }
@@ -5576,6 +5734,40 @@ document.addEventListener("pointercancel", () => {
   formScrollGesture = null;
 }, true);
 
+document.addEventListener("pointerdown", (event) => {
+  if (event.pointerType === "mouse" || !event.target.closest("[data-scroll-key]")) return;
+  listScrollGesture = {
+    x: event.clientX,
+    y: event.clientY,
+    moved: false,
+  };
+}, true);
+
+document.addEventListener("pointermove", (event) => {
+  if (!listScrollGesture) return;
+  const distance = Math.hypot(event.clientX - listScrollGesture.x, event.clientY - listScrollGesture.y);
+  if (distance > 8) listScrollGesture.moved = true;
+}, true);
+
+document.addEventListener("click", (event) => {
+  if (!listScrollGesture?.moved) return;
+  const accidentalTapTarget = event.target.closest("[data-scroll-key] button, [data-scroll-key] a, [data-scroll-key] select, [data-scroll-key] input, [data-scroll-key] textarea");
+  if (!accidentalTapTarget) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  listScrollGesture = null;
+}, true);
+
+document.addEventListener("pointerup", () => {
+  window.setTimeout(() => {
+    listScrollGesture = null;
+  }, 0);
+}, true);
+
+document.addEventListener("pointercancel", () => {
+  listScrollGesture = null;
+}, true);
+
 document.addEventListener("dragstart", (event) => {
   const target = event.target.closest("[data-player-drag]");
   if (!target || !hasCoachAccess() || !hasWhiteboardControl()) return;
@@ -5608,19 +5800,21 @@ document.addEventListener("pointerdown", (event) => {
   }
 
   const marker = event.target.closest("[data-formation-drag]");
-  if (!marker || !hasCoachAccess() || !hasWhiteboardControl() || event.target.closest("button")) return;
-  const pitch = marker.closest("[data-builder-pitch]");
-  if (!pitch) return;
+  const slot = event.target.closest("[data-builder-slot]");
+  const dragElement = marker || (slot?.dataset.slotPlayerId ? slot : null);
+  if (!dragElement || !hasCoachAccess() || !hasWhiteboardControl() || event.target.closest("button")) return;
+  const pitch = marker?.closest("[data-builder-pitch]") || null;
   builderPointerDrag = {
-    marker,
+    marker: dragElement,
     pitch,
     pointerId: event.pointerId,
-    slotId: marker.dataset.formationDrag,
+    slotId: slot?.dataset.builderSlot || marker?.dataset.formationDrag,
+    canMoveMarker: Boolean(marker && pitch),
     startX: event.clientX,
     startY: event.clientY,
     moved: false,
   };
-  marker.setPointerCapture?.(event.pointerId);
+  dragElement.setPointerCapture?.(event.pointerId);
 });
 
 document.addEventListener("pointermove", (event) => {
@@ -5635,6 +5829,13 @@ document.addEventListener("pointermove", (event) => {
   if (!builderPointerDrag.moved && distance < 6) return;
   builderPointerDrag.moved = true;
   builderPointerDrag.marker.classList.add("dragging");
+  if (!builderPointerDrag.canMoveMarker) {
+    builderPointerDrag.marker.classList.add("dragging-player-only");
+    builderPointerDrag.marker.style.setProperty("--drag-x", `${event.clientX - builderPointerDrag.startX}px`);
+    builderPointerDrag.marker.style.setProperty("--drag-y", `${event.clientY - builderPointerDrag.startY}px`);
+    event.preventDefault();
+    return;
+  }
   const point = pitchPointFromEvent(event, builderPointerDrag.pitch);
   builderPointerDrag.marker.style.left = `${point.x}%`;
   builderPointerDrag.marker.style.top = `${point.y}%`;
@@ -5650,9 +5851,20 @@ document.addEventListener("pointerup", (event) => {
   if (!builderPointerDrag) return;
   builderPointerDrag.marker.releasePointerCapture?.(builderPointerDrag.pointerId);
   if (builderPointerDrag.moved) {
-    const point = pitchPointFromEvent(event, builderPointerDrag.pitch);
-    suppressBuilderClickUntil = Date.now() + 500;
-    moveBuilderSlot(builderPointerDrag.slotId, point.x, point.y);
+    const targetSlot = builderSlotAtPoint(event, builderPointerDrag.marker);
+    if (targetSlot && moveOrSwapBuilderSelection(builderPointerDrag.slotId, targetSlot.dataset.builderSlot)) {
+      builderPointerDrag = null;
+      return;
+    }
+    if (builderPointerDrag.canMoveMarker) {
+      const point = pitchPointFromEvent(event, builderPointerDrag.pitch);
+      suppressBuilderClickUntil = Date.now() + 500;
+      moveBuilderSlot(builderPointerDrag.slotId, point.x, point.y);
+    } else {
+      builderPointerDrag.marker.classList.remove("dragging", "dragging-player-only");
+      builderPointerDrag.marker.style.removeProperty("--drag-x");
+      builderPointerDrag.marker.style.removeProperty("--drag-y");
+    }
   }
   builderPointerDrag = null;
 });
@@ -5744,8 +5956,26 @@ document.addEventListener("change", async (event) => {
     render();
     return;
   }
+  if (target.dataset.action === "set-availability-response-filter") {
+    state.availabilityResponseFilter = target.value || "all";
+    saveState();
+    render();
+    return;
+  }
+  if (target.dataset.action === "set-attendance-filter") {
+    state.attendanceStatusFilter = target.value || "all";
+    saveState();
+    render();
+    return;
+  }
   if (target.dataset.action === "set-player-fixture") {
-    await assignPlayerToFixture(target.dataset.playerId, target.value || "");
+    target.blur();
+    target.disabled = true;
+    try {
+      await assignPlayerToFixture(target.dataset.playerId, target.value || "");
+    } finally {
+      if (target.isConnected) target.disabled = false;
+    }
     return;
   }
   if (target.dataset.action === "set-coach-availability-status") {
@@ -7183,6 +7413,35 @@ function finishBuilderArrow(event) {
   render();
 }
 
+function builderSlotAtPoint(event, ignoredElement) {
+  if (!document.elementFromPoint) return null;
+  const previousPointerEvents = ignoredElement?.style.pointerEvents || "";
+  if (ignoredElement) ignoredElement.style.pointerEvents = "none";
+  const target = document.elementFromPoint(event.clientX, event.clientY);
+  if (ignoredElement) ignoredElement.style.pointerEvents = previousPointerEvents;
+  return target?.closest?.("[data-builder-slot]") || null;
+}
+
+function moveOrSwapBuilderSelection(sourceSlotId, targetSlotId) {
+  if (!requireWhiteboardControl() || !sourceSlotId || !targetSlotId || sourceSlotId === targetSlotId) return false;
+  const selections = builderSelections();
+  const sourcePlayerId = selections[sourceSlotId];
+  if (!sourcePlayerId) return false;
+  const targetPlayerId = selections[targetSlotId];
+  selections[targetSlotId] = sourcePlayerId;
+  if (targetPlayerId) {
+    selections[sourceSlotId] = targetPlayerId;
+  } else {
+    delete selections[sourceSlotId];
+  }
+  state.squadBuilder.selectedPlayerId = "";
+  saveState();
+  scheduleLiveWhiteboardPublish();
+  render();
+  toast(targetPlayerId ? "Players swapped" : "Player moved");
+  return true;
+}
+
 function moveBuilderSlot(slotId, x, y) {
   if (!hasCoachAccess() || !hasWhiteboardControl() || !slotId) return;
   const baseSlot = formationDefinition().slots.find((slot) => slot.id === slotId);
@@ -7228,10 +7487,17 @@ function assignBuilderSlot(slotId, playerId) {
   const player = activePlayers().find((item) => item.id === playerId);
   if (!player) return;
   const selections = builderSelections();
-  Object.keys(selections).forEach((key) => {
-    if (selections[key] === playerId) delete selections[key];
-  });
-  selections[slotId] = playerId;
+  const sourceSlotId = Object.keys(selections).find((key) => selections[key] === playerId);
+  const targetPlayerId = selections[slotId];
+  if (sourceSlotId && sourceSlotId !== slotId && targetPlayerId) {
+    selections[sourceSlotId] = targetPlayerId;
+    selections[slotId] = playerId;
+  } else {
+    Object.keys(selections).forEach((key) => {
+      if (selections[key] === playerId) delete selections[key];
+    });
+    selections[slotId] = playerId;
+  }
   state.squadBuilder.selectedPlayerId = "";
   saveState();
   scheduleLiveWhiteboardPublish();
