@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-49";
+const appVersion = "4.0-live-rollout-50";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -24,6 +24,8 @@ let eventDataUnsubscribers = [];
 let builderPointerDrag = null;
 let builderArrowDraft = null;
 let whiteboardSyncTimer = null;
+let deferredRenderTimer = null;
+let reactiveRenderPauseUntil = 0;
 let applyingLiveWhiteboard = false;
 let suppressBuilderClickUntil = 0;
 let formScrollGesture = null;
@@ -1811,6 +1813,46 @@ function render() {
   keepActiveBottomNavVisible();
 }
 
+function pauseReactiveRenders(duration = 1800) {
+  reactiveRenderPauseUntil = Math.max(reactiveRenderPauseUntil, Date.now() + duration);
+}
+
+function activeControlShouldHoldRender() {
+  const active = document.activeElement;
+  return Boolean(active?.matches?.("select, input, textarea"));
+}
+
+function shouldDeferReactiveRender() {
+  return Date.now() < reactiveRenderPauseUntil || activeControlShouldHoldRender();
+}
+
+function requestRender(options = {}) {
+  if (options.force) {
+    if (deferredRenderTimer) clearTimeout(deferredRenderTimer);
+    deferredRenderTimer = null;
+    render();
+    return;
+  }
+
+  if (!shouldDeferReactiveRender()) {
+    if (deferredRenderTimer) clearTimeout(deferredRenderTimer);
+    deferredRenderTimer = null;
+    render();
+    return;
+  }
+
+  if (deferredRenderTimer) return;
+  const wait = Math.max(activeControlShouldHoldRender() ? 500 : 180, reactiveRenderPauseUntil - Date.now() + 120);
+  deferredRenderTimer = window.setTimeout(() => {
+    deferredRenderTimer = null;
+    if (shouldDeferReactiveRender()) {
+      requestRender();
+      return;
+    }
+    render();
+  }, wait);
+}
+
 function keepActiveBottomNavVisible() {
   const nav = document.querySelector(".bottom-nav");
   const active = nav?.querySelector(".nav-link.active");
@@ -2530,12 +2572,7 @@ function availabilityFilteredPlayers(event, players = availabilityPlayersForEven
   const filter = state.availabilityResponseFilter || "all";
   const fixtures = eventsForAvailabilityDate(event);
   const selectedIds = new Set(fixtures.flatMap((fixture) => fixture.selectedPlayerIds || []));
-  const dateKey = availabilityKeyForEvent(event);
-  const sorted = [...players].sort((a, b) => {
-    const aPriority = selectionPriorityForPlayer(a, dateKey);
-    const bPriority = selectionPriorityForPlayer(b, dateKey);
-    return bPriority.currentStatusRank - aPriority.currentStatusRank || bPriority.score - aPriority.score || a.name.localeCompare(b.name);
-  });
+  const sorted = [...players].sort((a, b) => a.name.localeCompare(b.name));
 
   if (filter.startsWith("fixture:")) {
     const fixtureId = filter.slice("fixture:".length);
@@ -5748,6 +5785,17 @@ document.addEventListener("pointercancel", () => {
 }, true);
 
 document.addEventListener("pointerdown", (event) => {
+  if (state.route !== "availability" || event.pointerType === "mouse") return;
+  if (event.target.closest("[data-action='set-player-fixture'], [data-action='set-coach-availability-status'], .response-list, .availability-row-actions")) {
+    pauseReactiveRenders(1800);
+  }
+}, true);
+
+window.addEventListener("scroll", () => {
+  if (state.route === "availability") pauseReactiveRenders(700);
+}, { passive: true });
+
+document.addEventListener("pointerdown", (event) => {
   if (event.pointerType === "mouse" || !touchScrollGuardForTarget(event.target)) return;
   listScrollGesture = {
     x: event.clientX,
@@ -5982,17 +6030,27 @@ document.addEventListener("change", async (event) => {
     return;
   }
   if (target.dataset.action === "set-player-fixture") {
+    pauseReactiveRenders(2600);
     target.blur();
     target.disabled = true;
     try {
-      await assignPlayerToFixture(target.dataset.playerId, target.value || "", { render: useNativeDrag() });
+      await assignPlayerToFixture(target.dataset.playerId, target.value || "", { render: false });
+      requestRender();
     } finally {
       if (target.isConnected) target.disabled = false;
     }
     return;
   }
   if (target.dataset.action === "set-coach-availability-status") {
-    await saveCoachAvailability(target.dataset.playerId, target.value || "unknown");
+    pauseReactiveRenders(2600);
+    target.blur();
+    target.disabled = true;
+    try {
+      await saveCoachAvailability(target.dataset.playerId, target.value || "unknown", { render: false });
+      requestRender();
+    } finally {
+      if (target.isConnected) target.disabled = false;
+    }
     return;
   }
   if (["lift-offer", "lift-seats"].includes(target.dataset.action)) {
@@ -6608,7 +6666,7 @@ async function assignPlayerToFixture(playerId, fixtureId, options = {}) {
   if (options.toast !== false) toast(fixtureId ? "Player picked for fixture" : "Player removed from fixture");
 }
 
-async function saveCoachAvailability(playerId, status) {
+async function saveCoachAvailability(playerId, status, options = {}) {
   if (!requireCoach() || !playerId) return;
   const event = state.events.find((item) => item.id === state.selectedEventId) || state.events[0];
   const availabilityKey = availabilityKeyForEvent(event);
@@ -6639,7 +6697,7 @@ async function saveCoachAvailability(playerId, status) {
     return;
   }
   saveState();
-  render();
+  if (options.render !== false) render();
   toast("Availability response saved");
 }
 
@@ -8089,7 +8147,7 @@ async function startLiveSubscriptions() {
     const unsubscribe = runtime.modules.onSnapshot(
       runtime.modules.collection(runtime.db, "clubs", clubId, collectionName),
       (snapshot) => {
-        Promise.resolve(apply(snapshot.docs.map((item) => ({ id: item.id, ...item.data() })))).then(render).catch(console.error);
+        Promise.resolve(apply(snapshot.docs.map((item) => ({ id: item.id, ...item.data() })))).then(() => requestRender()).catch(console.error);
       },
       (error) => console.error(error),
     );
@@ -8099,7 +8157,7 @@ async function startLiveSubscriptions() {
     const unsubscribe = runtime.modules.onSnapshot(
       queryRef,
       (snapshot) => {
-        Promise.resolve(apply(snapshot.docs.map((item) => ({ id: item.id, ...item.data() })))).then(render).catch(console.error);
+        Promise.resolve(apply(snapshot.docs.map((item) => ({ id: item.id, ...item.data() })))).then(() => requestRender()).catch(console.error);
       },
       (error) => console.error(error),
     );
@@ -8237,7 +8295,7 @@ function watchLiveWhiteboardSession(runtime) {
     sessionRef,
     (snapshot) => {
       applyLiveWhiteboardSnapshot(snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null);
-      render();
+      requestRender();
     },
     (error) => console.error(error),
   );
@@ -8281,7 +8339,7 @@ function startEventDataSubscriptions(runtime) {
           const data = docSnap.data();
           state.availability[availabilityKey][data.playerId || docSnap.id] = data;
         });
-        render();
+        requestRender();
       },
     );
   });
@@ -8296,7 +8354,7 @@ function startEventDataSubscriptions(runtime) {
           const data = docSnap.data();
           state.attendance[event.id][data.playerId || docSnap.id] = data.status || "unknown";
         });
-        render();
+        requestRender();
       },
     );
   });
