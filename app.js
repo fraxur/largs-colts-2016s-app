@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-50";
+const appVersion = "4.0-live-rollout-51";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -1222,6 +1222,28 @@ function availabilityDateOptions() {
   return [...grouped.values()].sort((a, b) => new Date(a.event.datetime) - new Date(b.event.datetime));
 }
 
+function todayDateKey() {
+  return dateValue(startOfToday());
+}
+
+function dateKeyIsCurrentOrFuture(dateKey) {
+  const date = new Date(`${dateKey}T23:59:59`);
+  return !Number.isNaN(date.getTime()) && date >= startOfToday();
+}
+
+function nextAvailabilityDateOption(options = availabilityDateOptions()) {
+  return options.find((option) => dateKeyIsCurrentOrFuture(option.key)) || options[options.length - 1] || null;
+}
+
+function selectedAvailabilityDateOption(options = availabilityDateOptions()) {
+  const requestedEvent = state.events.find((item) => item.id === state.selectedEventId);
+  const requestedKey = availabilityKeyForEvent(requestedEvent);
+  return options.find((option) => option.event.id === state.selectedEventId || option.key === requestedKey)
+    || nextAvailabilityDateOption(options)
+    || options[0]
+    || null;
+}
+
 function availabilityDateOptionLabel(option) {
   if (!option) return "Selected date";
   const fixtureCount = option.fixtures.length;
@@ -2164,6 +2186,27 @@ function resolveRouteTarget(route) {
   return route;
 }
 
+function primeRouteDefaults(route) {
+  if (route === "availability") {
+    const option = nextAvailabilityDateOption();
+    if (option) state.selectedEventId = option.event.id;
+  }
+  if (route === "attendance") {
+    state.attendancePeriod = "upcoming";
+    const event = preferredRegisterEvent("upcoming");
+    if (event) state.selectedEventId = event.id;
+  }
+  if (squadSectionRoutes.includes(route)) {
+    const option = preferredSquadAvailabilityOption();
+    if (option) state.squadAvailabilityDateKey = option.key;
+  }
+}
+
+function navigateToRoute(route) {
+  state.route = resolveRouteTarget(route);
+  primeRouteDefaults(state.route);
+}
+
 function squadSectionView(route = "squads") {
   const activeRoute = squadSectionRoutes.includes(route) ? route : "squads";
   const views = {
@@ -2460,8 +2503,7 @@ function eventCard(event) {
 
 function availabilityView() {
   const dateOptions = availabilityDateOptions();
-  const requestedEvent = state.events.find((item) => item.id === state.selectedEventId);
-  const selectedOption = dateOptions.find((option) => option.event.id === state.selectedEventId || option.key === availabilityKeyForEvent(requestedEvent)) || dateOptions[0];
+  const selectedOption = selectedAvailabilityDateOption(dateOptions);
   const event = selectedOption?.event;
   if (!event) return emptyEventsView("Availability");
   if (state.selectedEventId !== event.id) state.selectedEventId = event.id;
@@ -2951,6 +2993,20 @@ function registerEventsForSession() {
     .sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
 }
 
+function preferredRegisterEvent(period = state.attendancePeriod === "past" ? "past" : "upcoming") {
+  const events = registerEventsForSession();
+  if (period === "past") {
+    return events
+      .filter(isRegisterHistoryEvent)
+      .sort((a, b) => eventEndDate(b) - eventEndDate(a))[0] || null;
+  }
+  const upcoming = events
+    .filter((event) => !isPastEvent(event))
+    .sort((a, b) => eventEndDate(a) - eventEndDate(b));
+  const tonightTraining = upcoming.find((event) => event.type === "Training" && dateValue(event.datetime) === todayDateKey());
+  return tonightTraining || upcoming[0] || null;
+}
+
 function attendancePeriodTabs(events) {
   const upcomingCount = events.filter((event) => !isPastEvent(event)).length;
   const pastCount = events.filter(isRegisterHistoryEvent).length;
@@ -3014,7 +3070,7 @@ function attendanceView() {
   const eventOptions = allRegisterEvents
     .filter((event) => period === "past" ? isRegisterHistoryEvent(event) : !isPastEvent(event))
     .sort((a, b) => period === "past" ? eventEndDate(b) - eventEndDate(a) : eventEndDate(a) - eventEndDate(b));
-  const event = eventOptions.find((item) => item.id === state.selectedEventId) || eventOptions[0];
+  const event = eventOptions.find((item) => item.id === state.selectedEventId) || preferredRegisterEvent(period) || eventOptions[0];
   if (event && state.selectedEventId !== event.id) state.selectedEventId = event.id;
   if (!allRegisterEvents.length) return emptyEventsView("Register");
   if (!event) {
@@ -3365,6 +3421,10 @@ function selectedSquadAvailabilityDateKey() {
   const upcoming = options.find((option) => new Date(`${option.key}T23:59:59`) >= startOfToday()) || options[options.length - 1];
   state.squadAvailabilityDateKey = upcoming.key;
   return upcoming.key;
+}
+
+function preferredSquadAvailabilityOption(options = squadAvailabilityDateOptions()) {
+  return options.find((option) => dateKeyIsCurrentOrFuture(option.key)) || options[options.length - 1] || null;
 }
 
 function squadFilterMatches(player, dateKey) {
@@ -5346,7 +5406,7 @@ document.addEventListener("click", async (event) => {
 
   if (target.dataset.route) {
     event.preventDefault();
-    state.route = resolveRouteTarget(target.dataset.route);
+    navigateToRoute(target.dataset.route);
     delete state.modal;
     if (state.route === "messages") await markMessagesRead();
     saveState();
@@ -5355,7 +5415,7 @@ document.addEventListener("click", async (event) => {
   }
 
   if (target.dataset.routeTarget) {
-    state.route = resolveRouteTarget(target.dataset.routeTarget);
+    navigateToRoute(target.dataset.routeTarget);
     delete state.modal;
     if (state.route === "messages") await markMessagesRead();
     saveState();
@@ -8558,6 +8618,7 @@ async function bootApp() {
         state.route = ["coach", "admin"].includes(role) ? state.route || "home" : state.route || "home";
         if (role === "admin") state.session.role = "coach";
         await loadLiveStateFromFirebase();
+        primeRouteDefaults(state.route);
         await startLiveSubscriptions();
         state.loading = false;
         state.error = "";

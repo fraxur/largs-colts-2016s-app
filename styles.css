@@ -1197,12 +1197,13 @@ button:disabled {
 }
 
 .stats-table {
-  display: grid;
+  display: block;
   max-width: 100%;
   min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
   -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
   overscroll-behavior-x: contain;
   scrollbar-color: rgba(152, 0, 12, 0.42) transparent;
   scrollbar-width: thin;
@@ -1215,6 +1216,7 @@ button:disabled {
   grid-template-columns: minmax(170px, 1.45fr) repeat(4, minmax(70px, 0.55fr));
   align-items: center;
   gap: 10px;
+  width: max-content;
   min-width: 560px;
   border-bottom: 1px solid var(--line);
   padding: 12px 0;
