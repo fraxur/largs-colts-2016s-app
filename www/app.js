@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-53";
+const appVersion = "4.0-live-rollout-54";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -1696,7 +1696,11 @@ function setAppShellClasses() {
 }
 
 function nativePlugin(name) {
-  return window.Capacitor?.Plugins?.[name] || null;
+  return window.Capacitor?.Plugins?.[name] || window[name] || null;
+}
+
+function nativePlatform() {
+  return window.Capacitor?.getPlatform?.() || (isNativeCapacitor() ? "native" : "web");
 }
 
 function appRootRoute() {
@@ -8988,8 +8992,10 @@ async function enableNativePushNotifications() {
     if (!nativePushListenersReady) {
       nativePushListenersReady = true;
       await PushNotifications.addListener("registration", async (token) => {
-        await savePushToken(token.value, "capacitor");
-        toast("Push enabled on this phone");
+        const platform = nativePlatform();
+        const tokenPlatform = platform === "ios" ? "capacitor-ios-apns" : `capacitor-${platform}`;
+        await savePushToken(token.value, tokenPlatform);
+        toast(platform === "ios" ? "iOS push registered; APNs delivery needs TestFlight check" : "Push enabled on this phone");
       });
       await PushNotifications.addListener("registrationError", () => {
         toast("Phone push registration failed");

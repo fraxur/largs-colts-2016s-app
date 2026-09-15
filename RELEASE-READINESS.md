@@ -1,94 +1,152 @@
 # Largs Colts 2016s App Release Readiness
 
-This file tracks the final technical preparation before Android/iOS beta testing and store submission.
+This file tracks technical preparation before Android/iOS beta testing and store submission.
 
-## Completed in this pass
+## Current Build
 
-- Added native Capacitor shell handling in `app.js`:
-  - Status bar colour/style setup.
-  - Splash screen hide after app initialisation starts.
-  - Keyboard open/close body state so bottom navigation does not fight focused fields.
-  - Android hardware/back gesture behaviour: close modal first, then app route history, then home, then exit.
-  - Native network status integration when the Capacitor Network plugin is present.
-- Added web online/offline listeners and an in-app offline banner.
-- Added safer save/delete guards that show clean offline messages instead of raw Firebase failures.
-- Added notification routing:
-  - `message` opens Messages.
-  - `document` opens Documents.
-  - `attendance` opens Register.
-  - `availability` opens Availability.
-  - `schedule` opens Schedule and focuses the event where possible.
-- Added foreground Firebase message handling for web/PWA sessions.
-- Disabled/unregistered the service worker inside Capacitor native builds to avoid stale bundled app assets.
-- Added native document opening via Capacitor Browser when available, with web download fallback.
-- Replaced browser `confirm()` popups with an app-styled confirmation sheet.
-- Added a parent account deletion request entry point. This creates a coach-reviewable data request and keeps historical player/club records separate.
-- Added mobile safe-area CSS for app shell, auth, bottom navigation, modals and confirmation sheets.
-- Added required Capacitor native plugin dependencies:
+- Web/app build: `4.0-live-rollout-54`
+- Package version: `4.0.54`
+- Android version: `versionName "4.0.54"`, `versionCode 54`
+- iOS version: `MARKETING_VERSION = 4.0.54`, `CURRENT_PROJECT_VERSION = 54`
+- Web cache: `live-54`
+- Service worker cache: `live-62`
+
+## Implemented And Verified In Native Project
+
+- Created real native Capacitor projects:
+  - `android/`
+  - `ios/`
+- Synced the current `www/` production bundle into both native projects.
+- Verified Capacitor detects these native plugins for Android and iOS:
   - `@capacitor/app`
   - `@capacitor/browser`
   - `@capacitor/keyboard`
   - `@capacitor/network`
+  - `@capacitor/push-notifications`
   - `@capacitor/splash-screen`
   - `@capacitor/status-bar`
-- Updated Capacitor status bar, splash and keyboard configuration.
-- Bumped app/cache assets to build `4.0-live-rollout-52` and service worker cache `live-60`.
-- Regenerated `www/` with the updated production bundle.
+- Android native project:
+  - Application ID/namespace set to `com.largscolts.fc2016s`.
+  - App name set to `Largs Colts 2016s`.
+  - SDK config generated with `compileSdkVersion = 35`, `targetSdkVersion = 35`, `minSdkVersion = 23`.
+  - Native versioning set to `4.0.54` / `54`.
+  - Android 13 notification permission added: `POST_NOTIFICATIONS`.
+  - Cleartext traffic disabled.
+  - Android backup disabled and data extraction rules added to avoid child/club data being backed up or device-transferred.
+  - Keyboard resize configured at Activity level with `adjustResize`.
+  - Native theme colour resources added for Largs red/gold.
+  - Native launcher icon assets regenerated from `assets/app-icon-512.png`.
+  - Release signing config scaffolded to use owner-supplied environment/Gradle properties without committing secrets.
+- iOS native project:
+  - Bundle ID set to `com.largscolts.fc2016s`.
+  - Display name set to `Largs Colts 2016s`.
+  - Native versioning set to `4.0.54` / `54`.
+  - App icon asset catalog regenerated from `assets/app-icon-512.png`.
+  - Launch screen and splash assets are present.
+  - `ITSAppUsesNonExemptEncryption` set to `false`.
+  - Initial status bar style set to light content.
+  - Podfile contains all seven Capacitor plugin pods.
+- Native-aware web layer:
+  - Android hardware back closes modal/guide first, then route history, then home, then exits.
+  - Status bar setup calls the real StatusBar plugin.
+  - Splash screen hide calls the real SplashScreen plugin.
+  - Keyboard show/hide uses the real Keyboard plugin and CSS body state.
+  - Network/offline state uses the real Network plugin plus browser fallback.
+  - Notification tap routing opens the relevant app route.
+  - Native document opening uses the Capacitor Browser plugin.
+  - Service worker is suppressed/unregistered inside Capacitor native builds.
+  - Safe-area CSS applies to native shell, bottom nav, auth, modals and confirmation sheets.
+  - Parent account deletion request UI remains in place.
+- Push-token safety:
+  - Android/web FCM tokens continue to be sent via Firebase Admin.
+  - iOS APNs tokens from the basic Capacitor Push plugin are now stored as `capacitor-ios-apns` and excluded from Firebase Admin multicast sends until the iOS Firebase/APNs strategy is completed.
 
-## Verified existing
+## Implemented But Requires Physical-Device/TestFlight/Play Testing
 
-- Firestore rules require authenticated users and separate parent/coach permissions.
-- Parents are restricted to approved child links for player records, attendance, availability and player documents.
-- Coach-only collections such as player development, awards, match stats and coach documents are protected.
-- Storage rules restrict player and coach document reads/writes and enforce PDF/DOC/DOCX plus a 15 MB limit.
-- Cloud Functions notifications are event-driven from Firestore writes rather than callable endpoints exposed to parents.
-- The app already has Firebase Auth, Firestore, Storage, Cloud Functions, FCM, PWA and Capacitor structure.
+- Android push permission prompt and notification tap routing.
+- Android status bar/splash/keyboard/back-button behaviour on a real device.
+- Android document opening through the native browser.
+- Android safe areas and bottom navigation on real device screen sizes.
+- iOS status bar/splash/keyboard/network handling.
+- iOS push registration and final delivery path.
+- iOS document opening through native browser.
+- iOS safe areas on notched devices.
+- Signed Android release `.aab`.
+- TestFlight archive/upload.
 
-## Manual configuration required
+## Manual Configuration Martin Must Provide
 
-- Run `npm install` after pulling/uploading these changes so native plugin packages are installed locally.
-- Run `npm run cap:sync` after `npm install`.
-- Create/open native projects if not already present:
-  - `npm run cap:add:android`
-  - `npm run cap:add:ios`
-- Android:
-  - Verify package ID `com.largscolts.fc2016s`.
-  - Set version code/version name for the first store build.
-  - Confirm target SDK/API level meets current Google Play policy.
-  - Configure release signing in Android Studio. Do not commit keystore secrets.
-  - Confirm Firebase Android config is added to the native Android project.
-  - Build a signed `.aab` from Android Studio.
-- iOS:
+- Android tooling:
+  - Install/configure JDK 17.
+  - Install/configure Android Studio and Android SDK.
+  - Ensure `android/local.properties` points at the Android SDK, or set `ANDROID_HOME`.
+- Android Firebase:
+  - Register Android app `com.largscolts.fc2016s` in Firebase.
+  - Download `google-services.json`.
+  - Place it at `android/app/google-services.json`.
+- Android signing:
+  - Create/own the Play release keystore.
+  - Provide signing values locally via environment variables or Gradle properties:
+    - `LARGS_RELEASE_STORE_FILE`
+    - `LARGS_RELEASE_STORE_PASSWORD`
+    - `LARGS_RELEASE_KEY_ALIAS`
+    - `LARGS_RELEASE_KEY_PASSWORD`
+  - Do not commit keystore files or passwords.
+- iOS tooling:
   - Use a Mac with current Xcode.
-  - Configure Bundle ID to match the Apple Developer app record.
-  - Add Firebase iOS config to the native iOS project.
-  - Enable Push Notifications and Background Modes as required.
+  - Install CocoaPods.
+  - Run `pod install` inside `ios/App`.
+- iOS Apple/Firebase:
+  - Create Apple Developer App ID for `com.largscolts.fc2016s`.
+  - Enable Push Notifications capability.
   - Configure signing/provisioning in Xcode.
-  - Set marketing/build versions for TestFlight/App Store.
-- Firebase Console:
-  - Confirm Authentication authorised domains include the live web domain.
-  - Confirm FCM/APNs setup for iOS.
-  - Consider enabling Firebase App Check before full rollout.
-  - Keep budget alerts active.
+  - Configure APNs key/certificate in Firebase.
+  - Register iOS app in Firebase and add `GoogleService-Info.plist` at `ios/App/App/GoogleService-Info.plist` if Firebase native messaging is used.
 - Store compliance:
   - Provide public privacy policy URL.
-  - Provide public account deletion instructions/URL for Google Play/App Store policy.
-  - Prepare app screenshots and store listing text.
+  - Provide public account deletion instructions/URL.
+  - Prepare store screenshots and listing text.
+  - Confirm support contact details.
 
-## Release blockers remaining
+## Actual Release Blockers
 
-- Native Android/iOS projects are not present in this repository snapshot, so release builds must still be generated with Capacitor and verified on real devices.
-- iOS push cannot be fully verified without Apple Developer/APNs configuration.
-- Android `.aab` signing cannot be completed without the owner-managed keystore.
-- The account deletion path creates an in-app request, but a public deletion URL/process is still needed for store policy.
-- `npm audit --omit=dev` could not complete because the npm audit endpoint returned an error. Re-run before final submission.
+- Android cannot currently compile on this Windows host because only Java 11 was found. Android Gradle Plugin 8.7 requires Java 17.
+- Android SDK is not installed/configured at the normal `%LOCALAPPDATA%/Android/Sdk` path and no `android/local.properties` exists yet.
+- Android push will not work until `android/app/google-services.json` is added.
+- Android Play release cannot be signed until Martin provides the release keystore values locally.
+- iOS cannot be built on this Windows host because Xcode and CocoaPods are unavailable.
+- iOS push delivery is not store-ready until APNs capability/provisioning and the Firebase/APNs messaging path are completed on a Mac.
+- The account deletion path exists in-app, but app stores also expect a public deletion/support URL.
 
-## Post-v1 nice-to-haves
+## Commands/Actions To Perform Next
 
-- Full offline mode.
-- Biometric unlock.
-- Native haptics.
-- Crash reporting such as Firebase Crashlytics or Sentry.
-- Tablet-specific layout.
-- Dark mode.
-- Richer native share sheet for documents.
+From the project root:
+
+```powershell
+npm install
+npm run prepare:capacitor
+npx cap sync
+```
+
+For Android on a machine with Android Studio, Android SDK and JDK 17:
+
+```powershell
+cd android
+.\gradlew.bat assembleDebug
+.\gradlew.bat bundleRelease
+```
+
+For iOS on a Mac:
+
+```bash
+cd ios/App
+pod install
+open App.xcworkspace
+```
+
+Then in Xcode:
+
+- Select the correct development team.
+- Confirm Bundle ID `com.largscolts.fc2016s`.
+- Enable Push Notifications capability.
+- Archive and upload to TestFlight.
