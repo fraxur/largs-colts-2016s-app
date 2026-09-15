@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-52";
+const appVersion = "4.0-live-rollout-53";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -30,6 +30,8 @@ let applyingLiveWhiteboard = false;
 let suppressBuilderClickUntil = 0;
 let formScrollGesture = null;
 let listScrollGesture = null;
+let horizontalScrollGesture = null;
+let horizontalScrollClickBlock = null;
 let routeHistory = [];
 let nativeShellReady = false;
 let nativePushListenersReady = false;
@@ -915,6 +917,12 @@ function touchScrollGuardForTarget(target) {
   const canScrollY = node.scrollHeight > node.clientHeight + 1;
   const canScrollX = node.scrollWidth > node.clientWidth + 1;
   return canScrollY || canScrollX ? node : null;
+}
+
+function horizontalScrollForTarget(target) {
+  const node = target.closest?.("[data-x-scroll], .bottom-nav, .stats-table, .section-tabs");
+  if (!node) return null;
+  return node.scrollWidth > node.clientWidth + 2 ? node : null;
 }
 
 function useNativeDrag() {
@@ -1943,6 +1951,7 @@ function keepActiveBottomNavVisible() {
   const nav = document.querySelector(".bottom-nav");
   const active = nav?.querySelector(".nav-link.active");
   if (!nav || !active) return;
+  if (horizontalScrollGesture?.node === nav || horizontalScrollClickBlock?.node === nav) return;
   requestAnimationFrame(() => {
     active.scrollIntoView({ block: "nearest", inline: "center" });
   });
@@ -2106,7 +2115,7 @@ function shellView() {
         </section>
       </main>
 
-      <nav class="bottom-nav" aria-label="Mobile navigation">
+      <nav class="bottom-nav" aria-label="Mobile navigation" data-x-scroll>
         ${mobileNav(routes, route)}
       </nav>
     </div>
@@ -2289,7 +2298,7 @@ function squadSectionView(route = "squads") {
   };
   return `
     <section class="toolbar section-toolbar">
-      <div class="segmented light section-tabs">
+      <div class="segmented light section-tabs" data-x-scroll>
         ${tabButton("squads", "Teams", activeRoute)}
         ${tabButton("development", "Development", activeRoute)}
         ${tabButton("squad-builder", "Whiteboard", activeRoute)}
@@ -2316,7 +2325,7 @@ function clubSectionView(route = defaultClubRoute()) {
   };
   return `
     <section class="toolbar section-toolbar">
-      <div class="segmented light section-tabs club-section-tabs">
+      <div class="segmented light section-tabs club-section-tabs" data-x-scroll>
         ${hasCoachAccess() ? tabButton("coach-inbox", "Inbox", activeRoute) : tabButton("contact", "Contact", activeRoute)}
         ${tabButton("coaches", "Coaches", activeRoute)}
         ${tabButton("venues", "Venues", activeRoute)}
@@ -5916,6 +5925,82 @@ document.addEventListener("click", async (event) => {
     return;
   }
 });
+
+document.addEventListener("pointerdown", (event) => {
+  if (event.pointerType === "mouse") return;
+  const node = horizontalScrollForTarget(event.target);
+  if (!node) return;
+  horizontalScrollGesture = {
+    node,
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    startScrollLeft: node.scrollLeft,
+    active: false,
+    moved: false,
+  };
+}, true);
+
+document.addEventListener("pointermove", (event) => {
+  if (!horizontalScrollGesture) return;
+  const gesture = horizontalScrollGesture;
+  if (!gesture.node.isConnected) {
+    horizontalScrollGesture = null;
+    return;
+  }
+  const deltaX = event.clientX - gesture.startX;
+  const deltaY = event.clientY - gesture.startY;
+  const absX = Math.abs(deltaX);
+  const absY = Math.abs(deltaY);
+  if (!gesture.active && absX < 8 && absY < 8) return;
+  if (!gesture.active) {
+    if (absX <= absY * 1.08) {
+      try {
+        gesture.node.releasePointerCapture?.(gesture.pointerId);
+      } catch {
+        // Ignore browsers that did not accept capture.
+      }
+      horizontalScrollGesture = null;
+      return;
+    }
+    gesture.active = true;
+    gesture.node.classList.add("drag-scrolling");
+    try {
+      gesture.node.setPointerCapture?.(gesture.pointerId);
+    } catch {
+      // Some embedded browsers only allow capture on the direct target; scrolling still works without it.
+    }
+  }
+  gesture.moved = true;
+  gesture.node.scrollLeft = gesture.startScrollLeft - deltaX;
+  if (event.cancelable) event.preventDefault();
+}, { capture: true });
+
+document.addEventListener("click", (event) => {
+  if (!horizontalScrollClickBlock || Date.now() > horizontalScrollClickBlock.until) return;
+  if (!horizontalScrollClickBlock.node.contains(event.target)) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  horizontalScrollClickBlock = null;
+}, true);
+
+function endHorizontalScrollGesture() {
+  if (!horizontalScrollGesture) return;
+  const { node, pointerId, moved } = horizontalScrollGesture;
+  node.classList.remove("drag-scrolling");
+  try {
+    node.releasePointerCapture?.(pointerId);
+  } catch {
+    // Ignore browsers that did not accept capture.
+  }
+  if (moved) {
+    horizontalScrollClickBlock = { node, until: Date.now() + 420 };
+  }
+  horizontalScrollGesture = null;
+}
+
+document.addEventListener("pointerup", endHorizontalScrollGesture, true);
+document.addEventListener("pointercancel", endHorizontalScrollGesture, true);
 
 document.addEventListener("pointerdown", (event) => {
   if (event.pointerType === "mouse" || !event.target.closest("form[data-form]")) return;
