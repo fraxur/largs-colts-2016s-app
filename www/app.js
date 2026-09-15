@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-51";
+const appVersion = "4.0-live-rollout-52";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -30,6 +30,11 @@ let applyingLiveWhiteboard = false;
 let suppressBuilderClickUntil = 0;
 let formScrollGesture = null;
 let listScrollGesture = null;
+let routeHistory = [];
+let nativeShellReady = false;
+let nativePushListenersReady = false;
+let webMessageListenerReady = false;
+let keyboardVisible = false;
 const transientFormDrafts = new Map();
 
 const unassignedTeam = { id: "unassigned", name: "Unassigned", colour: "#6b7280" };
@@ -167,6 +172,7 @@ const placeholderPhone = "07000 000000";
 const defaultState = {
   loading: true,
   error: "",
+  isOffline: typeof navigator !== "undefined" ? navigator.onLine === false : false,
   session: {
     loggedIn: false,
     role: "",
@@ -1675,6 +1681,35 @@ function toast(message) {
   toast.timer = setTimeout(() => node.classList.remove("show"), 2600);
 }
 
+function setAppShellClasses() {
+  document.body.classList.toggle("native-shell", isNativeCapacitor());
+  document.body.classList.toggle("keyboard-open", keyboardVisible);
+  document.body.classList.toggle("offline", Boolean(state.isOffline));
+}
+
+function nativePlugin(name) {
+  return window.Capacitor?.Plugins?.[name] || null;
+}
+
+function appRootRoute() {
+  if (state.session.loggedIn) return "home";
+  return "auth";
+}
+
+function offlineBanner() {
+  return state.isOffline
+    ? '<section class="pending-banner offline-banner"><strong>Offline</strong><span>You can look at loaded information, but saving and uploads need a connection.</span></section>'
+    : "";
+}
+
+function actionErrorMessage(error) {
+  if (state.isOffline || error?.code === "unavailable" || String(error?.message || "").toLowerCase().includes("network")) {
+    return "This needs an internet connection. Reconnect and try again.";
+  }
+  if (error?.code) return authErrorMessage(error);
+  return "That action could not be completed. Please try again.";
+}
+
 function setBusy(message = "Loading...") {
   state.loading = true;
   state.error = "";
@@ -1687,6 +1722,34 @@ function showError(message) {
   state.error = message;
   render();
   toast(message);
+}
+
+function confirmAction({ title = "Are you sure?", message = "", confirmLabel = "Confirm", cancelLabel = "Cancel", danger = false } = {}) {
+  return new Promise((resolve) => {
+    const backdrop = document.createElement("div");
+    backdrop.className = "app-confirm-backdrop";
+    backdrop.innerHTML = `
+      <section class="app-confirm" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title">
+        <h2 id="confirm-title">${escapeHtml(title)}</h2>
+        ${message ? `<p>${escapeHtml(message)}</p>` : ""}
+        <div class="confirm-actions">
+          <button class="secondary-button" type="button" data-confirm="cancel">${escapeHtml(cancelLabel)}</button>
+          <button class="${danger ? "danger-button" : "primary-button"}" type="button" data-confirm="ok">${escapeHtml(confirmLabel)}</button>
+        </div>
+      </section>
+    `;
+    const finish = (value) => {
+      backdrop.remove();
+      resolve(value);
+    };
+    backdrop.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-confirm]");
+      if (button) finish(button.dataset.confirm === "ok");
+      if (event.target === backdrop) finish(false);
+    });
+    document.body.appendChild(backdrop);
+    backdrop.querySelector("[data-confirm='cancel']")?.focus();
+  });
 }
 
 function firebaseConfigDebugSummary() {
@@ -1818,6 +1881,7 @@ function render() {
   const snapshot = scrollSnapshot();
   rememberVisibleFormDrafts();
   applyCoachGuideStep();
+  setAppShellClasses();
   const app = $("#app");
   if (state.loading) {
     app.innerHTML = loadingView();
@@ -1924,6 +1988,7 @@ function authView() {
           <button class="${state.authRole === "coach" ? "active" : ""}" type="button" data-action="set-auth-role" data-role="coach">Coach</button>
         </div>
 
+        ${offlineBanner()}
         ${state.authRole === "parent" ? parentLoginView() : coachLoginView()}
         ${errorBanner()}
       </section>
@@ -2034,6 +2099,7 @@ function shellView() {
         </header>
 
         ${errorBanner()}
+        ${offlineBanner()}
         ${pendingOnly ? pendingBanner() : ""}
         <section class="page-frame">
           ${pageView(route)}
@@ -2202,8 +2268,13 @@ function primeRouteDefaults(route) {
   }
 }
 
-function navigateToRoute(route) {
-  state.route = resolveRouteTarget(route);
+function navigateToRoute(route, options = {}) {
+  const nextRoute = resolveRouteTarget(route);
+  if (options.track !== false && state.route && state.route !== nextRoute) {
+    routeHistory.push(state.route);
+    routeHistory = routeHistory.slice(-12);
+  }
+  state.route = nextRoute;
   primeRouteDefaults(state.route);
 }
 
@@ -4548,6 +4619,17 @@ function parentAccessView() {
           <button class="primary-button" type="submit">Update password</button>
         </form>
       </article>
+      <article class="panel danger-panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Account deletion</p>
+            <h3>Remove login account</h3>
+          </div>
+          <span class="status-pill warn">Review required</span>
+        </div>
+        <p class="muted">This asks the club to remove your app login and parent access. Historical player records are handled separately under the club data-retention policy.</p>
+        <button class="secondary-button danger-button" type="button" data-modal="account-deletion">Request account deletion</button>
+      </article>
       <article class="panel">
         <div class="panel-title">
           <div>
@@ -5051,7 +5133,27 @@ function modalContent(type) {
   if (type === "edit-venue") return editVenueModal(state.modal.venueId);
   if (type === "edit-builder-slot") return editBuilderSlotModal(state.modal.slotId);
   if (type === "mobile-nav") return mobileNavModal();
+  if (type === "account-deletion") return accountDeletionModal();
   return "";
+}
+
+function accountDeletionModal() {
+  return `
+    <p class="eyebrow">Account deletion</p>
+    <h2 id="modal-title">Request login account deletion</h2>
+    <p class="muted">This sends a deletion request to the coaches/admins. It covers your app login and parent access links. It does not automatically erase historical club records that may need to be retained for safeguarding or administration.</p>
+    <form class="stacked-form" data-form="account-deletion">
+      <label class="field">
+        <span>Reason or details</span>
+        <textarea name="details" rows="4" placeholder="Optional details for the club admin"></textarea>
+      </label>
+      <label class="field">
+        <span>Type DELETE to confirm</span>
+        <input name="confirmText" autocomplete="off" autocapitalize="characters" required placeholder="DELETE">
+      </label>
+      <button class="danger-button" type="submit">Send deletion request</button>
+    </form>
+  `;
 }
 
 function mobileNavModal() {
@@ -5536,7 +5638,12 @@ document.addEventListener("click", async (event) => {
 
   if (action === "clear-award-tallies") {
     if (!requireCoach()) return;
-    const confirmed = window.confirm("Clear all Player of the Week vote tallies?");
+    const confirmed = await confirmAction({
+      title: "Clear vote tallies?",
+      message: "This resets the temporary Player of the Week tally tool.",
+      confirmLabel: "Clear tallies",
+      danger: true,
+    });
     if (!confirmed) return;
     state.awardTallies = {};
     render();
@@ -5750,7 +5857,7 @@ document.addEventListener("click", async (event) => {
   }
 
   if (action === "reset-builder-layout") {
-    resetBuilderLayout();
+    await resetBuilderLayout();
     return;
   }
 
@@ -5760,7 +5867,7 @@ document.addEventListener("click", async (event) => {
   }
 
   if (action === "reset-builder") {
-    resetBuilder();
+    await resetBuilder();
     return;
   }
 
@@ -5795,7 +5902,7 @@ document.addEventListener("click", async (event) => {
   }
 
   if (action === "clear-whiteboard-arrows") {
-    clearBuilderArrows();
+    await clearBuilderArrows();
     return;
   }
 
@@ -6196,6 +6303,11 @@ document.addEventListener("submit", async (event) => {
   rememberFormDraft(form);
   const draftKey = formDraftKey(form);
   const data = new FormData(form);
+  const submitButtons = [...form.querySelectorAll("button[type='submit'], button:not([type])")];
+  submitButtons.forEach((button) => {
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+  });
 
   try {
     if (form.dataset.form === "parent-login") await handleParentLogin(data);
@@ -6203,6 +6315,7 @@ document.addEventListener("submit", async (event) => {
     if (form.dataset.form === "request-access") await requestAccess(data);
     if (form.dataset.form === "parent-profile") await updateParentProfile(data);
     if (form.dataset.form === "data-request") await submitDataRequest(data);
+    if (form.dataset.form === "account-deletion") await submitAccountDeletionRequest(data);
     if (form.dataset.form === "coach-query") await submitCoachQuery(data);
     if (form.dataset.form === "change-password") await changePassword(data);
     if (form.dataset.form === "event") await addEvent(data);
@@ -6226,7 +6339,13 @@ document.addEventListener("submit", async (event) => {
     render();
   } catch (error) {
     console.error(error);
-    showError(error?.code ? authErrorMessage(error) : "That action could not be completed. Check Firebase permissions and try again.");
+    showError(actionErrorMessage(error));
+  } finally {
+    submitButtons.forEach((button) => {
+      if (!button.isConnected) return;
+      button.disabled = false;
+      button.removeAttribute("aria-busy");
+    });
   }
 });
 
@@ -6458,6 +6577,42 @@ async function submitDataRequest(data) {
   toast("Data request sent");
 }
 
+async function submitAccountDeletionRequest(data) {
+  if (!state.session.loggedIn || hasCoachAccess()) return;
+  const confirmText = String(data.get("confirmText") || "").trim().toUpperCase();
+  if (confirmText !== "DELETE") {
+    toast("Type DELETE to confirm the deletion request");
+    return;
+  }
+
+  const confirmed = await confirmAction({
+    title: "Send account deletion request?",
+    message: "The club will review and remove login access. Historical player records may be retained under club policy.",
+    confirmLabel: "Send request",
+    danger: true,
+  });
+  if (!confirmed) return;
+
+  const runtime = await ensureFirebase();
+  const requestId = `${runtime.user.uid}_account_delete_${Date.now()}`;
+  await runtime.modules.setDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "dataRequests", requestId), {
+    parentUid: runtime.user.uid,
+    parentName: state.session.parentName || "",
+    email: state.session.email || runtime.user.email || "",
+    playerId: "",
+    playerTeamId: "",
+    childName: "Login account",
+    requestType: "delete",
+    details: `Account deletion request. ${String(data.get("details") || "").trim()}`.trim(),
+    status: "pending",
+    createdAt: runtime.modules.serverTimestamp(),
+    updatedAt: runtime.modules.serverTimestamp(),
+  }, { merge: true });
+  delete state.modal;
+  toast("Account deletion request sent");
+  await loadLiveStateFromFirebase();
+}
+
 async function submitCoachQuery(data) {
   if (!state.session.loggedIn || hasCoachAccess()) return;
   const runtime = await ensureFirebase();
@@ -6521,7 +6676,12 @@ async function resolveDataRequest(requestId) {
 
 async function deleteAccessRequest(requestId) {
   if (!requireCoach() || !requestId) return;
-  const confirmed = window.confirm("Delete this parent access request? Use this for old test requests or duplicates.");
+  const confirmed = await confirmAction({
+    title: "Delete access request?",
+    message: "Use this only for old test requests or duplicates.",
+    confirmLabel: "Delete request",
+    danger: true,
+  });
   if (!confirmed) return;
   await deleteLiveDocument("accessRequests", requestId);
   state.accessRequests = state.accessRequests.filter((request) => request.id !== requestId);
@@ -6531,7 +6691,12 @@ async function deleteAccessRequest(requestId) {
 
 async function deleteDataRequest(requestId) {
   if (!requireCoach() || !requestId) return;
-  const confirmed = window.confirm("Delete this data request? Only remove it after it has been dealt with or if it was test data.");
+  const confirmed = await confirmAction({
+    title: "Delete data request?",
+    message: "Only remove it after it has been dealt with or if it was test data.",
+    confirmLabel: "Delete request",
+    danger: true,
+  });
   if (!confirmed) return;
   await deleteLiveDocument("dataRequests", requestId);
   state.dataRequests = state.dataRequests.filter((request) => request.id !== requestId);
@@ -6556,7 +6721,12 @@ async function resolveCoachQuery(queryId) {
 
 async function deleteCoachQuery(queryId) {
   if (!requireCoach() || !queryId) return;
-  const confirmed = window.confirm("Delete this parent message from the coach inbox?");
+  const confirmed = await confirmAction({
+    title: "Delete parent message?",
+    message: "This removes the message from the coach inbox.",
+    confirmLabel: "Delete message",
+    danger: true,
+  });
   if (!confirmed) return;
   await deleteLiveDocument("coachQueries", queryId);
   state.coachQueries = state.coachQueries.filter((query) => query.id !== queryId);
@@ -6951,7 +7121,12 @@ async function savePlayerAward(data) {
 async function deletePlayerAward(awardId) {
   if (!requireCoach() || !awardId) return;
   const award = state.playerAwards.find((item) => item.id === awardId);
-  const confirmed = window.confirm(`Remove ${award?.playerName || "this weekly winner"} from the trophy history?`);
+  const confirmed = await confirmAction({
+    title: "Remove weekly winner?",
+    message: `Remove ${award?.playerName || "this weekly winner"} from the trophy history?`,
+    confirmLabel: "Remove winner",
+    danger: true,
+  });
   if (!confirmed) return;
   await deleteLiveDocument("playerAwards", awardId);
   state.playerAwards = state.playerAwards.filter((item) => item.id !== awardId);
@@ -7020,7 +7195,12 @@ async function deleteEvent(eventId) {
   const event = state.events.find((item) => item.id === eventId);
   if (!event) return;
 
-  const confirmed = window.confirm(`Remove "${event.title}"? This will also remove its availability and attendance marks.`);
+  const confirmed = await confirmAction({
+    title: "Remove event?",
+    message: `Remove "${event.title}"? This also removes its availability and attendance marks.`,
+    confirmLabel: "Remove event",
+    danger: true,
+  });
   if (!confirmed) return;
 
   await queueScheduleNotification(event, "deleted");
@@ -7193,6 +7373,27 @@ async function uploadPlayerDocument(data) {
   toast(recipientParentUids.length ? `Document uploaded and shared with ${targetLabel}` : "Document uploaded. No approved parents matched this audience yet.");
 }
 
+async function openExternalUrl(url, fileName = "document") {
+  const Browser = nativePlugin("Browser");
+  if (isNativeCapacitor() && Browser?.open) {
+    await Browser.open({
+      url,
+      presentationStyle: "fullscreen",
+      toolbarColor: "#850008",
+    });
+    return;
+  }
+
+  const link = document.createElement("a");
+  link.href = url;
+  link.target = "_blank";
+  link.rel = "noopener";
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
 async function downloadPlayerDocument(documentId) {
   const doc = state.playerDocuments.find((item) => item.id === documentId);
   if (!doc?.storagePath) {
@@ -7207,14 +7408,7 @@ async function downloadPlayerDocument(documentId) {
   try {
     const runtime = await ensureFirebase();
     const url = await runtime.modules.getDownloadURL(runtime.modules.ref(runtime.storage, doc.storagePath));
-    const link = document.createElement("a");
-    link.href = url;
-    link.target = "_blank";
-    link.rel = "noopener";
-    link.download = doc.originalFileName || documentTitle(doc);
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
+    await openExternalUrl(url, doc.originalFileName || documentTitle(doc));
   } catch (error) {
     console.error(error);
     toast("Document download failed. Check Storage rules are deployed.");
@@ -7225,7 +7419,12 @@ async function deletePlayerDocument(documentId) {
   if (!requireCoach() || !documentId) return;
   const doc = state.playerDocuments.find((item) => item.id === documentId);
   if (!doc) return;
-  const confirmed = window.confirm(`Remove "${documentTitle(doc)}" from ${documentPlayerName(doc)}?`);
+  const confirmed = await confirmAction({
+    title: "Remove document?",
+    message: `Remove "${documentTitle(doc)}" from ${documentPlayerName(doc)}?`,
+    confirmLabel: "Remove document",
+    danger: true,
+  });
   if (!confirmed) return;
 
   const runtime = await ensureFirebase();
@@ -7313,14 +7512,7 @@ async function downloadCoachDocument(documentId) {
   try {
     const runtime = await ensureFirebase();
     const url = await runtime.modules.getDownloadURL(runtime.modules.ref(runtime.storage, doc.storagePath));
-    const link = document.createElement("a");
-    link.href = url;
-    link.target = "_blank";
-    link.rel = "noopener";
-    link.download = doc.originalFileName || documentTitle(doc);
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
+    await openExternalUrl(url, doc.originalFileName || documentTitle(doc));
   } catch (error) {
     console.error(error);
     toast("Coach document download failed. Check Storage rules are deployed.");
@@ -7331,7 +7523,12 @@ async function deleteCoachDocument(documentId) {
   if (!requireCoach() || !documentId) return;
   const doc = state.coachDocuments.find((item) => item.id === documentId);
   if (!doc) return;
-  const confirmed = window.confirm(`Remove "${documentTitle(doc)}" from the coach library?`);
+  const confirmed = await confirmAction({
+    title: "Remove coach document?",
+    message: `Remove "${documentTitle(doc)}" from the coach library?`,
+    confirmLabel: "Remove document",
+    danger: true,
+  });
   if (!confirmed) return;
 
   const runtime = await ensureFirebase();
@@ -7643,9 +7840,14 @@ function clearBuilderSlot(slotId) {
   render();
 }
 
-function resetBuilder() {
+async function resetBuilder() {
   if (!requireWhiteboardControl()) return;
-  const confirmed = window.confirm("Clear this formation board?");
+  const confirmed = await confirmAction({
+    title: "Clear formation board?",
+    message: "This removes the players from the current board.",
+    confirmLabel: "Clear board",
+    danger: true,
+  });
   if (!confirmed) return;
   state.squadBuilder.selections[state.squadBuilder.format] = {};
   state.squadBuilder.selectedPlayerId = "";
@@ -7654,9 +7856,14 @@ function resetBuilder() {
   render();
 }
 
-function resetBuilderLayout() {
+async function resetBuilderLayout() {
   if (!requireWhiteboardControl()) return;
-  const confirmed = window.confirm("Reset the marker positions and role labels for this formation?");
+  const confirmed = await confirmAction({
+    title: "Reset formation shape?",
+    message: "This resets marker positions and role labels for this formation.",
+    confirmLabel: "Reset shape",
+    danger: true,
+  });
   if (!confirmed) return;
   state.squadBuilder.customSlots[state.squadBuilder.format] = {};
   saveState();
@@ -7676,11 +7883,16 @@ function undoBuilderArrow() {
   toast("Arrow removed");
 }
 
-function clearBuilderArrows() {
+async function clearBuilderArrows() {
   if (!requireWhiteboardControl()) return;
   const arrows = builderArrows();
   if (!arrows.length) return;
-  const confirmed = window.confirm("Clear all arrows from this formation?");
+  const confirmed = await confirmAction({
+    title: "Clear arrows?",
+    message: "This removes all arrows from the current formation.",
+    confirmLabel: "Clear arrows",
+    danger: true,
+  });
   if (!confirmed) return;
   state.squadBuilder.arrows[state.squadBuilder.format] = [];
   saveState();
@@ -7922,6 +8134,25 @@ async function ensureFirebase() {
   firebaseRuntime.messaging = messagingModule.isSupported && await messagingModule.isSupported()
     ? messagingModule.getMessaging(firebaseRuntime.app)
     : null;
+  if (firebaseRuntime.messaging && !webMessageListenerReady) {
+    webMessageListenerReady = true;
+    messagingModule.onMessage(firebaseRuntime.messaging, (payload) => {
+      const title = payload.notification?.title || "Largs Colts update";
+      toast(title);
+      if (payload.data?.type) {
+        state.notifications = [{
+          id: uid("foreground-notice"),
+          userId: state.session.userId,
+          title,
+          body: payload.notification?.body || "",
+          data: payload.data,
+          createdAt: new Date().toISOString(),
+          read: false,
+        }, ...state.notifications];
+        requestRender();
+      }
+    });
+  }
   firebaseRuntime.user = firebaseRuntime.auth.currentUser;
   authModule.onAuthStateChanged(firebaseRuntime.auth, (user) => {
     firebaseRuntime.user = user;
@@ -7932,6 +8163,137 @@ async function ensureFirebase() {
 
 function isFirebaseSignedIn() {
   return backendConfig.enabled && firebaseRuntime.ready && Boolean(firebaseRuntime.user);
+}
+
+function routeForNotificationData(data = {}) {
+  const type = String(data.type || "");
+  if (type === "message") return { route: "messages" };
+  if (type === "document") return { route: "documents" };
+  if (type === "attendance") return { route: "attendance", eventId: data.eventId || "" };
+  if (type === "availability") return { route: "availability", eventId: data.eventId || "" };
+  if (type === "schedule") return { route: "schedule", eventId: data.eventId || "" };
+  return { route: "home" };
+}
+
+function openNotificationTarget(data = {}) {
+  const target = routeForNotificationData(data);
+  if (target.eventId && state.events.some((event) => event.id === target.eventId)) {
+    state.selectedEventId = target.eventId;
+  }
+  navigateToRoute(target.route);
+  saveState();
+  render();
+}
+
+function dismissTopLayer() {
+  if (state.modal) {
+    delete state.modal;
+    render();
+    return true;
+  }
+  if (state.coachGuide?.active) {
+    state.coachGuide.active = false;
+    saveState();
+    render();
+    return true;
+  }
+  return false;
+}
+
+function navigateBackInApp() {
+  if (dismissTopLayer()) return true;
+  const previous = routeHistory.pop();
+  if (previous) {
+    state.route = previous;
+    saveState();
+    render();
+    return true;
+  }
+  if (state.session.loggedIn && state.route !== "home") {
+    navigateToRoute("home", { track: false });
+    saveState();
+    render();
+    return true;
+  }
+  return false;
+}
+
+async function initNativeShell() {
+  if (nativeShellReady) return;
+  nativeShellReady = true;
+  setAppShellClasses();
+
+  const StatusBar = nativePlugin("StatusBar");
+  const SplashScreen = nativePlugin("SplashScreen");
+  const Keyboard = nativePlugin("Keyboard");
+  const App = nativePlugin("App");
+  const Network = nativePlugin("Network");
+
+  try {
+    await StatusBar?.setBackgroundColor?.({ color: "#850008" });
+    await StatusBar?.setStyle?.({ style: "LIGHT" });
+  } catch (error) {
+    console.warn("Native status bar setup skipped", error);
+  }
+
+  try {
+    await Keyboard?.setResizeMode?.({ mode: "body" });
+    await Keyboard?.addListener?.("keyboardWillShow", () => {
+      keyboardVisible = true;
+      setAppShellClasses();
+    });
+    await Keyboard?.addListener?.("keyboardWillHide", () => {
+      keyboardVisible = false;
+      setAppShellClasses();
+    });
+  } catch (error) {
+    console.warn("Native keyboard setup skipped", error);
+  }
+
+  try {
+    await App?.addListener?.("backButton", ({ canGoBack }) => {
+      if (navigateBackInApp()) return;
+      if (canGoBack && window.history.length > 1) {
+        window.history.back();
+        return;
+      }
+      App.exitApp?.();
+    });
+  } catch (error) {
+    console.warn("Native back button setup skipped", error);
+  }
+
+  try {
+    const status = await Network?.getStatus?.();
+    if (status) {
+      state.isOffline = !status.connected;
+      setAppShellClasses();
+    }
+    await Network?.addListener?.("networkStatusChange", (statusUpdate) => {
+      state.isOffline = !statusUpdate.connected;
+      render();
+      toast(statusUpdate.connected ? "Back online" : "You are offline");
+    });
+  } catch (error) {
+    console.warn("Native network setup skipped", error);
+  }
+
+  setTimeout(() => {
+    SplashScreen?.hide?.().catch?.(() => {});
+  }, 250);
+}
+
+function initNetworkListeners() {
+  window.addEventListener("online", () => {
+    state.isOffline = false;
+    render();
+    toast("Back online");
+  });
+  window.addEventListener("offline", () => {
+    state.isOffline = true;
+    render();
+    toast("You are offline");
+  });
 }
 
 async function liveCollection(name) {
@@ -8422,6 +8784,10 @@ function startEventDataSubscriptions(runtime) {
 
 async function saveLiveDocument(collectionName, id, data) {
   if (!isFirebaseSignedIn()) return;
+  if (state.isOffline) {
+    showError("This save needs an internet connection. Reconnect and try again.");
+    throw new Error("offline");
+  }
   try {
     const runtime = await ensureFirebase();
     const payload = {
@@ -8439,6 +8805,10 @@ async function saveLiveDocument(collectionName, id, data) {
 
 async function deleteLiveDocument(collectionName, id) {
   if (!isFirebaseSignedIn()) return;
+  if (state.isOffline) {
+    showError("Deleting needs an internet connection. Reconnect and try again.");
+    throw new Error("offline");
+  }
   try {
     const runtime = await ensureFirebase();
     await runtime.modules.deleteDoc(await liveDoc(collectionName, id));
@@ -8514,28 +8884,38 @@ async function enablePushNotifications() {
 }
 
 function isNativeCapacitor() {
-  return Boolean(window.Capacitor?.isNativePlatform?.() && window.Capacitor?.Plugins?.PushNotifications);
+  return Boolean(window.Capacitor?.isNativePlatform?.());
 }
 
 async function enableNativePushNotifications() {
   try {
-    const PushNotifications = window.Capacitor.Plugins.PushNotifications;
+    const PushNotifications = nativePlugin("PushNotifications");
+    if (!PushNotifications) {
+      toast("Native push plugin is not installed yet");
+      return;
+    }
     const permission = await PushNotifications.requestPermissions();
     if (permission.receive !== "granted") {
       toast("Push permission was not granted");
       return;
     }
 
-    await PushNotifications.addListener("registration", async (token) => {
-      await savePushToken(token.value, "capacitor");
-      toast("Push enabled on this phone");
-    });
-    await PushNotifications.addListener("registrationError", () => {
-      toast("Phone push registration failed");
-    });
-    await PushNotifications.addListener("pushNotificationReceived", (notification) => {
-      toast(notification.title || "Largs Colts update");
-    });
+    if (!nativePushListenersReady) {
+      nativePushListenersReady = true;
+      await PushNotifications.addListener("registration", async (token) => {
+        await savePushToken(token.value, "capacitor");
+        toast("Push enabled on this phone");
+      });
+      await PushNotifications.addListener("registrationError", () => {
+        toast("Phone push registration failed");
+      });
+      await PushNotifications.addListener("pushNotificationReceived", (notification) => {
+        toast(notification.title || "Largs Colts update");
+      });
+      await PushNotifications.addListener("pushNotificationActionPerformed", (notification) => {
+        openNotificationTarget(notification.notification?.data || {});
+      });
+    }
     await PushNotifications.register();
   } catch (error) {
     console.error(error);
@@ -8643,8 +9023,19 @@ async function copyText(text) {
   }
 }
 
+initNetworkListeners();
+initNativeShell();
+
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
-  navigator.serviceWorker.register("service-worker.js").catch(() => {});
+  if (isNativeCapacitor()) {
+    if (navigator.serviceWorker.getRegistrations) {
+      navigator.serviceWorker.getRegistrations().then((registrations) => {
+        registrations.forEach((registration) => registration.unregister());
+      }).catch(() => {});
+    }
+  } else {
+    navigator.serviceWorker.register("service-worker.js").catch(() => {});
+  }
 }
 
 bootApp();

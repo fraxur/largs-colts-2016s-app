@@ -17,6 +17,9 @@
   --ability-blue: #2563eb;
   --shadow: 0 24px 70px rgba(77, 0, 4, 0.16);
   --small-shadow: 0 14px 36px rgba(77, 0, 4, 0.11);
+  --top-safe: env(safe-area-inset-top, 0px);
+  --left-safe: env(safe-area-inset-left, 0px);
+  --right-safe: env(safe-area-inset-right, 0px);
   --bottom-safe: env(safe-area-inset-bottom, 0px);
   color-scheme: light;
   font-family:
@@ -31,16 +34,34 @@
 html {
   min-height: 100%;
   background: var(--cream);
+  overscroll-behavior: none;
 }
 
 body {
   margin: 0;
   min-height: 100vh;
+  min-height: 100dvh;
   background:
     radial-gradient(circle at 12% 0%, rgba(215, 165, 65, 0.28), transparent 26rem),
     linear-gradient(135deg, rgba(152, 0, 12, 0.08), transparent 40%),
     var(--cream);
   color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+  touch-action: manipulation;
+}
+
+body.native-shell {
+  background: var(--red-900);
+}
+
+body.keyboard-open .bottom-nav {
+  transform: translateY(110%);
+}
+
+body.keyboard-open .app-main,
+body.keyboard-open .auth-page {
+  padding-bottom: max(24px, var(--bottom-safe));
 }
 
 button,
@@ -57,6 +78,7 @@ a {
 
 button {
   cursor: pointer;
+  min-height: 44px;
 }
 
 a {
@@ -66,8 +88,13 @@ a {
 .auth-page {
   display: grid;
   min-height: 100vh;
+  min-height: 100dvh;
   place-items: center;
-  padding: 24px;
+  padding:
+    calc(24px + var(--top-safe))
+    calc(24px + var(--right-safe))
+    calc(24px + var(--bottom-safe))
+    calc(24px + var(--left-safe));
 }
 
 .auth-card {
@@ -353,6 +380,7 @@ textarea:focus {
 .unavailable-button,
 .collected-button,
 .secondary-link,
+.danger-button,
 .quick-grid button,
 .tiny-button,
 .sign-out,
@@ -383,9 +411,16 @@ textarea:focus {
 }
 
 .danger-button {
+  display: inline-flex;
+  min-height: 46px;
+  align-items: center;
+  justify-content: center;
   border-color: rgba(185, 28, 28, 0.18);
+  border-radius: 16px;
+  padding: 0 16px;
   background: #ffe5e1;
   color: var(--bad);
+  font-weight: 950;
 }
 
 button:disabled {
@@ -418,6 +453,7 @@ button:disabled {
   display: grid;
   grid-template-columns: 286px minmax(0, 1fr);
   min-height: 100vh;
+  min-height: 100dvh;
 }
 
 .side-nav {
@@ -427,7 +463,11 @@ button:disabled {
   flex-direction: column;
   gap: 18px;
   height: 100vh;
-  padding: 22px;
+  height: 100dvh;
+  padding:
+    calc(22px + var(--top-safe))
+    22px
+    calc(22px + var(--bottom-safe));
   background:
     linear-gradient(180deg, rgba(77, 0, 4, 0.98), rgba(43, 0, 2, 0.98)),
     var(--red-900);
@@ -526,7 +566,11 @@ button:disabled {
 
 .app-main {
   min-width: 0;
-  padding: 26px;
+  padding:
+    calc(26px + var(--top-safe))
+    calc(26px + var(--right-safe))
+    calc(26px + var(--bottom-safe))
+    calc(26px + var(--left-safe));
 }
 
 .topbar {
@@ -1811,19 +1855,64 @@ button:disabled {
   z-index: 80;
   display: grid;
   place-items: center;
-  padding: 18px;
+  padding:
+    calc(18px + var(--top-safe))
+    calc(18px + var(--right-safe))
+    calc(18px + var(--bottom-safe))
+    calc(18px + var(--left-safe));
   background: rgba(43, 0, 2, 0.62);
 }
 
 .modal {
   position: relative;
   width: min(560px, 100%);
-  max-height: min(780px, calc(100vh - 36px));
+  max-height: min(780px, calc(100dvh - 36px - var(--top-safe) - var(--bottom-safe)));
   overflow: auto;
+  overscroll-behavior: contain;
   border-radius: 26px;
   padding: 24px;
   background: var(--paper);
   box-shadow: 0 32px 80px rgba(0, 0, 0, 0.28);
+}
+
+.app-confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 140;
+  display: grid;
+  place-items: end center;
+  padding:
+    calc(18px + var(--top-safe))
+    calc(18px + var(--right-safe))
+    calc(18px + var(--bottom-safe))
+    calc(18px + var(--left-safe));
+  background: rgba(43, 0, 2, 0.58);
+}
+
+.app-confirm {
+  width: min(440px, 100%);
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  padding: 20px;
+  background: var(--paper);
+  box-shadow: var(--shadow);
+}
+
+.app-confirm h2 {
+  margin: 0 0 8px;
+  color: var(--red-950);
+}
+
+.app-confirm p {
+  margin: 0 0 18px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.confirm-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
 }
 
 .modal h2 {
@@ -2419,7 +2508,11 @@ button:disabled {
   }
 
   .app-main {
-    padding: 18px 18px calc(96px + var(--bottom-safe));
+    padding:
+      calc(18px + var(--top-safe))
+      calc(18px + var(--right-safe))
+      calc(96px + var(--bottom-safe))
+      calc(18px + var(--left-safe));
   }
 
   .bottom-nav {
@@ -2438,12 +2531,17 @@ button:disabled {
     overscroll-behavior-x: contain;
     scroll-snap-type: x proximity;
     touch-action: pan-x;
-    padding: 9px 10px calc(9px + var(--bottom-safe));
+    padding:
+      9px
+      calc(10px + var(--right-safe))
+      calc(9px + var(--bottom-safe))
+      calc(10px + var(--left-safe));
     border-top: 1px solid rgba(255, 255, 255, 0.16);
     background: rgba(77, 0, 4, 0.96);
     color: #ffffff;
     scrollbar-color: rgba(255, 255, 255, 0.32) transparent;
     scrollbar-width: thin;
+    transition: transform 180ms ease;
   }
 
   .bottom-nav .nav-link {

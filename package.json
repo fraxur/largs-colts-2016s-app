@@ -11,6 +11,7 @@
     "update:training": "node scripts/update-training-schedule.mjs",
     "update:sept-matchdays": "node scripts/update-sept-matchdays.mjs",
     "cleanup:old-events": "node scripts/cleanup-old-events.mjs",
+    "cleanup:duplicate-freddie": "node scripts/remove-duplicate-freddie.mjs",
     "reset:teams-events": "node scripts/reset-teams-and-events.mjs",
     "remove:sample-parents": "node scripts/remove-sample-parents.mjs",
     "prepare:capacitor": "node scripts/prepare-capacitor.mjs",
@@ -20,10 +21,16 @@
   },
   "dependencies": {
     "@capacitor/android": "^7.0.0",
+    "@capacitor/app": "^7.0.0",
+    "@capacitor/browser": "^7.0.0",
     "@capacitor/cli": "^7.0.0",
     "@capacitor/core": "^7.0.0",
     "@capacitor/ios": "^7.0.0",
+    "@capacitor/keyboard": "^7.0.0",
+    "@capacitor/network": "^7.0.0",
     "@capacitor/push-notifications": "^7.0.0",
+    "@capacitor/splash-screen": "^7.0.0",
+    "@capacitor/status-bar": "^7.0.0",
     "firebase-admin": "^12.7.0"
   }
 }
