@@ -4,12 +4,12 @@ This file tracks technical preparation before Android/iOS beta testing and store
 
 ## Current Build
 
-- Web/app build: `4.0-live-rollout-55`
-- Package version: `4.0.55`
-- Android version: `versionName "4.0.55"`, `versionCode 55`
-- iOS version: `MARKETING_VERSION = 4.0.55`, `CURRENT_PROJECT_VERSION = 55`
-- Web cache: `live-55`
-- Service worker cache: `live-63`
+- Web/app build: `4.0-live-rollout-57`
+- Package version: `4.0.57`
+- Android version: `versionName "4.0.57"`, `versionCode 57`
+- iOS version: `MARKETING_VERSION = 4.0.57`, `CURRENT_PROJECT_VERSION = 57`
+- Web cache: `live-57`
+- Service worker cache: `live-65`
 
 ## Implemented And Verified In Native Project
 
@@ -29,7 +29,7 @@ This file tracks technical preparation before Android/iOS beta testing and store
   - Application ID/namespace set to `com.largscolts.fc2016s`.
   - App name set to `Largs Colts 2016s`.
   - SDK config generated with `compileSdkVersion = 35`, `targetSdkVersion = 35`, `minSdkVersion = 23`.
-  - Native versioning set to `4.0.55` / `55`.
+  - Native versioning set to `4.0.57` / `57`.
   - Android 13 notification permission added: `POST_NOTIFICATIONS`.
   - Cleartext traffic disabled.
   - Android backup disabled and data extraction rules added to avoid child/club data being backed up or device-transferred.
@@ -40,7 +40,7 @@ This file tracks technical preparation before Android/iOS beta testing and store
 - iOS native project:
   - Bundle ID set to `com.largscolts.fc2016s`.
   - Display name set to `Largs Colts 2016s`.
-  - Native versioning set to `4.0.55` / `55`.
+  - Native versioning set to `4.0.57` / `57`.
   - App icon asset catalog regenerated from `assets/app-icon-512.png`.
   - Launch screen and splash assets are present.
   - `ITSAppUsesNonExemptEncryption` set to `false`.
@@ -62,6 +62,14 @@ This file tracks technical preparation before Android/iOS beta testing and store
   - Added mobile-safe document card wrapping for long filenames, audience labels and metadata values.
   - Added resilient Firebase Storage download path resolution and development-only document download diagnostics.
   - Deployed updated Firebase Storage rules that keep coach/approved-parent access restricted while allowing parent access from Firestore document metadata when path folders are imperfect.
+- Mobile release-blocker pass in `4.0.57`:
+  - Replaced the horizontally scrolling mobile bottom navigation with fixed primary destinations plus a More menu.
+  - Expanded More into every permitted destination, including Squad sub-sections, Documents, Messages, Results/Stats and Club tools.
+  - Changed mobile Squad/Club section tabs to wrap into visible rows instead of requiring horizontal swipes.
+  - Added a mobile stats-table card layout so player statistics remain readable without horizontal dragging.
+  - Replaced console-focused document failure copy with user-safe text while keeping debug diagnostics available.
+  - Live document diagnostic identified Firebase Storage HTTP `402`: the Firebase billing account is disabled/delinquent, affecting every checked document record.
+  - Added billing-disabled detection to document download errors so the app reports the real admin action needed.
 - Push-token safety:
   - Android/web FCM tokens continue to be sent via Firebase Admin.
   - iOS APNs tokens from the basic Capacitor Push plugin are now stored as `capacitor-ios-apns` and excluded from Firebase Admin multicast sends until the iOS Firebase/APNs strategy is completed.

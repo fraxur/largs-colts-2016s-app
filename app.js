@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-55";
+const appVersion = "4.0-live-rollout-57";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -2111,7 +2111,7 @@ function shellView() {
         </section>
       </main>
 
-      <nav class="bottom-nav" aria-label="Mobile navigation" data-x-scroll>
+      <nav class="bottom-nav" aria-label="Mobile navigation">
         ${mobileNav(routes, route)}
       </nav>
     </div>
@@ -2175,20 +2175,81 @@ function navItem(item, route, compact = false) {
   `;
 }
 
+function mobilePrimaryRouteIds() {
+  return ["home", "schedule", "availability", "attendance"];
+}
+
+function routeItem(id, label, mark, group = "", mobileLabel = "") {
+  return { id, label, mark, group, mobileLabel };
+}
+
+function mobileMenuRoutes(routes = navRoutes()) {
+  const topLevelIds = new Set(routes.map((item) => item.id));
+  const items = [];
+  const add = (item) => {
+    if (!item?.id || items.some((existing) => existing.id === item.id)) return;
+    items.push(item);
+  };
+
+  routes.forEach((item) => {
+    if (mobilePrimaryRouteIds().includes(item.id)) return;
+    if (item.id === "squad-section" && hasCoachAccess()) {
+      add(routeItem("squads", "Teams", "T", "squad"));
+      add(routeItem("development", "Development", "D", "squad"));
+      add(routeItem("squad-builder", "Whiteboard", "WB", "squad"));
+      add(routeItem("awards", "Awards", "AW", "squad"));
+      add(routeItem("results", "Results & Stats", "RS", "squad"));
+      return;
+    }
+    if (item.id === "club-section") {
+      const clubRoutes = hasCoachAccess() ? coachClubSectionRoutes : parentClubSectionRoutes;
+      clubRoutes.forEach((clubRoute) => add(routeItem(clubRoute, pageTitle(clubRoute), routeMark(clubRoute), "club")));
+      return;
+    }
+    add(item);
+  });
+
+  if (topLevelIds.has("documents")) add(routeItem("documents", "Documents", "DOC"));
+  if (topLevelIds.has("messages")) add(routeItem("messages", "Messages", "M"));
+  return items;
+}
+
+function routeMark(route) {
+  return {
+    home: "H",
+    schedule: "S",
+    availability: "AV",
+    attendance: "R",
+    documents: "DOC",
+    messages: "M",
+    squads: "T",
+    development: "D",
+    "squad-builder": "WB",
+    awards: "AW",
+    results: "RS",
+    "coach-inbox": "IN",
+    coaches: "C",
+    venues: "V",
+    contact: "CT",
+    access: "RQ",
+    privacy: "P",
+    install: "I",
+    guide: "G",
+  }[route] || route.slice(0, 2).toUpperCase();
+}
+
 function mobileNav(routes, route) {
-  if (routes.length <= 5) {
+  if (routes.length <= 5 && !routes.some((item) => item.group)) {
     return routes.map((item) => navItem(item, route, true)).join("");
   }
-  const primaryIds = hasCoachAccess()
-    ? ["home", "schedule", "availability", "attendance"]
-    : ["home", "schedule", "availability", "messages"];
+  const primaryIds = mobilePrimaryRouteIds();
   const primary = primaryIds.map((id) => routes.find((item) => item.id === id)).filter(Boolean);
-  const hidden = routes.filter((item) => !primaryIds.includes(item.id));
+  const hidden = mobileMenuRoutes(routes);
   const moreActive = hidden.some((item) => item.id === route || (Array.isArray(item.group) && item.group.includes(route)));
   return `
     ${primary.map((item) => navItem(item, route, true)).join("")}
     <button class="nav-link ${moreActive ? "active" : ""}" type="button" data-modal="mobile-nav" data-tour="nav-more">
-      <span class="nav-mark">+</span>
+      <span class="nav-mark">M</span>
       <span>More</span>
     </button>
   `;
@@ -2294,7 +2355,7 @@ function squadSectionView(route = "squads") {
   };
   return `
     <section class="toolbar section-toolbar">
-      <div class="segmented light section-tabs" data-x-scroll>
+      <div class="segmented light section-tabs">
         ${tabButton("squads", "Teams", activeRoute)}
         ${tabButton("development", "Development", activeRoute)}
         ${tabButton("squad-builder", "Whiteboard", activeRoute)}
@@ -2321,7 +2382,7 @@ function clubSectionView(route = defaultClubRoute()) {
   };
   return `
     <section class="toolbar section-toolbar">
-      <div class="segmented light section-tabs club-section-tabs" data-x-scroll>
+      <div class="segmented light section-tabs club-section-tabs">
         ${hasCoachAccess() ? tabButton("coach-inbox", "Inbox", activeRoute) : tabButton("contact", "Contact", activeRoute)}
         ${tabButton("coaches", "Coaches", activeRoute)}
         ${tabButton("venues", "Venues", activeRoute)}
@@ -5115,8 +5176,8 @@ function modalView() {
   if (!state.modal) return "";
   const type = state.modal.type;
   return `
-    <div class="modal-backdrop" data-action="close-modal">
-      <section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-backdrop ${type === "mobile-nav" ? "mobile-nav-backdrop" : ""}" data-action="close-modal">
+      <section class="modal ${type === "mobile-nav" ? "mobile-nav-modal" : ""}" role="dialog" aria-modal="true" aria-labelledby="modal-title">
         <button class="modal-close" type="button" data-action="close-modal" aria-label="Close">x</button>
         ${modalContent(type)}
       </section>
@@ -5162,11 +5223,7 @@ function accountDeletionModal() {
 }
 
 function mobileNavModal() {
-  const routes = navRoutes();
-  const primaryIds = hasCoachAccess()
-    ? ["home", "schedule", "availability", "attendance"]
-    : ["home", "schedule", "availability", "messages"];
-  const hidden = routes.filter((item) => !primaryIds.includes(item.id));
+  const hidden = mobileMenuRoutes(navRoutes());
   return `
     <p class="eyebrow">Navigation</p>
     <h2 id="modal-title">More sections</h2>
@@ -7344,10 +7401,20 @@ function coachDocumentStorageCandidates(doc = {}) {
 }
 
 function compactStorageError(error = {}) {
+  const serverResponse = String(error.customData?.serverResponse || error.serverResponse || "");
+  let serverMessage = "";
+  try {
+    serverMessage = JSON.parse(serverResponse)?.error?.message || "";
+  } catch {
+    serverMessage = serverResponse;
+  }
+  const rawMessage = [error.message, serverMessage].filter(Boolean).join(" ");
+  const billingBlocked = /billing account|state delinquent|(^|\D)402(\D|$)/i.test(rawMessage);
   return {
     code: error.code || "unknown",
-    message: String(error.message || "Unknown Firebase Storage error").replace(/https?:\/\/\S+/g, "[url]"),
-    status: error.status_ || error.status || "",
+    message: String(rawMessage || "Unknown Firebase Storage error").replace(/https?:\/\/\S+/g, "[url]"),
+    status: billingBlocked ? 402 : error.status_ || error.status || "",
+    reason: billingBlocked ? "billing-disabled" : "",
   };
 }
 
@@ -7405,13 +7472,16 @@ function documentDownloadMessage(error = {}, kind = "document") {
   const attempts = error.documentDiagnostics?.attempted || [];
   const codes = new Set(attempts.map((item) => item.code).filter(Boolean));
   const label = kind === "coach" ? "Coach document" : "Document";
+  if (attempts.some((item) => item.reason === "billing-disabled" || Number(item.status) === 402 || /billing account|state delinquent/i.test(item.message || ""))) {
+    return "Document downloads are blocked because Firebase Storage billing is disabled. A club admin needs to restore the Firebase billing account.";
+  }
   if (codes.has("storage/unauthenticated")) return "Please sign in again before downloading this document.";
   if (codes.has("storage/unauthorized")) return `${label} download was blocked by Firebase Storage permissions. Check the user role/link and deployed Storage rules.`;
   if (attempts.length && attempts.every((item) => item.code === "storage/object-not-found")) {
     return `${label} file was not found in Firebase Storage. The saved file path needs checked.`;
   }
   if (codes.has("storage/retry-limit-exceeded")) return "Firebase Storage timed out. Check the connection and try again.";
-  return `${label} download failed. Open the browser console with debugDocs=1 for the exact Firebase error.`;
+  return `${label} download failed. Please try again, or ask a coach/admin to run the document diagnostic check.`;
 }
 
 function logDocumentDownloadFailure(kind, doc, error, candidatePaths) {
