@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-54";
+const appVersion = "4.0-live-rollout-55";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -30,8 +30,6 @@ let applyingLiveWhiteboard = false;
 let suppressBuilderClickUntil = 0;
 let formScrollGesture = null;
 let listScrollGesture = null;
-let horizontalScrollGesture = null;
-let horizontalScrollClickBlock = null;
 let routeHistory = [];
 let nativeShellReady = false;
 let nativePushListenersReady = false;
@@ -917,12 +915,6 @@ function touchScrollGuardForTarget(target) {
   const canScrollY = node.scrollHeight > node.clientHeight + 1;
   const canScrollX = node.scrollWidth > node.clientWidth + 1;
   return canScrollY || canScrollX ? node : null;
-}
-
-function horizontalScrollForTarget(target) {
-  const node = target.closest?.("[data-x-scroll], .bottom-nav, .stats-table, .section-tabs");
-  if (!node) return null;
-  return node.scrollWidth > node.clientWidth + 2 ? node : null;
 }
 
 function useNativeDrag() {
@@ -1955,7 +1947,7 @@ function keepActiveBottomNavVisible() {
   const nav = document.querySelector(".bottom-nav");
   const active = nav?.querySelector(".nav-link.active");
   if (!nav || !active) return;
-  if (horizontalScrollGesture?.node === nav || horizontalScrollClickBlock?.node === nav) return;
+  if (window.matchMedia?.("(hover: none) and (pointer: coarse)")?.matches) return;
   requestAnimationFrame(() => {
     active.scrollIntoView({ block: "nearest", inline: "center" });
   });
@@ -5931,82 +5923,6 @@ document.addEventListener("click", async (event) => {
 });
 
 document.addEventListener("pointerdown", (event) => {
-  if (event.pointerType === "mouse") return;
-  const node = horizontalScrollForTarget(event.target);
-  if (!node) return;
-  horizontalScrollGesture = {
-    node,
-    pointerId: event.pointerId,
-    startX: event.clientX,
-    startY: event.clientY,
-    startScrollLeft: node.scrollLeft,
-    active: false,
-    moved: false,
-  };
-}, true);
-
-document.addEventListener("pointermove", (event) => {
-  if (!horizontalScrollGesture) return;
-  const gesture = horizontalScrollGesture;
-  if (!gesture.node.isConnected) {
-    horizontalScrollGesture = null;
-    return;
-  }
-  const deltaX = event.clientX - gesture.startX;
-  const deltaY = event.clientY - gesture.startY;
-  const absX = Math.abs(deltaX);
-  const absY = Math.abs(deltaY);
-  if (!gesture.active && absX < 8 && absY < 8) return;
-  if (!gesture.active) {
-    if (absX <= absY * 1.08) {
-      try {
-        gesture.node.releasePointerCapture?.(gesture.pointerId);
-      } catch {
-        // Ignore browsers that did not accept capture.
-      }
-      horizontalScrollGesture = null;
-      return;
-    }
-    gesture.active = true;
-    gesture.node.classList.add("drag-scrolling");
-    try {
-      gesture.node.setPointerCapture?.(gesture.pointerId);
-    } catch {
-      // Some embedded browsers only allow capture on the direct target; scrolling still works without it.
-    }
-  }
-  gesture.moved = true;
-  gesture.node.scrollLeft = gesture.startScrollLeft - deltaX;
-  if (event.cancelable) event.preventDefault();
-}, { capture: true });
-
-document.addEventListener("click", (event) => {
-  if (!horizontalScrollClickBlock || Date.now() > horizontalScrollClickBlock.until) return;
-  if (!horizontalScrollClickBlock.node.contains(event.target)) return;
-  event.preventDefault();
-  event.stopImmediatePropagation();
-  horizontalScrollClickBlock = null;
-}, true);
-
-function endHorizontalScrollGesture() {
-  if (!horizontalScrollGesture) return;
-  const { node, pointerId, moved } = horizontalScrollGesture;
-  node.classList.remove("drag-scrolling");
-  try {
-    node.releasePointerCapture?.(pointerId);
-  } catch {
-    // Ignore browsers that did not accept capture.
-  }
-  if (moved) {
-    horizontalScrollClickBlock = { node, until: Date.now() + 420 };
-  }
-  horizontalScrollGesture = null;
-}
-
-document.addEventListener("pointerup", endHorizontalScrollGesture, true);
-document.addEventListener("pointercancel", endHorizontalScrollGesture, true);
-
-document.addEventListener("pointerdown", (event) => {
   if (event.pointerType === "mouse" || !event.target.closest("form[data-form]")) return;
   formScrollGesture = {
     x: event.clientX,
@@ -7346,6 +7262,183 @@ function safeStorageFileName(name = "document") {
   return `${base}${extension}`;
 }
 
+function normalizeStoragePath(path = "") {
+  const value = String(path || "").trim();
+  if (!value) return "";
+  const gsMatch = value.match(/^gs:\/\/[^/]+\/(.+)$/i);
+  if (gsMatch) return gsMatch[1].replace(/^\/+/, "");
+  if (/^https?:\/\//i.test(value)) {
+    try {
+      const parsed = new URL(value);
+      const encodedPath = parsed.pathname.split("/o/")[1];
+      if (encodedPath) return decodeURIComponent(encodedPath).replace(/^\/+/, "");
+    } catch {
+      return value.replace(/^\/+/, "");
+    }
+  }
+  return value.replace(/^\/+/, "");
+}
+
+function addUniqueStoragePath(paths, path) {
+  const normalized = normalizeStoragePath(path);
+  if (normalized && !paths.includes(normalized)) paths.push(normalized);
+}
+
+function storageFileNameFromPath(path = "") {
+  const normalized = normalizeStoragePath(path);
+  if (!normalized) return "";
+  try {
+    return decodeURIComponent(normalized.split("/").pop() || "");
+  } catch {
+    return normalized.split("/").pop() || "";
+  }
+}
+
+function documentFileNameCandidates(doc = {}) {
+  const names = [
+    storageFileNameFromPath(doc.storagePath),
+    safeStorageFileName(doc.originalFileName || documentTitle(doc)),
+    safeStorageFileName(documentTitle(doc)),
+  ];
+  return [...new Set(names.filter(Boolean))];
+}
+
+function storageTargetFromPath(path = "", collectionName = "") {
+  const segments = normalizeStoragePath(path).split("/");
+  const index = segments.indexOf(collectionName);
+  return index >= 0 ? segments[index + 1] || "" : "";
+}
+
+function playerDocumentStorageCandidates(doc = {}) {
+  const paths = [];
+  const documentId = doc.id || "";
+  const targetIds = [
+    storageTargetFromPath(doc.storagePath, "playerDocuments"),
+    doc.audience === "all" ? "all" : "",
+    doc.audience === "team" ? normalizeEventTeamId(doc.teamId || doc.playerTeamId) : "",
+    doc.playerId,
+    doc.teamId,
+    doc.playerTeamId,
+  ].filter(Boolean);
+  addUniqueStoragePath(paths, doc.storagePath);
+  [...new Set(targetIds)].forEach((targetId) => {
+    documentFileNameCandidates(doc).forEach((fileName) => {
+      addUniqueStoragePath(paths, `clubs/${clubId}/playerDocuments/${targetId}/${documentId}/${fileName}`);
+    });
+  });
+  return paths;
+}
+
+function coachDocumentStorageCandidates(doc = {}) {
+  const paths = [];
+  const documentId = doc.id || "";
+  const categoryFromPath = storageTargetFromPath(doc.storagePath, "coachDocuments");
+  const categories = [categoryFromPath, doc.category].filter(Boolean);
+  addUniqueStoragePath(paths, doc.storagePath);
+  [...new Set(categories)].forEach((category) => {
+    documentFileNameCandidates(doc).forEach((fileName) => {
+      addUniqueStoragePath(paths, `clubs/${clubId}/coachDocuments/${category}/${documentId}/${fileName}`);
+    });
+  });
+  return paths;
+}
+
+function compactStorageError(error = {}) {
+  return {
+    code: error.code || "unknown",
+    message: String(error.message || "Unknown Firebase Storage error").replace(/https?:\/\/\S+/g, "[url]"),
+    status: error.status_ || error.status || "",
+  };
+}
+
+function storagePathSummary(path = "") {
+  const segments = normalizeStoragePath(path).split("/");
+  const fileName = segments.at(-1) || "";
+  const extension = fileName.includes(".") ? fileName.split(".").pop() : "";
+  return {
+    area: segments[2] || "",
+    documentId: segments[4] || "",
+    extension: extension || "none",
+  };
+}
+
+function documentDiagnosticsEnabled() {
+  let debugFlag = false;
+  try {
+    debugFlag = window.localStorage?.getItem("largs-colts-debug") === "1";
+  } catch {
+    debugFlag = false;
+  }
+  return ["localhost", "127.0.0.1"].includes(window.location.hostname)
+    || window.location.search.includes("debugDocs=1")
+    || debugFlag;
+}
+
+async function resolveDocumentDownloadUrl(runtime, doc, candidatePaths, kind) {
+  const errors = [];
+  for (const path of candidatePaths) {
+    try {
+      const url = await runtime.modules.getDownloadURL(runtime.modules.ref(runtime.storage, path));
+      return { url, storagePath: path };
+    } catch (error) {
+      errors.push({ path, ...compactStorageError(error) });
+    }
+  }
+
+  const finalError = new Error("Firebase Storage could not resolve a download URL for this document.");
+  finalError.code = errors.find((item) => item.code === "storage/unauthenticated")?.code
+    || errors.find((item) => item.code === "storage/unauthorized")?.code
+    || errors.find((item) => item.code !== "storage/object-not-found")?.code
+    || errors[0]?.code
+    || "storage/unknown";
+  finalError.documentDiagnostics = {
+    kind,
+    documentId: doc.id || "",
+    bucket: backendConfig.firebaseConfig?.storageBucket || "",
+    signedIn: Boolean(runtime.user),
+    attempted: errors,
+  };
+  throw finalError;
+}
+
+function documentDownloadMessage(error = {}, kind = "document") {
+  const attempts = error.documentDiagnostics?.attempted || [];
+  const codes = new Set(attempts.map((item) => item.code).filter(Boolean));
+  const label = kind === "coach" ? "Coach document" : "Document";
+  if (codes.has("storage/unauthenticated")) return "Please sign in again before downloading this document.";
+  if (codes.has("storage/unauthorized")) return `${label} download was blocked by Firebase Storage permissions. Check the user role/link and deployed Storage rules.`;
+  if (attempts.length && attempts.every((item) => item.code === "storage/object-not-found")) {
+    return `${label} file was not found in Firebase Storage. The saved file path needs checked.`;
+  }
+  if (codes.has("storage/retry-limit-exceeded")) return "Firebase Storage timed out. Check the connection and try again.";
+  return `${label} download failed. Open the browser console with debugDocs=1 for the exact Firebase error.`;
+}
+
+function logDocumentDownloadFailure(kind, doc, error, candidatePaths) {
+  const compact = {
+    kind,
+    documentId: doc?.id || "",
+    bucket: backendConfig.firebaseConfig?.storageBucket || "",
+    signedIn: Boolean(firebaseRuntime.user),
+    role: state.session.role || "",
+    code: error?.code || "unknown",
+    candidates: candidatePaths.map(storagePathSummary),
+    attempts: error?.documentDiagnostics?.attempted?.map((item) => ({
+      code: item.code,
+      status: item.status,
+      path: storagePathSummary(item.path),
+    })) || [],
+  };
+  console.warn("Document download failed", compact);
+  if (documentDiagnosticsEnabled()) {
+    console.info("Document download diagnostics", {
+      ...compact,
+      fullCandidatePaths: candidatePaths,
+      attemptedErrors: error?.documentDiagnostics?.attempted || [],
+    });
+  }
+}
+
 function approvedParentUidsForPlayers(players = []) {
   const playerIds = new Set(players.map((player) => player.id).filter(Boolean));
   return [...new Set((state.parentLinks || [])
@@ -7496,11 +7589,13 @@ async function downloadPlayerDocument(documentId) {
 
   try {
     const runtime = await ensureFirebase();
-    const url = await runtime.modules.getDownloadURL(runtime.modules.ref(runtime.storage, doc.storagePath));
+    const candidatePaths = playerDocumentStorageCandidates(doc);
+    const { url } = await resolveDocumentDownloadUrl(runtime, doc, candidatePaths, "player");
     await openExternalUrl(url, doc.originalFileName || documentTitle(doc));
   } catch (error) {
-    console.error(error);
-    toast("Document download failed. Check Storage rules are deployed.");
+    const candidatePaths = playerDocumentStorageCandidates(doc);
+    logDocumentDownloadFailure("player", doc, error, candidatePaths);
+    toast(documentDownloadMessage(error, "player"));
   }
 }
 
@@ -7600,11 +7695,13 @@ async function downloadCoachDocument(documentId) {
 
   try {
     const runtime = await ensureFirebase();
-    const url = await runtime.modules.getDownloadURL(runtime.modules.ref(runtime.storage, doc.storagePath));
+    const candidatePaths = coachDocumentStorageCandidates(doc);
+    const { url } = await resolveDocumentDownloadUrl(runtime, doc, candidatePaths, "coach");
     await openExternalUrl(url, doc.originalFileName || documentTitle(doc));
   } catch (error) {
-    console.error(error);
-    toast("Coach document download failed. Check Storage rules are deployed.");
+    const candidatePaths = coachDocumentStorageCandidates(doc);
+    logDocumentDownloadFailure("coach", doc, error, candidatePaths);
+    toast(documentDownloadMessage(error, "coach"));
   }
 }
 

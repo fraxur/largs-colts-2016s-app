@@ -1,7 +1,7 @@
 {
   "name": "largs-colts-2016s-app",
   "private": true,
-  "version": "4.0.54",
+  "version": "4.0.55",
   "type": "module",
   "scripts": {
     "serve": "node server.mjs",
@@ -12,6 +12,7 @@
     "update:sept-matchdays": "node scripts/update-sept-matchdays.mjs",
     "cleanup:old-events": "node scripts/cleanup-old-events.mjs",
     "cleanup:duplicate-freddie": "node scripts/remove-duplicate-freddie.mjs",
+    "diagnose:documents": "node scripts/diagnose-documents.mjs",
     "reset:teams-events": "node scripts/reset-teams-and-events.mjs",
     "remove:sample-parents": "node scripts/remove-sample-parents.mjs",
     "prepare:capacitor": "node scripts/prepare-capacitor.mjs",

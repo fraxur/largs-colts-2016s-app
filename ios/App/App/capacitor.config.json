@@ -1,0 +1,37 @@
+{
+	"appId": "com.largscolts.fc2016s",
+	"appName": "Largs Colts 2016s",
+	"webDir": "www",
+	"bundledWebRuntime": false,
+	"server": {
+		"androidScheme": "https"
+	},
+	"plugins": {
+		"StatusBar": {
+			"style": "LIGHT",
+			"backgroundColor": "#850008",
+			"overlaysWebView": false
+		},
+		"SplashScreen": {
+			"launchShowDuration": 1200,
+			"backgroundColor": "#850008",
+			"showSpinner": false,
+			"androidScaleType": "CENTER_CROP",
+			"splashFullScreen": false,
+			"splashImmersive": false
+		},
+		"Keyboard": {
+			"resize": "body",
+			"style": "light"
+		}
+	},
+	"packageClassList": [
+		"AppPlugin",
+		"CAPBrowserPlugin",
+		"KeyboardPlugin",
+		"CAPNetworkPlugin",
+		"PushNotificationsPlugin",
+		"SplashScreenPlugin",
+		"StatusBarPlugin"
+	]
+}

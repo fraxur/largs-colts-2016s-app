@@ -4,12 +4,12 @@ This file tracks technical preparation before Android/iOS beta testing and store
 
 ## Current Build
 
-- Web/app build: `4.0-live-rollout-54`
-- Package version: `4.0.54`
-- Android version: `versionName "4.0.54"`, `versionCode 54`
-- iOS version: `MARKETING_VERSION = 4.0.54`, `CURRENT_PROJECT_VERSION = 54`
-- Web cache: `live-54`
-- Service worker cache: `live-62`
+- Web/app build: `4.0-live-rollout-55`
+- Package version: `4.0.55`
+- Android version: `versionName "4.0.55"`, `versionCode 55`
+- iOS version: `MARKETING_VERSION = 4.0.55`, `CURRENT_PROJECT_VERSION = 55`
+- Web cache: `live-55`
+- Service worker cache: `live-63`
 
 ## Implemented And Verified In Native Project
 
@@ -29,7 +29,7 @@ This file tracks technical preparation before Android/iOS beta testing and store
   - Application ID/namespace set to `com.largscolts.fc2016s`.
   - App name set to `Largs Colts 2016s`.
   - SDK config generated with `compileSdkVersion = 35`, `targetSdkVersion = 35`, `minSdkVersion = 23`.
-  - Native versioning set to `4.0.54` / `54`.
+  - Native versioning set to `4.0.55` / `55`.
   - Android 13 notification permission added: `POST_NOTIFICATIONS`.
   - Cleartext traffic disabled.
   - Android backup disabled and data extraction rules added to avoid child/club data being backed up or device-transferred.
@@ -40,7 +40,7 @@ This file tracks technical preparation before Android/iOS beta testing and store
 - iOS native project:
   - Bundle ID set to `com.largscolts.fc2016s`.
   - Display name set to `Largs Colts 2016s`.
-  - Native versioning set to `4.0.54` / `54`.
+  - Native versioning set to `4.0.55` / `55`.
   - App icon asset catalog regenerated from `assets/app-icon-512.png`.
   - Launch screen and splash assets are present.
   - `ITSAppUsesNonExemptEncryption` set to `false`.
@@ -57,6 +57,11 @@ This file tracks technical preparation before Android/iOS beta testing and store
   - Service worker is suppressed/unregistered inside Capacitor native builds.
   - Safe-area CSS applies to native shell, bottom nav, auth, modals and confirmation sheets.
   - Parent account deletion request UI remains in place.
+- Mobile release-blocker pass in `4.0.55`:
+  - Removed the custom document-level horizontal drag handler so Android WebView can use native horizontal scrolling for bottom nav, section tabs and stat tables.
+  - Added mobile-safe document card wrapping for long filenames, audience labels and metadata values.
+  - Added resilient Firebase Storage download path resolution and development-only document download diagnostics.
+  - Deployed updated Firebase Storage rules that keep coach/approved-parent access restricted while allowing parent access from Firestore document metadata when path folders are imperfect.
 - Push-token safety:
   - Android/web FCM tokens continue to be sent via Firebase Admin.
   - iOS APNs tokens from the basic Capacitor Push plugin are now stored as `capacitor-ios-apns` and excluded from Firebase Admin multicast sends until the iOS Firebase/APNs strategy is completed.

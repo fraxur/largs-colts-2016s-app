@@ -32,11 +32,42 @@ service firebase.storage {
       return /databases/(default)/documents/clubs/$(clubId)/playerDocuments/$(documentId);
     }
 
+    function playerDocumentExists(clubId, documentId) {
+      return firestore.exists(playerDocumentPath(clubId, documentId));
+    }
+
+    function playerDocumentData(clubId, documentId) {
+      return firestore.get(playerDocumentPath(clubId, documentId)).data;
+    }
+
+    function activePlayerDocument(clubId, documentId) {
+      return playerDocumentExists(clubId, documentId)
+        && playerDocumentData(clubId, documentId).status != "deleted";
+    }
+
     function listedDocumentRecipient(clubId, documentId) {
       return signedIn()
-        && firestore.exists(playerDocumentPath(clubId, documentId))
-        && firestore.get(playerDocumentPath(clubId, documentId)).data.recipientParentUids is list
-        && request.auth.uid in firestore.get(playerDocumentPath(clubId, documentId)).data.recipientParentUids;
+        && activePlayerDocument(clubId, documentId)
+        && playerDocumentData(clubId, documentId).recipientParentUids is list
+        && request.auth.uid in playerDocumentData(clubId, documentId).recipientParentUids;
+    }
+
+    function approvedForDocumentMetadata(clubId, documentId) {
+      return activePlayerDocument(clubId, documentId)
+        && playerDocumentData(clubId, documentId).playerId is string
+        && approvedFor(clubId, playerDocumentData(clubId, documentId).playerId);
+    }
+
+    function canReadPlayerDocument(clubId, pathPlayerId, documentId) {
+      return isCoach(clubId)
+        || (
+          activePlayerDocument(clubId, documentId)
+          && (
+            approvedFor(clubId, pathPlayerId)
+            || approvedForDocumentMetadata(clubId, documentId)
+            || listedDocumentRecipient(clubId, documentId)
+          )
+        );
     }
 
     function allowedDocumentType() {
@@ -48,7 +79,7 @@ service firebase.storage {
     }
 
     match /clubs/{clubId}/playerDocuments/{playerId}/{documentId}/{fileName} {
-      allow read: if isCoach(clubId) || approvedFor(clubId, playerId) || listedDocumentRecipient(clubId, documentId);
+      allow read: if canReadPlayerDocument(clubId, playerId, documentId);
       allow create, update: if isCoach(clubId)
         && request.resource.size <= 15 * 1024 * 1024
         && allowedDocumentType();

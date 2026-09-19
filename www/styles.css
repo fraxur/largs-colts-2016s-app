@@ -87,14 +87,7 @@ button {
   scroll-snap-type: none;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-x: contain;
-  touch-action: pan-x pan-y pinch-zoom;
-}
-
-[data-x-scroll].drag-scrolling,
-.stats-table.drag-scrolling {
-  cursor: grabbing;
-  user-select: none;
-  -webkit-user-select: none;
+  touch-action: auto;
 }
 
 a {
@@ -1269,7 +1262,7 @@ button:disabled {
   overscroll-behavior-x: contain;
   scrollbar-color: rgba(152, 0, 12, 0.42) transparent;
   scrollbar-width: thin;
-  touch-action: pan-x pan-y;
+  touch-action: auto;
 }
 
 .stats-table-header,
@@ -2136,12 +2129,34 @@ button:disabled {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
+  min-width: 0;
 }
 
 .document-card {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.document-card .panel-title {
+  min-width: 0;
+}
+
+.document-card .panel-title > div {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.document-card h3,
+.document-card .eyebrow,
+.document-card .team-pill,
+.document-card .status-pill {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .compact-info {
@@ -2149,7 +2164,33 @@ button:disabled {
 }
 
 .compact-info div {
+  display: grid;
+  grid-template-columns: minmax(74px, auto) minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  min-width: 0;
   padding: 8px 0;
+}
+
+.compact-info dd,
+.compact-info dt {
+  min-width: 0;
+}
+
+.compact-info dd {
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.document-card .choice-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.document-card .choice-row button,
+.document-card .choice-row a {
+  min-width: min(190px, 100%);
 }
 
 .squad-position-panel {
@@ -2548,7 +2589,7 @@ button:disabled {
     -webkit-overflow-scrolling: touch;
     overscroll-behavior-x: contain;
     scroll-snap-type: none;
-    touch-action: pan-x pan-y pinch-zoom;
+    touch-action: auto;
     padding:
       9px
       calc(10px + var(--right-safe))
@@ -2575,6 +2616,7 @@ button:disabled {
     text-align: center;
     user-select: none;
     -webkit-user-select: none;
+    touch-action: manipulation;
   }
 
   .bottom-nav .nav-link span:last-child {
@@ -2676,6 +2718,24 @@ button:disabled {
   .account-chip {
     min-width: 100%;
     text-align: right;
+  }
+
+  .document-card .panel-title {
+    gap: 10px;
+  }
+
+  .compact-info div {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .compact-info dd {
+    text-align: left;
+  }
+
+  .document-card .choice-row button,
+  .document-card .choice-row a {
+    flex-basis: 100%;
   }
 
   .child-switcher {
