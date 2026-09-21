@@ -93,7 +93,7 @@ assert(styles.includes(".stats-table-header {\r\n    display: none") || styles.i
 const syncedAppPath = "android/app/src/main/assets/public/app.js";
 if (existsSync(join(root, syncedAppPath))) {
   const syncedApp = await text(syncedAppPath);
-  assert(syncedApp.includes('const appVersion = "4.0-live-rollout-57";'), "Android bundled app.js must be synced to live-rollout-56.");
+  assert(syncedApp.includes('const appVersion = "4.0-live-rollout-57";'), "Android bundled app.js must be synced to live-rollout-57.");
 }
 
 if (failures.length) {

@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-56";
+const appVersion = "4.0-live-rollout-57";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -7401,10 +7401,20 @@ function coachDocumentStorageCandidates(doc = {}) {
 }
 
 function compactStorageError(error = {}) {
+  const serverResponse = String(error.customData?.serverResponse || error.serverResponse || "");
+  let serverMessage = "";
+  try {
+    serverMessage = JSON.parse(serverResponse)?.error?.message || "";
+  } catch {
+    serverMessage = serverResponse;
+  }
+  const rawMessage = [error.message, serverMessage].filter(Boolean).join(" ");
+  const billingBlocked = /billing account|state delinquent|(^|\D)402(\D|$)/i.test(rawMessage);
   return {
     code: error.code || "unknown",
-    message: String(error.message || "Unknown Firebase Storage error").replace(/https?:\/\/\S+/g, "[url]"),
-    status: error.status_ || error.status || "",
+    message: String(rawMessage || "Unknown Firebase Storage error").replace(/https?:\/\/\S+/g, "[url]"),
+    status: billingBlocked ? 402 : error.status_ || error.status || "",
+    reason: billingBlocked ? "billing-disabled" : "",
   };
 }
 
@@ -7462,6 +7472,9 @@ function documentDownloadMessage(error = {}, kind = "document") {
   const attempts = error.documentDiagnostics?.attempted || [];
   const codes = new Set(attempts.map((item) => item.code).filter(Boolean));
   const label = kind === "coach" ? "Coach document" : "Document";
+  if (attempts.some((item) => item.reason === "billing-disabled" || Number(item.status) === 402 || /billing account|state delinquent/i.test(item.message || ""))) {
+    return "Document downloads are blocked because Firebase Storage billing is disabled. A club admin needs to restore the Firebase billing account.";
+  }
   if (codes.has("storage/unauthenticated")) return "Please sign in again before downloading this document.";
   if (codes.has("storage/unauthorized")) return `${label} download was blocked by Firebase Storage permissions. Check the user role/link and deployed Storage rules.`;
   if (attempts.length && attempts.every((item) => item.code === "storage/object-not-found")) {
