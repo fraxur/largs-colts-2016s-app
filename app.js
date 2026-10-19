@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-59";
+const appVersion = "4.0-live-rollout-60";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -18,6 +18,7 @@ const firebaseRuntime = {
   user: null,
 };
 const clubId = "largs-colts-2016s";
+const seasonBlocks = globalThis.LargsSeasonBlocks;
 let liveTeams = [];
 let liveUnsubscribers = [];
 let eventDataUnsubscribers = [];
@@ -109,7 +110,7 @@ const venues = [
   },
 ];
 
-const kitOptions = ["Home kit", "Away kit"];
+const kitOptions = ["TBC", "Home kit", "Away kit"];
 const developmentLevels = ["Not assessed", "Developmental", "Intermediate", "Advanced"];
 const developmentBands = ["Not set", "Low", "Mid", "High"];
 const footOptions = ["Not set", "Right", "Left", "Both"];
@@ -191,6 +192,9 @@ const defaultState = {
   scheduleFilter: "all",
   scheduleType: "matches",
   schedulePeriod: "upcoming",
+  scheduleBlock: "B",
+  statisticsScope: "season",
+  seasonReports: [],
   attendancePeriod: "upcoming",
   attendanceStatusFilter: "all",
   selectedEventId: "e1",
@@ -1113,7 +1117,7 @@ function timeSlots() {
 }
 
 function timeOptions(selected = "", includeBlank = false) {
-  return `${includeBlank ? '<option value="">Not set</option>' : ""}${timeSlots()
+  return `${includeBlank ? '<option value="">TBC / not set</option>' : ""}${timeSlots()
     .map((slot) => `<option value="${slot}" ${slot === selected ? "selected" : ""}>${slot}</option>`)
     .join("")}`;
 }
@@ -2455,7 +2459,7 @@ function pageView(route) {
 function homeView() {
   const dashboardEvents = visibleEventsForSession(state.events);
   const next = dashboardEvents
-    .filter((event) => new Date(event.datetime) >= startOfToday())
+    .filter((event) => event.type !== "Free Week" && new Date(event.datetime) >= startOfToday())
     .sort((a, b) => new Date(a.datetime) - new Date(b.datetime))[0];
   const child = currentPlayer();
   if (!next) {
@@ -2568,9 +2572,11 @@ function messageCard() {
 function scheduleView() {
   const scheduleType = state.scheduleType || "matches";
   const period = hasCoachAccess() ? state.schedulePeriod || "upcoming" : "upcoming";
+  const block = state.scheduleBlock || "B";
   const allVisibleEvents = visibleEventsForSession(state.events)
     .filter((event) => hasCoachAccess() || ["Fixture", "Free Week", "Training"].includes(event.type))
-    .filter((event) => !hasCoachAccess() || state.scheduleFilter === "all" || normalizeTeamId(event.teamId) === normalizeTeamId(state.scheduleFilter) || event.teamId === "all");
+    .filter((event) => !hasCoachAccess() || state.scheduleFilter === "all" || normalizeTeamId(event.teamId) === normalizeTeamId(state.scheduleFilter) || event.teamId === "all")
+    .filter((event) => !hasCoachAccess() || block === "all" || seasonBlocks.inScope(event, block));
   const matchEvents = allVisibleEvents.filter((event) => event.type !== "Training");
   const trainingEvents = allVisibleEvents.filter((event) => event.type === "Training");
   const typeEvents = scheduleType === "training" ? trainingEvents : matchEvents;
@@ -2583,12 +2589,13 @@ function scheduleView() {
       : eventEndDate(a) - eventEndDate(b));
   const emptyLabel = scheduleType === "training" ? "training sessions" : "matches";
   const emptyCopy = scheduleType === "training"
-    ? "Tuesday and Wednesday Bowencraig training will appear here when the season training dates are seeded."
-    : "Send over the two fixture lists and the matches will be added here by team.";
+    ? "Coaches will add upcoming training sessions when the dates are confirmed."
+    : "No matches have been added for this view. Choose another block or add a fixture.";
 
   return `
     <section class="toolbar" data-tour="schedule-toolbar">
       <div class="schedule-controls">
+        ${hasCoachAccess() ? `<label class="field compact-field"><span>Season 2026/27 · Fixture block</span><select data-action="set-schedule-block"><option value="B" ${block === "B" ? "selected" : ""}>Block B — Current · League 1 / League 2</option><option value="A" ${block === "A" ? "selected" : ""}>Block A — Archived</option><option value="all" ${block === "all" ? "selected" : ""}>All blocks & older records</option></select></label>` : ""}
         <div class="segmented light schedule-type">
           <button type="button" class="${scheduleType === "matches" ? "active" : ""}" data-action="set-schedule-type" data-type="matches">Matches (${matchEvents.length})</button>
           <button type="button" class="${scheduleType === "training" ? "active" : ""}" data-action="set-schedule-type" data-type="training">Training (${trainingEvents.length})</button>
@@ -2634,12 +2641,12 @@ function eventCard(event) {
       <div class="event-main">
         <div class="panel-title">
           <div>
-            <p class="eyebrow">${escapeHtml(event.type)}</p>
+            <p class="eyebrow">${escapeHtml(event.type)}${event.seasonId === seasonBlocks.seasonId ? ` · 2026/27 · Block ${escapeHtml(event.blockId)}` : ""}${event.competition ? ` · ${escapeHtml(event.competition)}` : ""}</p>
             <h3>${escapeHtml(event.title)}</h3>
           </div>
           <div class="event-badges">
             <span class="team-pill ${normalizeTeamId(event.teamId)}">${teamName(event.teamId)}</span>
-            ${past ? '<span class="status-pill warn">Archived</span>' : ""}
+            ${event.blockStatus === "archived" ? '<span class="status-pill warn">Block archived</span>' : past ? '<span class="status-pill">Past event</span>' : '<span class="status-pill">Scheduled</span>'}
           </div>
         </div>
         <p>${eventDateLine(event, venue)}</p>
@@ -2656,7 +2663,7 @@ function eventCard(event) {
       </div>
       <div class="event-actions">
         ${isFreeWeek ? "" : `<button class="secondary-button" type="button" data-action="focus-event" data-event-id="${event.id}">${openLabel}</button>`}
-        ${isFreeWeek ? "" : `<button class="secondary-button" type="button" data-modal="directions" data-event-id="${event.id}">Directions</button>`}
+        ${isFreeWeek || event.venueTbc ? "" : `<button class="secondary-button" type="button" data-modal="directions" data-event-id="${event.id}">Directions</button>`}
         ${coachActions}
       </div>
     </article>
@@ -2825,7 +2832,7 @@ function parentAvailabilityCard(event, child) {
       `}
       ${availabilityFixtureSummary(event)}
       <div class="choice-row">
-        <button class="secondary-button" type="button" data-modal="directions" data-mode="availability" data-event-id="${event.id}">Directions</button>
+        ${(selectedFixture || event).venueTbc ? '<span class="muted">Directions will be available when the venue is confirmed.</span>' : `<button class="secondary-button" type="button" data-modal="directions" data-mode="availability" data-event-id="${event.id}">Directions</button>`}
       </div>
       <div class="choice-row">
         <button class="available-button" type="button" data-action="set-availability" data-status="available">Available</button>
@@ -3684,11 +3691,33 @@ function squadBoardControls() {
   `;
 }
 
+function seasonStatisticsView() {
+  if (!hasCoachAccess()) return "";
+  const scope = ["season", "A", "B"].includes(state.statisticsScope) ? state.statisticsScope : "season";
+  const report = seasonBlocks.seasonReport(state, scope, dateValue(startOfToday()));
+  const verified = scope === "A" && state.seasonReports?.find((item) => item.id === "2026-27-A" && item.status === "verified");
+  const rows = verified?.rows || report.rows;
+  const columns = [["appearances", "Match appearances"], ["selected", "Matches selected"], ["available", "Available matchdays"], ["unavailable", "Unavailable matchdays"], ["omitted", "Omitted matchdays"], ["trainingAttended", "Training attended"], ["trainingMissed", "Training missed"]];
+  const title = scope === "season" ? "Full season" : `Block ${scope}${scope === "A" ? " · Archived" : " · Current"}`;
+  return `
+    <details class="panel season-report-panel" ${state.seasonStatsOpen ? "open" : ""}>
+      <summary>Season 2026/27 · Season & block player statistics</summary>
+      <label class="field compact-field"><span>Reporting period</span><select data-action="set-statistics-scope">${[["season", "Full season 2026/27"], ["A", "Block A — Archived"], ["B", "Block B — Current"]].map(([value, label]) => `<option value="${value}" ${scope === value ? "selected" : ""}>${label}</option>`).join("")}</select></label>
+      <h2>${title}</h2>
+      <p class="muted">${verified ? `Verified recorded figures · ${escapeHtml(verified.verifiedAt || "")}. ${verified.retainedUnknowns ? "Reviewed missing entries remain unknown. " : ""}Later corrections require a new review.` : "Recorded figures · Provisional until historical records are checked. Archiving a block does not reset season totals."}</p>
+      <p class="muted">Appearances require a register marked present or collected; selection alone is not an appearance. Availability is stored once per matchday across the club, so two fixtures on the same day do not double the response. Free weeks are excluded. Omissions require a past matchday with recorded selections. Training missed counts explicit absences only. Unmarked records remain unknown.</p>
+      <p class="muted">${report.fixtureCount} matches · ${report.trainingCount} training sessions · ${rows.length} players (including retained inactive profiles).</p>
+      <div class="season-player-list">${rows.length ? rows.map((row) => `<article class="season-player-stat"><h3>${escapeHtml(row.name || row.playerId)}</h3><dl class="season-numbers">${columns.map(([key, label]) => `<div><dt>${label}</dt><dd>${Number(row[key] || 0)}</dd></div>`).join("")}</dl>${row.appearancesUnknown || row.trainingUnrecorded || row.selectionUnrecorded || row.noReply ? `<p class="report-unknown">Unknown / not recorded: ${Number(row.appearancesUnknown || 0)} selected match appearances; ${Number(row.trainingUnrecorded || 0)} training registers; ${Number(row.selectionUnrecorded || 0)} past matchday selections; ${Number(row.noReply || 0)} availability responses.</p>` : ""}</article>`).join("") : '<p class="muted">No player records loaded.</p>'}</div>
+    </details>
+  `;
+}
+
 function resultsView() {
   if (!hasCoachAccess()) return homeView();
   const fixtures = resultFixtureEvents();
   if (!fixtures.length) {
     return `
+      ${seasonStatisticsView()}
       <section class="panel">
         <p class="eyebrow">Coach only</p>
         <h3>No fixtures to score yet</h3>
@@ -3703,11 +3732,12 @@ function resultsView() {
   const players = resultPlayersForEvent(selected);
 
   return `
+    ${seasonStatisticsView()}
     <section class="toolbar">
       <label class="field compact-field">
         <span>Match</span>
         <select data-action="select-result-event">
-          ${fixtures.map((event) => `<option value="${escapeHtml(event.id)}" ${event.id === selected.id ? "selected" : ""}>${escapeHtml(`${formatDateOnly(event.datetime)} - ${event.title}`)}</option>`).join("")}
+          ${fixtures.map((event) => `<option value="${escapeHtml(event.id)}" ${event.id === selected.id ? "selected" : ""}>${escapeHtml(`${event.blockId ? `Block ${event.blockId} · ` : ""}${formatDateOnly(event.datetime)} - ${event.title}`)}</option>`).join("")}
         </select>
       </label>
     </section>
@@ -3717,7 +3747,7 @@ function resultsView() {
           <div>
             <p class="eyebrow">Match result</p>
             <h3>${escapeHtml(selected.title)}</h3>
-            <p>${escapeHtml(formatDate(selected.datetime))} - ${escapeHtml(teamName(selected.teamId))}</p>
+            <p>${escapeHtml(selected.timeTbc ? `${formatDateOnly(selected.datetime)} · Kick-off TBC` : formatDate(selected.datetime))} - ${escapeHtml(teamName(selected.teamId))}</p>
           </div>
           <span class="status-pill ${resultSummary(selected) ? "good" : "warn"}">${escapeHtml(resultSummary(selected) || "Score needed")}</span>
         </div>
@@ -5361,10 +5391,10 @@ function eventModal(eventId = "") {
   const teamId = normalizeEventTeamId(event?.teamId || "all");
   const opponent = type === "Fixture" ? event?.opponent || "" : event?.title || "";
   const date = dateValue(event?.datetime);
-  const startTime = timeValue(event?.datetime) || "09:30";
-  const finishTime = event?.finishTime || suggestFinishTime(event?.datetime || combineDateTime(date || "2026-05-16", startTime), type);
+  const startTime = event?.timeTbc ? "" : timeValue(event?.datetime) || "";
+  const finishTime = event?.finishTime || "";
   const meetTime = event?.meetTime || "";
-  const kit = event?.kit || "Home kit";
+  const kit = event?.kit || "TBC";
   const homeScore = event?.homeScore ?? "";
   const awayScore = event?.awayScore ?? "";
   const resultNotes = event?.resultNotes || "";
@@ -5377,11 +5407,12 @@ function eventModal(eventId = "") {
       <label class="field"><span>Team</span><select name="teamId"><option value="all" ${teamId === "all" ? "selected" : ""}>All teams</option>${eventTeamOptions().map((team) => `<option value="${team.id}" ${team.id === normalizeTeamId(teamId) ? "selected" : ""}>${team.name}</option>`).join("")}</select></label>
       <label class="field"><span>Opponent or title</span><input name="opponent" required value="${escapeHtml(opponent)}" placeholder="Kilwinning Rangers"></label>
       <label class="field"><span>Date</span><input name="date" type="date" required value="${escapeHtml(date)}"></label>
-      <label class="field"><span>Start time</span><select name="startTime">${timeOptions(startTime)}</select></label>
-      <label class="field"><span>Finish time</span><select name="finishTime">${timeOptions(finishTime)}</select></label>
+      <label class="field"><span>Start time</span><select name="startTime">${timeOptions(startTime, true)}</select></label>
+      <label class="field"><span>Finish time</span><select name="finishTime">${timeOptions(finishTime, true)}</select></label>
       <label class="field"><span>Report time</span><select name="meetTime">${timeOptions(meetTime, true)}</select></label>
       <label class="field"><span>Kit</span><select name="kit">${kitOptions.map((option) => `<option value="${option}" ${option === kit ? "selected" : ""}>${option}</option>`).join("")}</select></label>
-      <label class="field"><span>Venue</span><select name="venueId" data-action="venue-choice">${venueChoices.map((item) => `<option value="${item.id}" ${item.id === selectedVenueId ? "selected" : ""}>${item.name}</option>`).join("")}</select></label>
+      <label class="field"><span>Fixture location</span><select name="homeAway"><option value="home" ${event?.homeAway === "home" || (!event?.homeAway && !isAway) ? "selected" : ""}>Home</option><option value="away" ${event?.homeAway === "away" || (!event?.homeAway && isAway) ? "selected" : ""}>Away</option></select></label>
+      <label class="field"><span>Venue</span><select name="venueId" data-action="venue-choice"><option value="tbc" ${event?.venueTbc ? "selected" : ""}>Venue TBC</option>${venueChoices.map((item) => `<option value="${item.id}" ${!event?.venueTbc && item.id === selectedVenueId ? "selected" : ""}>${item.name}</option>`).join("")}</select></label>
       <div class="away-fields" data-away-fields ${isAway ? "" : "hidden"}>
         <label class="field"><span>Away venue name</span><input name="customVenue" value="${escapeHtml(isAway ? venue.name : "")}" placeholder="Bellfield Estate"></label>
         <label class="field"><span>Away address</span><input name="customAddress" value="${escapeHtml(isAway ? venue.address : "")}" placeholder="Bellfield Estate, Kilmarnock KA1 3XG"></label>
@@ -6211,6 +6242,18 @@ document.addEventListener("pointercancel", () => {
 document.addEventListener("change", async (event) => {
   const target = event.target;
   if (target.form?.dataset?.form) rememberFormDraft(target.form);
+  if (target.dataset.action === "set-schedule-block") {
+    state.scheduleBlock = ["A", "B", "all"].includes(target.value) ? target.value : "B";
+    state.schedulePeriod = state.scheduleBlock === "A" ? "past" : "upcoming";
+    render();
+    return;
+  }
+  if (target.dataset.action === "set-statistics-scope") {
+    state.statisticsScope = ["season", "A", "B"].includes(target.value) ? target.value : "season";
+    state.seasonStatsOpen = true;
+    render();
+    return;
+  }
   if (target.dataset.action === "select-child") {
     state.session.selectedPlayerId = target.value;
     saveState();
@@ -6405,6 +6448,7 @@ document.addEventListener("toggle", (event) => {
   if (!event.target.isConnected) return;
   if (event.target.matches?.('.whiteboard-tools')) state.whiteboardToolsOpen = event.target.open;
   if (event.target.matches?.('.whiteboard-options')) state.whiteboardOptionsOpen = event.target.open;
+  if (event.target.matches?.('.season-report-panel')) state.seasonStatsOpen = event.target.open;
 }, true);
 
 document.addEventListener("keydown", (event) => {
@@ -7093,6 +7137,7 @@ function eventTitle(type, teamId, opponent, venueId) {
 
 function eventVenueFromForm(data) {
   const venueId = data.get("venueId");
+  if (venueId === "tbc") return { id: "away-custom", name: "Venue TBC", address: "Address to be confirmed" };
   const selectedVenue = venueById(venueId);
   const customVenue = String(data.get("customVenue") || "").trim();
   const customAddress = String(data.get("customAddress") || "").trim();
@@ -7110,13 +7155,17 @@ function eventDataFromForm(data, id = uid("event")) {
   const teamId = normalizeEventTeamId(data.get("teamId"));
   const opponent = String(data.get("opponent") || "").trim();
   const venue = eventVenueFromForm(data);
-  return {
+  const homeAway = type === "Fixture" ? String(data.get("homeAway") || (venue.id === "away-custom" ? "away" : "home")) : type === "Free Week" ? "free-week" : "";
+  const record = {
     id,
     type,
     teamId,
-    title: eventTitle(type, teamId, opponent, venue.id),
+    title: type === "Fixture" ? `${teamName(teamId)} ${homeAway === "away" ? "away to" : "vs"} ${opponent}` : eventTitle(type, teamId, opponent, venue.id),
     opponent: type === "Fixture" ? opponent : "",
-    datetime: combineDateTime(data.get("date"), data.get("startTime")),
+    datetime: combineDateTime(data.get("date"), data.get("startTime") || "12:00"),
+    timeTbc: !data.get("startTime"),
+    venueTbc: data.get("venueId") === "tbc",
+    homeAway,
     finishTime: data.get("finishTime"),
     venue: venue.name,
     venueId: venue.id,
@@ -7129,6 +7178,12 @@ function eventDataFromForm(data, id = uid("event")) {
     resultNotes: type === "Fixture" ? String(data.get("resultNotes") || "").trim() : "",
     notes: data.get("notes"),
   };
+  const blockId = seasonBlocks.blockForEvent(record);
+  if (blockId) {
+    Object.assign(record, { seasonId: seasonBlocks.seasonId, blockId, blockStatus: blockId === "A" ? "archived" : "active" });
+    if (blockId === "B" && ["team1", "team2"].includes(teamId) && type !== "Training") record.competition = teamId === "team1" ? "League 1" : "League 2";
+  }
+  return record;
 }
 
 function shouldNotifyParents(data) {
@@ -7138,7 +7193,7 @@ function shouldNotifyParents(data) {
 function plainScheduleLine(event) {
   const venue = eventVenue(event);
   if (event.type === "Free Week") return `${formatDateOnly(event.datetime)} - no match scheduled.`;
-  return `${formatDate(event.datetime)}${event.finishTime ? ` to ${event.finishTime}` : ""} at ${venue.name}.`;
+  return `${event.timeTbc ? `${formatDateOnly(event.datetime)} · Kick-off TBC` : formatDate(event.datetime)}${event.finishTime ? ` to ${event.finishTime}` : ""} at ${venue.name}.`;
 }
 
 function scheduleNotificationTitle(event, action) {
@@ -7198,6 +7253,7 @@ async function editEvent(data) {
   const index = state.events.findIndex((event) => event.id === eventId);
   if (index === -1) return;
   const nextEvent = {
+    ...state.events[index],
     ...eventDataFromForm(data, eventId),
     selectedPlayerIds: state.events[index].selectedPlayerIds || [],
   };
@@ -8678,7 +8734,7 @@ async function loadLiveStateFromFirebase() {
     state.liftOffers = liftOfferDocs;
 
     if (hasCoachAccess(role)) {
-      const [players, parentLinks, accessRequests, notifications, users, dataRequests, coachQueries, playerDevelopment, playerDocuments, coachDocuments, playerAwards, matchStats] = await Promise.all([
+      const [players, parentLinks, accessRequests, notifications, users, dataRequests, coachQueries, playerDevelopment, playerDocuments, coachDocuments, playerAwards, matchStats, seasonReports] = await Promise.all([
         loadDocs("players"),
         loadDocs("parentLinks"),
         loadDocs("accessRequests"),
@@ -8691,6 +8747,7 @@ async function loadLiveStateFromFirebase() {
         loadOptionalDocs("coachDocuments"),
         loadOptionalDocs("playerAwards"),
         loadOptionalDocs("matchStats"),
+        loadOptionalDocs("seasonReports"),
       ]);
       state.players = players.map(normalizePlayerRecord).sort((a, b) => a.name.localeCompare(b.name));
       state.parentLinks = parentLinks;
@@ -8704,6 +8761,7 @@ async function loadLiveStateFromFirebase() {
       state.coachDocuments = sortCoachDocuments(coachDocuments);
       state.playerAwards = sortPlayerAwards(playerAwards);
       state.matchStats = sortMatchStats(matchStats);
+      state.seasonReports = seasonReports;
     } else {
       const uid = runtime.user.uid;
       const [parentLinks, accessRequests, notifications, dataRequests, coachQueries] = await Promise.all([
@@ -8723,6 +8781,7 @@ async function loadLiveStateFromFirebase() {
       state.playerDevelopment = {};
       state.playerAwards = [];
       state.matchStats = [];
+      state.seasonReports = [];
     }
 
     await loadEventSubcollections();

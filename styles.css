@@ -500,6 +500,15 @@ button[aria-busy="true"] { cursor: progress; }
 .whiteboard-tools { width: 100%; }
 .whiteboard-tools summary, .whiteboard-options summary { min-height: 48px; padding: 14px 0; color: var(--ink); cursor: pointer; font-weight: 600; }
 .whiteboard-options { margin-bottom: 16px; }
+.season-report-panel { margin-bottom: 20px; }
+.season-report-panel > summary { min-height: 48px; padding: 12px 0; cursor: pointer; font-weight: 650; }
+.season-player-list { display: grid; gap: 12px; }
+.season-player-stat { padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-card); background: var(--surface); }
+.season-player-stat h3 { margin: 0 0 12px; }
+.season-numbers { display: grid; grid-template-columns: repeat(auto-fit, minmax(125px, 1fr)); gap: 12px; margin: 0; }
+.season-numbers dt { color: var(--text-secondary); font-size: .85rem; line-height: 1.4; }
+.season-numbers dd { font-size: 1.2rem; font-weight: 650; margin: 4px 0 0; }
+.report-unknown { color: var(--warning); font-size: .85rem; line-height: 1.45; margin: 14px 0 0; }
 
 .app-shell {
   display: grid;

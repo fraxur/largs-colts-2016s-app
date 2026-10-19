@@ -1,4 +1,4 @@
-importScripts("firebase-sw-config.js?v=live-67");
+importScripts("firebase-sw-config.js?v=live-68");
 
 if (self.largsFirebaseMessagingConfig?.enabled) {
   importScripts("https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js");
@@ -16,7 +16,7 @@ if (self.largsFirebaseMessagingConfig?.enabled) {
   });
 }
 
-const cacheName = "largs-colts-live-67";
+const cacheName = "largs-colts-live-68";
 const appShell = [
   "./",
   "index.html",
@@ -24,6 +24,7 @@ const appShell = [
   "firebase-sw-config.js",
   "styles.css",
   "app.js",
+  "season-blocks.js",
   "manifest.json",
   "assets/LargsColtsCrest.png",
   "assets/app-icon-192.png",
