@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-57";
+const appVersion = "4.0-live-rollout-59";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -35,6 +35,8 @@ let nativeShellReady = false;
 let nativePushListenersReady = false;
 let webMessageListenerReady = false;
 let keyboardVisible = false;
+let renderedModalType = "";
+let modalReturnSelector = "";
 const transientFormDrafts = new Map();
 
 const unassignedTeam = { id: "unassigned", name: "Unassigned", colour: "#6b7280" };
@@ -581,7 +583,7 @@ const coachGuideSteps = [
     route: "home",
     target: "coach-tools",
     title: "Quick coach actions",
-    body: "These four buttons are the main coach shortcuts: add a fixture or training session, send a message, verify parents, and take the register.",
+    body: "Add a fixture or training session, send a message, or take the register here. Pending access requests appear in Needs your attention and Club & account.",
   },
   {
     route: "schedule",
@@ -1432,6 +1434,7 @@ function playerMatchAvailabilityMetrics(playerId) {
   const selectedDateKeys = dateKeys.filter((dateKey) => playerPickedOnDate(playerId, dateKey));
   const selectedWhenAvailableDateKeys = availableDateKeys.filter((dateKey) => playerPickedOnDate(playerId, dateKey));
   const availableUnpickedDateKeys = availableDateKeys.filter((dateKey) => isPastMatchdayDateKey(dateKey) && !playerPickedOnDate(playerId, dateKey));
+  const selectedWhenAvailablePercent = percentValue(selectedWhenAvailableDateKeys.length, availableDateKeys.length);
   return {
     total: dateKeys.length,
     available: availableDateKeys.length,
@@ -1447,7 +1450,9 @@ function playerMatchAvailabilityMetrics(playerId) {
     selectedWhenAvailableDateKeys,
     availableUnpickedDateKeys,
     availablePercent: percentValue(availableDateKeys.length, dateKeys.length),
-    selectedWhenAvailablePercent: percentValue(selectedWhenAvailableDateKeys.length, availableDateKeys.length),
+    selectedWhenAvailablePercent,
+    missedSelectionPercent: availableDateKeys.length ? percentValue(availableUnpickedDateKeys.length, availableDateKeys.length) : 0,
+    fairSharePercent: availableDateKeys.length ? 100 - selectedWhenAvailablePercent : 0,
   };
 }
 
@@ -1473,42 +1478,25 @@ function selectionPriorityForPlayer(player, dateKey = selectedSquadAvailabilityD
   const match = playerMatchAvailabilityMetrics(player.id);
   const matchAttendance = playerSelectedMatchAttendanceMetrics(player.id);
   const currentStatus = dateKey ? defaultAvailabilityEntry(state.availability[dateKey]?.[player.id]).status : "available";
-  const currentAvailabilityPercent = dateKey
-    ? currentStatus === "available"
-      ? 100
-      : currentStatus === "unavailable"
-        ? 0
-        : 35
-    : 100;
   const trainingPercent = training.total ? training.percent : 100;
-  const availabilityPercent = match.total ? match.availablePercent : 100;
-  const matchAttendancePercent = matchAttendance.total ? matchAttendance.percent : 100;
-  const fairnessPercent = match.available ? percentValue(match.waiting, match.available) : 0;
+  const missedSelectionPercent = match.missedSelectionPercent;
+  const fairSharePercent = match.fairSharePercent;
   const rawScore = Math.round(
-    currentAvailabilityPercent * 0.3
-    + trainingPercent * 0.25
-    + availabilityPercent * 0.15
-    + matchAttendancePercent * 0.15
-    + fairnessPercent * 0.15,
+    missedSelectionPercent * 0.45
+    + fairSharePercent * 0.35
+    + trainingPercent * 0.2,
   );
-  const cappedScore = dateKey && currentStatus === "unavailable"
-    ? Math.min(rawScore, 20)
-    : dateKey && currentStatus === "unknown"
-      ? Math.min(rawScore, 45)
-      : rawScore;
   const currentStatusRank = currentStatus === "available" ? 2 : currentStatus === "unknown" ? 1 : 0;
   return {
-    score: Math.max(0, Math.min(100, cappedScore)),
+    score: Math.max(0, Math.min(100, rawScore)),
     currentStatusRank,
     currentStatus,
     training,
     match,
     matchAttendance,
-    currentAvailabilityPercent,
     trainingPercent,
-    availabilityPercent,
-    matchAttendancePercent,
-    fairnessPercent,
+    missedSelectionPercent,
+    fairSharePercent,
     dateKey,
   };
 }
@@ -1517,7 +1505,7 @@ function selectionPriorityTitle(priority) {
   const dateText = priority.dateKey ? formatDateOnly(`${priority.dateKey}T12:00`) : "the selected weekend";
   return [
     `Priority ${priority.score}/100 for ${dateText}. Higher means a stronger selection case.`,
-    `Current response: ${statusText(priority.currentStatus)}. It weighs current availability, season training attendance, match availability, turning up when picked, and fairness for past available unpicked weekends.`,
+    `Current response: ${statusText(priority.currentStatus)}. Score uses 45% past available-but-not-picked weekends, 35% fair-share opportunity balance, and 20% training attendance.`,
     `Training: ${priority.training.attended} of ${priority.training.total}. Available: ${priority.match.available} of ${priority.match.total}. Picked when available: ${priority.match.selectedWhenAvailable} of ${priority.match.available}.`,
     `Past weekends available but not selected: ${dateKeysToText(priority.match.availableUnpickedDateKeys)}.`,
   ].join(" ");
@@ -1730,6 +1718,7 @@ function showError(message) {
 
 function confirmAction({ title = "Are you sure?", message = "", confirmLabel = "Confirm", cancelLabel = "Cancel", danger = false } = {}) {
   return new Promise((resolve) => {
+    const returnFocus = document.activeElement;
     const backdrop = document.createElement("div");
     backdrop.className = "app-confirm-backdrop";
     backdrop.innerHTML = `
@@ -1744,8 +1733,22 @@ function confirmAction({ title = "Are you sure?", message = "", confirmLabel = "
     `;
     const finish = (value) => {
       backdrop.remove();
+      if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
       resolve(value);
     };
+    backdrop.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        finish(false);
+      } else if (event.key === "Tab") {
+        const buttons = [...backdrop.querySelectorAll("button")];
+        if ((event.shiftKey && document.activeElement === buttons[0]) || (!event.shiftKey && document.activeElement === buttons.at(-1))) {
+          event.preventDefault();
+          (event.shiftKey ? buttons.at(-1) : buttons[0]).focus();
+        }
+      }
+    });
     backdrop.addEventListener("click", (event) => {
       const button = event.target.closest("[data-confirm]");
       if (button) finish(button.dataset.confirm === "ok");
@@ -1898,9 +1901,19 @@ function render() {
   }
   restoreFormDrafts(app);
   bindFormDefaults();
+  app.querySelectorAll('.segmented button, .auth-tabs button').forEach((button) => button.setAttribute("aria-pressed", String(button.classList.contains("active"))));
   restoreScrollSnapshot(snapshot);
   highlightCoachGuideTarget();
   keepActiveBottomNavVisible();
+  const modal = document.querySelector('.modal[role="dialog"]');
+  const nextModalType = state.modal?.type || "";
+  if (modal && nextModalType !== renderedModalType) {
+    modal.querySelector("input:not([type='hidden']), select, textarea, button")?.focus({ preventScroll: true });
+  } else if (!nextModalType && renderedModalType) {
+    const returnTarget = modalReturnSelector && document.querySelector(modalReturnSelector);
+    (returnTarget || document.querySelector(".app-main"))?.focus({ preventScroll: true });
+  }
+  renderedModalType = nextModalType;
 }
 
 function pauseReactiveRenders(duration = 1800) {
@@ -1955,7 +1968,7 @@ function keepActiveBottomNavVisible() {
 
 function loadingView() {
   return `
-    <main class="auth-page">
+    <main class="auth-page" id="main-content" tabindex="-1">
       <section class="auth-card loading-card">
         <div class="auth-brand">
           <img src="${crestPath}" alt="Largs Colts F.C. crest">
@@ -1972,12 +1985,12 @@ function loadingView() {
 }
 
 function errorBanner() {
-  return state.error ? `<section class="pending-banner error-banner"><strong>Action needed</strong><span>${escapeHtml(state.error)}</span></section>` : "";
+  return state.error ? `<section class="pending-banner error-banner" role="alert"><strong>Action needed</strong><span>${escapeHtml(state.error)}</span></section>` : "";
 }
 
 function authView() {
   return `
-    <main class="auth-page">
+    <main class="auth-page" id="main-content" tabindex="-1">
       <section class="auth-card">
         <div class="auth-brand">
           <img src="${crestPath}" alt="Largs Colts F.C. crest">
@@ -2016,8 +2029,8 @@ function parentLoginView() {
       </label>
       <div class="consent-control">
         <div class="check-row compact-consent">
-          <input id="parentConsent" name="consent" type="checkbox" required aria-describedby="parentConsentText">
-          <span id="parentConsentText">I confirm that I am authorised to request access for my child.</span>
+          <input id="parentConsent" name="consent" type="checkbox" required aria-labelledby="parentConsentText">
+          <label id="parentConsentText" for="parentConsent">I confirm that I am authorised to request access for my child.</label>
         </div>
         <details class="consent-details">
           <summary>View full consent statement</summary>
@@ -2030,8 +2043,8 @@ function parentLoginView() {
         </details>
       </div>
       <div class="check-row compact-consent">
-        <input id="parentRememberMe" name="rememberMe" type="checkbox" ${remember ? "checked" : ""} aria-describedby="parentRememberMeText">
-        <span id="parentRememberMeText">Remember me on this device</span>
+        <input id="parentRememberMe" name="rememberMe" type="checkbox" ${remember ? "checked" : ""} aria-labelledby="parentRememberMeText">
+        <label id="parentRememberMeText" for="parentRememberMe">Remember me on this device</label>
       </div>
       <div class="auth-actions">
         <button class="primary-button" type="submit">Continue</button>
@@ -2081,12 +2094,13 @@ function shellView() {
           <small>2016s Team App</small>
         </a>
         <nav aria-label="Primary">
-          ${routes.map((item) => navItem(item, route)).join("")}
+          ${mobilePrimaryRouteIds().map((id) => routes.find((item) => item.id === id)).filter(Boolean).map((item) => navItem(item, route)).join("")}
+          ${navigationGroups(mobileMenuRoutes(routes)).map((group) => `<p class="nav-group-title">${group.title}</p>${group.items.map((item) => navItem(item, route)).join("")}`).join("")}
         </nav>
         <button class="sign-out" type="button" data-action="sign-out">Sign out</button>
       </aside>
 
-      <main class="app-main">
+      <main class="app-main" id="main-content" tabindex="-1">
         <header class="topbar">
           <div>
             <p class="eyebrow">${hasCoachAccess() ? "Coach portal" : "Parent portal"}</p>
@@ -2142,9 +2156,9 @@ function accountControls() {
 
 function navRoutes(pendingOnly = false) {
   const coachRoutes = [
-    { id: "home", label: "Home", mark: "H" },
+    { id: "home", label: "Dashboard", mark: "H" },
     { id: "schedule", label: "Schedule", mark: "S" },
-    { id: "availability", label: "Availability", mobileLabel: "Avail.", mark: "AV" },
+    { id: "availability", label: "Availability", mark: "AV" },
     { id: "attendance", label: "Register", mark: "R" },
     { id: "squad-section", label: "Squad", mark: "SQ", group: squadSectionRoutes },
     { id: "documents", label: "Documents", mobileLabel: "Docs", mark: "DOC" },
@@ -2154,7 +2168,7 @@ function navRoutes(pendingOnly = false) {
   const parentRoutes = [
     { id: "home", label: "Home", mark: "H" },
     { id: "schedule", label: "Schedule", mark: "S" },
-    { id: "availability", label: "Availability", mobileLabel: "Avail.", mark: "AV" },
+    { id: "availability", label: "Availability", mark: "AV" },
     { id: "attendance", label: "Register", mark: "R" },
     { id: "documents", label: "Documents", mobileLabel: "Docs", mark: "DOC" },
     { id: "messages", label: "Messages", mark: "M" },
@@ -2168,15 +2182,17 @@ function navItem(item, route, compact = false) {
   const label = compact ? item.mobileLabel || item.label : item.label;
   const active = route === item.id || (Array.isArray(item.group) && item.group.includes(route));
   return `
-    <button class="nav-link ${active ? "active" : ""}" type="button" data-route-target="${item.id}" data-tour="nav-${item.id}">
-      <span class="nav-mark">${escapeHtml(item.mark || item.label.slice(0, 1))}</span>
+    <button class="nav-link ${active ? "active" : ""}" ${active ? 'aria-current="page"' : ""} type="button" data-route-target="${item.id}" data-tour="nav-${item.id}">
+      <span class="nav-mark" aria-hidden="true">${escapeHtml(item.mark || item.label.slice(0, 1))}</span>
       <span>${escapeHtml(label)}</span>
     </button>
   `;
 }
 
 function mobilePrimaryRouteIds() {
-  return ["home", "schedule", "availability", "attendance"];
+  return hasCoachAccess()
+    ? ["home", "schedule", "attendance", "squad-section"]
+    : ["home", "schedule", "availability", "messages"];
 }
 
 function routeItem(id, label, mark, group = "", mobileLabel = "") {
@@ -2192,15 +2208,14 @@ function mobileMenuRoutes(routes = navRoutes()) {
   };
 
   routes.forEach((item) => {
-    if (mobilePrimaryRouteIds().includes(item.id)) return;
     if (item.id === "squad-section" && hasCoachAccess()) {
-      add(routeItem("squads", "Teams", "T", "squad"));
       add(routeItem("development", "Development", "D", "squad"));
       add(routeItem("squad-builder", "Whiteboard", "WB", "squad"));
       add(routeItem("awards", "Awards", "AW", "squad"));
       add(routeItem("results", "Results & Stats", "RS", "squad"));
       return;
     }
+    if (mobilePrimaryRouteIds().includes(item.id)) return;
     if (item.id === "club-section") {
       const clubRoutes = hasCoachAccess() ? coachClubSectionRoutes : parentClubSectionRoutes;
       clubRoutes.forEach((clubRoute) => add(routeItem(clubRoute, pageTitle(clubRoute), routeMark(clubRoute), "club")));
@@ -2210,8 +2225,18 @@ function mobileMenuRoutes(routes = navRoutes()) {
   });
 
   if (topLevelIds.has("documents")) add(routeItem("documents", "Documents", "DOC"));
-  if (topLevelIds.has("messages")) add(routeItem("messages", "Messages", "M"));
+  if (topLevelIds.has("messages") && !mobilePrimaryRouteIds().includes("messages")) add(routeItem("messages", "Messages", "M"));
   return items;
+}
+
+function navigationGroups(items) {
+  const definitions = [
+    { title: "Matchday", ids: ["availability", "attendance", "results", "awards"] },
+    { title: "Squad tools", ids: ["development", "squad-builder", "squads"] },
+    { title: "Communication", ids: ["messages", "documents", "coach-inbox", "contact"] },
+    { title: "Club & account", ids: ["coaches", "venues", "access", "privacy", "install", "guide"] },
+  ];
+  return definitions.map((group) => ({ ...group, items: items.filter((item) => group.ids.includes(item.id)) })).filter((group) => group.items.length);
 }
 
 function routeMark(route) {
@@ -2245,10 +2270,10 @@ function mobileNav(routes, route) {
   const primaryIds = mobilePrimaryRouteIds();
   const primary = primaryIds.map((id) => routes.find((item) => item.id === id)).filter(Boolean);
   const hidden = mobileMenuRoutes(routes);
-  const moreActive = hidden.some((item) => item.id === route || (Array.isArray(item.group) && item.group.includes(route)));
+  const moreActive = !primary.some((item) => item.id === route || (Array.isArray(item.group) && item.group.includes(route))) && hidden.some((item) => item.id === route);
   return `
     ${primary.map((item) => navItem(item, route, true)).join("")}
-    <button class="nav-link ${moreActive ? "active" : ""}" type="button" data-modal="mobile-nav" data-tour="nav-more">
+    <button class="nav-link ${moreActive ? "active" : ""}" type="button" data-modal="mobile-nav" data-tour="nav-more" aria-haspopup="dialog" aria-expanded="${state.modal?.type === "mobile-nav"}">
       <span class="nav-mark">M</span>
       <span>More</span>
     </button>
@@ -2257,7 +2282,7 @@ function mobileNav(routes, route) {
 
 function pageTitle(route) {
   return {
-    home: "Dashboard",
+    home: hasCoachAccess() ? "Dashboard" : "Home",
     schedule: "Schedule",
     availability: "Availability",
     attendance: "Register",
@@ -2431,7 +2456,7 @@ function homeView() {
   const dashboardEvents = visibleEventsForSession(state.events);
   const next = dashboardEvents
     .filter((event) => new Date(event.datetime) >= startOfToday())
-    .sort((a, b) => new Date(a.datetime) - new Date(b.datetime))[0] || (hasCoachAccess() ? state.events[0] : null);
+    .sort((a, b) => new Date(a.datetime) - new Date(b.datetime))[0];
   const child = currentPlayer();
   if (!next) {
     return `
@@ -2439,18 +2464,19 @@ function homeView() {
         <div class="hero-text">
           <img src="${crestPath}" alt="">
           <div>
-            <p class="eyebrow">Live app ready</p>
-            <h2>No fixtures or training loaded yet</h2>
-            <p>Seed Firestore or ask a coach to add the first event.</p>
+            <p class="eyebrow">Looking ahead</p>
+            <h2>No upcoming events</h2>
+            <p>${hasCoachAccess() ? "Add the next fixture or training session when the details are ready." : "Your coaches will share the next fixture or training session here."}</p>
           </div>
         </div>
         ${hasCoachAccess() ? '<div class="hero-actions"><button class="primary-button" type="button" data-modal="event">Add fixture/training</button></div>' : ""}
       </section>
+      <section class="content-grid two-col">${!hasCoachAccess() && child ? linkedChildCard(child) : coachOverviewCard()}${messageCard()}</section>
     `;
   }
   const counts = availabilityCounts(next.id);
-  const playerCount = hasCoachAccess() ? activePlayers().length : approvedPlayers().length;
   const pendingCount = hasCoachAccess() ? state.accessRequests.filter((request) => request.status === "pending").length : pendingRequests().length;
+  const training = dashboardEvents.filter((event) => event.type === "Training" && new Date(event.datetime) >= startOfToday() && event.id !== next.id).sort((a, b) => new Date(a.datetime) - new Date(b.datetime))[0];
 
   return `
     <section class="hero-panel" data-tour="dashboard-next">
@@ -2459,20 +2485,22 @@ function homeView() {
         <div>
           <p class="eyebrow">Next up</p>
           <h2>${escapeHtml(next.title)}</h2>
-          <p>${formatDate(next.datetime)} at ${escapeHtml(next.venue)}</p>
+          <p>${next.timeTbc ? `${formatDateOnly(next.datetime)} · Time to be confirmed` : formatDate(next.datetime)} · ${escapeHtml(next.venue || "Venue to be confirmed")}</p>
         </div>
       </div>
       <div class="hero-actions">
-        <button class="primary-button" type="button" data-route-target="availability">Availability</button>
+        <button class="primary-button" type="button" data-route-target="${hasCoachAccess() ? "attendance" : "availability"}">${hasCoachAccess() ? "Open register" : "Update availability"}</button>
         <button class="secondary-button on-dark" type="button" data-route-target="schedule">Schedule</button>
       </div>
     </section>
 
-    <section class="metric-grid">
-      <article><strong>${playerCount}</strong><span>${hasCoachAccess() ? "Active players" : "Linked children"}</span></article>
-      <article><strong>${counts.available}</strong><span>Available next event</span></article>
-      <article><strong>${averageAttendance()}%</strong><span>Register average</span></article>
-      <button class="metric-card" type="button" data-route-target="access"><strong>${pendingCount}</strong><span>Pending requests</span></button>
+    <section class="panel dashboard-priorities" aria-labelledby="priorities-title">
+      <h2 id="priorities-title">${hasCoachAccess() ? "Needs your attention" : "For your family"}</h2>
+      ${hasCoachAccess() ? `<button class="priority-row" type="button" data-route-target="availability"><span><strong>${counts.unknown ? `${counts.unknown} availability ${counts.unknown === 1 ? "reply" : "replies"} outstanding` : "Availability replies are up to date"}</strong><small>Next event · ${counts.available} available · Review replies and lifts</small></span><span aria-hidden="true">→</span></button>` : `<button class="priority-row" type="button" data-route-target="availability"><span><strong>${escapeHtml(child?.name || "Your child")} · ${child ? statusText(availabilityEntry(next, child.id).status) : "Next event availability"}</strong><small>Check or change your response and offer a lift</small></span><span aria-hidden="true">→</span></button>`}
+      ${hasCoachAccess() && next.type === "Fixture" ? `<button class="priority-row" type="button" data-route-target="squad-section"><span><strong>${next.selectedPlayerIds?.length ? `${next.selectedPlayerIds.length} players selected` : "Review squad selection"}</strong><small>Open Teams to check the squad for the next matchday</small></span><span aria-hidden="true">→</span></button>` : ""}
+      ${next.timeTbc || !next.venue ? '<p class="attention-note">To be confirmed: ' + [next.timeTbc ? "event time" : "", !next.venue ? "venue" : ""].filter(Boolean).join(" and ") + '. Check Schedule for updates.</p>' : ""}
+      ${pendingCount ? `<button class="priority-row" type="button" data-route-target="access"><span><strong>${pendingCount} access request${pendingCount === 1 ? "" : "s"} pending</strong><small>${hasCoachAccess() ? "Review parent access" : "View your access requests"}</small></span><span aria-hidden="true">→</span></button>` : ""}
+      ${training ? `<button class="priority-row" type="button" data-route-target="schedule"><span><strong>Upcoming training</strong><small>${escapeHtml(formatDate(training.datetime))} · ${escapeHtml(training.venue || "Venue to be confirmed")}</small></span><span aria-hidden="true">→</span></button>` : ""}
     </section>
 
     <section class="content-grid two-col">
@@ -2504,7 +2532,7 @@ function linkedChildCard(child) {
 
 function coachOverviewCard() {
   return `
-    <article class="panel">
+    <article class="panel" data-tour="coach-tools">
       <div class="panel-title">
         <div>
           <p class="eyebrow">Coach tools</p>
@@ -2514,11 +2542,7 @@ function coachOverviewCard() {
       <div class="quick-grid">
         <button type="button" data-modal="event">Add fixture</button>
         <button type="button" data-modal="message">Send message</button>
-        <button type="button" data-route-target="access">Pending requests</button>
         <button type="button" data-route-target="attendance">Take register</button>
-        <button type="button" data-route-target="venues">Venues</button>
-        <button type="button" data-route-target="documents">Documents</button>
-        <button type="button" data-route-target="coach-inbox">Coach inbox</button>
       </div>
     </article>
   `;
@@ -2533,9 +2557,10 @@ function messageCard() {
           <p class="eyebrow">Latest update</p>
           <h3>${escapeHtml(latest?.title || "No messages")}</h3>
         </div>
-        ${hasCoachAccess() ? '<button class="icon-button" type="button" data-modal="message">+</button>' : ""}
+        ${hasCoachAccess() ? '<button class="icon-button" type="button" data-modal="message" aria-label="New message">+</button>' : ""}
       </div>
-      <p class="muted">${escapeHtml(latest?.body || "")}</p>
+      <p class="muted">${escapeHtml(latest?.body || "New club messages will appear here.")}</p>
+      <button class="secondary-button" type="button" data-route-target="messages">View messages</button>
     </article>
   `;
 }
@@ -2980,7 +3005,7 @@ function coachMetricKey() {
       <span><b>Available</b> means weekends they said yes to matches.</span>
       <span><b>Picked</b> means selected on weekends they were available.</span>
       <span><b>Unpicked</b> means available but not selected on past weekends only.</span>
-      <span><b>Priority</b> ranks players for selection using current availability, season training, match availability, turning up when picked, and fairness for past available unpicked weekends.</span>
+      <span><b>Priority</b> uses 45% past available-but-not-picked weekends, 35% fair-share opportunity balance, and 20% training attendance. Current response still affects list order.</span>
     </section>
   `;
 }
@@ -3521,10 +3546,10 @@ function playerStatsRows() {
   return totals.map((row) => `
     <div class="stats-table-row">
       <span><strong>${escapeHtml(row.player.name)}</strong><small>${escapeHtml(teamName(row.player.teamId))}</small></span>
-      <span>${row.appearances}</span>
-      <span>${row.goals}</span>
-      <span>${row.assists}</span>
-      <span>${row.total}</span>
+      <span><small class="stat-label">Appearances</small>${row.appearances}</span>
+      <span><small class="stat-label">Goals</small>${row.goals}</span>
+      <span><small class="stat-label">Assists</small>${row.assists}</span>
+      <span><small class="stat-label">Goals + assists</small>${row.total}</span>
     </div>
   `).join("");
 }
@@ -3726,13 +3751,14 @@ function resultsView() {
           </div>
           <span class="status-pill good">${activePlayers().length} players</span>
         </div>
-        <div class="stats-table" role="table" aria-label="Player stats">
+        <p class="muted">Appearances count fixture registers marked present or collected. Goals and assists total recorded, non-archived player stats. These totals are independent of the match selected above.</p>
+        <div class="stats-table" aria-label="Player stats">
           <div class="stats-table-header">
             <span>Player</span>
-            <span>Apps</span>
+            <span>Appearances</span>
             <span>Goals</span>
             <span>Assists</span>
-            <span>Total</span>
+            <span>Goals + assists</span>
           </div>
           ${playerStatsRows()}
         </div>
@@ -4107,11 +4133,14 @@ function squadBuilderView() {
   const controlDisabled = canEditBoard ? "" : "disabled";
   return `
     <section class="toolbar builder-toolbar">
+      <button class="secondary-button player-pool-toggle" type="button" data-action="toggle-player-pool" aria-expanded="${Boolean(state.whiteboardPoolOpen)}" aria-controls="whiteboard-players">${state.whiteboardPoolOpen ? "Hide players" : "Choose a player"}${selectedPlayer ? ` · ${escapeHtml(selectedPlayer.name)}` : ""}</button>
       <div>
         <p class="eyebrow">Coach only</p>
         <h2 class="section-heading">${definition.label} squad whiteboard</h2>
       </div>
-      <div class="choice-row">
+      <details class="whiteboard-tools" ${state.whiteboardToolsOpen ?? window.innerWidth >= 761 ? "open" : ""}>
+        <summary>Formation & drawing tools</summary>
+        <div class="choice-row">
         ${Object.keys(formationDefinitions).map((item) => `<button class="secondary-button ${format === item ? "active-filter" : ""}" type="button" data-action="set-builder-format" data-format="${item}" ${controlDisabled}>${formationDefinitions[item].label}</button>`).join("")}
         <button class="secondary-button" type="button" data-action="auto-fill-builder" ${controlDisabled}>Auto fill</button>
         <button class="secondary-button ${state.squadBuilder.arrowMode ? "active-filter" : ""}" type="button" data-action="toggle-whiteboard-arrows" ${controlDisabled}>${state.squadBuilder.arrowMode ? "Stop arrows" : "Draw arrows"}</button>
@@ -4120,8 +4149,11 @@ function squadBuilderView() {
         <button class="secondary-button ${showDevelopmentLabels ? "" : "active-filter"}" type="button" data-action="toggle-whiteboard-ratings" ${controlDisabled}>${showDevelopmentLabels ? "Hide ratings" : "Show ratings"}</button>
         <button class="secondary-button" type="button" data-action="reset-builder-layout" ${controlDisabled}>Reset positions</button>
         <button class="secondary-button danger-button" type="button" data-action="reset-builder" ${controlDisabled}>Reset</button>
-      </div>
+        </div>
+      </details>
     </section>
+    <details class="whiteboard-options" ${state.whiteboardOptionsOpen ?? window.innerWidth >= 761 ? "open" : ""}>
+      <summary>${liveWhiteboardState().active ? "Live session & player filters" : "Player filters & live session"}</summary>
     ${liveWhiteboardControls()}
     <section class="builder-filters">
       <div class="segmented light">
@@ -4133,6 +4165,7 @@ function squadBuilderView() {
         ${developmentLevels.map((level) => `<button type="button" class="${state.squadBuilder.levelFilter === level ? "active" : ""}" data-action="set-builder-level" data-level="${level}" ${controlDisabled}>${level}</button>`).join("")}
       </div>` : ""}
     </section>
+    </details>
     <section class="squad-builder-layout">
       <article class="panel formation-panel shape-live">
         <div class="panel-title">
@@ -4162,7 +4195,7 @@ function squadBuilderView() {
           ${substituteSlots().map((slot) => formationSlot(slot, selections[slot.id])).join("")}
         </div>
       </article>
-      <article class="panel player-pool-panel">
+      <article class="panel player-pool-panel ${state.whiteboardPoolOpen ? "pool-open" : ""}" id="whiteboard-players">
         <div class="panel-title">
           <div>
             <p class="eyebrow">Player pool</p>
@@ -4305,6 +4338,7 @@ function messagesView() {
       ${hasCoachAccess() ? '<button class="primary-button" type="button" data-modal="message">New message</button>' : ""}
     </section>
     <div class="message-list" data-tour="messages-panel">
+      ${!visible.length && !parentNotifications.length ? '<section class="panel"><h2>No messages yet</h2><p class="muted">Club updates and register notifications will appear here.</p></section>' : ""}
       ${parentNotifications.map((alert) => `
         <article class="message-card parent-alert-message">
           <div class="panel-title">
@@ -5223,18 +5257,19 @@ function accountDeletionModal() {
 }
 
 function mobileNavModal() {
-  const hidden = mobileMenuRoutes(navRoutes());
+  const pendingOnly = state.session.role === "parent" && !approvedPlayers().length;
+  const hidden = mobileMenuRoutes(navRoutes(pendingOnly));
   return `
     <p class="eyebrow">Navigation</p>
     <h2 id="modal-title">More sections</h2>
-    <div class="mobile-menu-grid">
-      ${hidden.map((item) => `
+    ${navigationGroups(hidden).map((group) => `<section class="navigation-group"><h3>${group.title}</h3><div class="mobile-menu-grid">
+      ${group.items.map((item) => `
         <button class="mobile-menu-link ${state.route === item.id ? "active" : ""}" type="button" data-route-target="${item.id}">
           <span class="nav-mark">${escapeHtml(item.mark || item.label.slice(0, 1))}</span>
           <span>${escapeHtml(item.label)}</span>
         </button>
       `).join("")}
-    </div>
+    </div></section>`).join("")}
   `;
 }
 
@@ -5568,6 +5603,13 @@ document.addEventListener("click", async (event) => {
   const backdropClick = event.target.classList.contains("modal-backdrop");
   const action = target.dataset.action;
 
+  if (action === "toggle-player-pool") {
+    state.whiteboardPoolOpen = !state.whiteboardPoolOpen;
+    render();
+    document.querySelector('[data-action="toggle-player-pool"]')?.focus({ preventScroll: true });
+    return;
+  }
+
   if (target.dataset.route) {
     event.preventDefault();
     navigateToRoute(target.dataset.route);
@@ -5588,6 +5630,7 @@ document.addEventListener("click", async (event) => {
   }
 
   if (target.dataset.modal) {
+    modalReturnSelector = `[data-modal="${CSS.escape(target.dataset.modal)}"]`;
     state.modal = {
       type: target.dataset.modal,
       playerId: target.dataset.playerId,
@@ -6358,6 +6401,36 @@ document.addEventListener("input", (event) => {
   }
 });
 
+document.addEventListener("toggle", (event) => {
+  if (!event.target.isConnected) return;
+  if (event.target.matches?.('.whiteboard-tools')) state.whiteboardToolsOpen = event.target.open;
+  if (event.target.matches?.('.whiteboard-options')) state.whiteboardOptionsOpen = event.target.open;
+}, true);
+
+document.addEventListener("keydown", (event) => {
+  if (!state.modal || event.defaultPrevented) return;
+  const dialog = document.querySelector('.modal[role="dialog"]');
+  if (!dialog) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    delete state.modal;
+    render();
+    return;
+  }
+  if (event.key !== "Tab") return;
+  const controls = [...dialog.querySelectorAll('button, a[href], input, select, textarea, [tabindex="0"]')].filter((control) => !control.disabled && control.getClientRects().length);
+  const first = controls[0];
+  const last = controls.at(-1);
+  if (!first) return;
+  if (event.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && (document.activeElement === last || !dialog.contains(document.activeElement))) {
+    event.preventDefault();
+    first.focus();
+  }
+});
+
 document.addEventListener("submit", async (event) => {
   const form = event.target.closest("[data-form]");
   if (!form) return;
@@ -6367,6 +6440,8 @@ document.addEventListener("submit", async (event) => {
   const data = new FormData(form);
   const submitButtons = [...form.querySelectorAll("button[type='submit'], button:not([type])")];
   submitButtons.forEach((button) => {
+    button.dataset.idleLabel = button.textContent;
+    button.textContent = form.dataset.form.includes("document") ? "Uploading…" : form.dataset.form.includes("login") ? "Signing in…" : "Saving…";
     button.disabled = true;
     button.setAttribute("aria-busy", "true");
   });
@@ -6406,6 +6481,7 @@ document.addEventListener("submit", async (event) => {
     submitButtons.forEach((button) => {
       if (!button.isConnected) return;
       button.disabled = false;
+      button.textContent = button.dataset.idleLabel;
       button.removeAttribute("aria-busy");
     });
   }
