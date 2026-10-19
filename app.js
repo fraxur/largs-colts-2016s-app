@@ -1,4 +1,4 @@
-const appVersion = "4.0-live-rollout-60";
+const appVersion = "4.0-live-rollout-61";
 const crestPath = "assets/LargsColtsCrest.png";
 const backendConfig = window.largsFirebaseConfig || {
   enabled: false,
@@ -37,6 +37,47 @@ let nativePushListenersReady = false;
 let webMessageListenerReady = false;
 let keyboardVisible = false;
 let renderedModalType = "";
+let renderedRoute = "";
+let browserNavigation = false;
+let browserClosePending = false;
+let navigationScroll = null;
+const routeScrollPositions = new Map();
+
+function syncBrowserNavigation() {
+  if (!state.session.loggedIn || browserClosePending || browserNavigation) return;
+  const current = history.state?.largs;
+  const next = { user: state.session.userId, route: state.route, modal: state.modal || null };
+  const url = new URL(location.href);
+  url.hash = '/' + state.route;
+  if (!current || current.user !== next.user) {
+    const requested = decodeURIComponent(location.hash.slice(2));
+    const allowed = navRoutes(false).flatMap(item => [item.id, ...(item.group || [])]);
+    if (allowed.includes(requested)) state.route = resolveRouteTarget(requested);
+    next.route = state.route;
+    url.hash = '/' + state.route;
+    history.replaceState({ largs: next }, '', url);
+  } else if (current.route !== next.route) {
+    history[current.modal ? 'replaceState' : 'pushState']({ largs: next }, '', url);
+  } else if (JSON.stringify(current.modal) !== JSON.stringify(next.modal)) {
+    if (current.modal && !next.modal) {
+      browserClosePending = true;
+      history.back();
+    } else history[current.modal ? 'replaceState' : 'pushState']({ largs: next }, '', url);
+  }
+}
+window.addEventListener('popstate', event => {
+  const entry = event.state?.largs;
+  if (!entry || !state.session.loggedIn || entry.user !== state.session.userId) return;
+  routeScrollPositions.set(renderedRoute, scrollSnapshot());
+  browserClosePending = false;
+  browserNavigation = true;
+  state.route = entry.route;
+  state.modal = entry.modal || undefined;
+  navigationScroll = routeScrollPositions.get(entry.route) || { top: 0, left: 0, keyed: [] };
+  render();
+  browserNavigation = false;
+});
+if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
 let modalReturnSelector = "";
 const transientFormDrafts = new Map();
 
@@ -883,7 +924,7 @@ function clearFormDraft(formOrKey) {
 function scrollSnapshot() {
   const root = document.scrollingElement || document.documentElement;
   return {
-    route: state?.route || "",
+    route: renderedRoute,
     top: root?.scrollTop || 0,
     left: root?.scrollLeft || 0,
     keyed: [...document.querySelectorAll("[data-scroll-key]")].map((node) => ({
@@ -1890,6 +1931,9 @@ function highlightCoachGuideTarget() {
 
 function render() {
   const snapshot = scrollSnapshot();
+  syncBrowserNavigation();
+  const routeChanged = renderedRoute !== state.route;
+  if (routeChanged && renderedRoute) routeScrollPositions.set(renderedRoute, snapshot);
   rememberVisibleFormDrafts();
   applyCoachGuideStep();
   setAppShellClasses();
@@ -1906,7 +1950,13 @@ function render() {
   restoreFormDrafts(app);
   bindFormDefaults();
   app.querySelectorAll('.segmented button, .auth-tabs button').forEach((button) => button.setAttribute("aria-pressed", String(button.classList.contains("active"))));
-  restoreScrollSnapshot(snapshot);
+  if (routeChanged || navigationScroll) {
+    const saved = navigationScroll || { top: 0, left: 0, keyed: [] };
+    navigationScroll = null;
+    window.scrollTo(saved.left, saved.top);
+    restoreScrollSnapshot({ ...saved, route: state.route });
+  } else restoreScrollSnapshot({ ...snapshot, route: state.route });
+  renderedRoute = state.route;
   highlightCoachGuideTarget();
   keepActiveBottomNavVisible();
   const modal = document.querySelector('.modal[role="dialog"]');
@@ -3157,7 +3207,13 @@ function isRegisterHistoryEvent(event) {
 }
 
 function registerEventsForSession() {
-  return visibleEventsForSession(state.events)
+  const child = currentPlayer();
+  const events = hasCoachAccess() ? visibleEventsForSession(state.events) : state.events.filter(event => {
+    if (!child || !approvedPlayers().some(player => player.id === child.id)) return false;
+    const marked = ['present', 'absent', 'collected'].includes(state.attendance[event.id]?.[child.id]);
+    return !isBeforeVisibleSeason(event) && (isWithinParentEventWindow(event) || marked);
+  });
+  return events
     .filter((event) => !isRemovedRegisterEvent(event))
     .sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
 }
@@ -3258,7 +3314,7 @@ function attendanceView() {
   const child = currentPlayer();
   const players = hasCoachAccess()
     ? attendancePlayersForView(event, eventPlayers)
-    : [child].filter(Boolean).filter((player) => eventPlayers.some((eventPlayer) => eventPlayer.id === player.id));
+    : [child].filter(Boolean).filter((player) => eventPlayers.some((eventPlayer) => eventPlayer.id === player.id) || ['present', 'absent', 'collected'].includes(state.attendance[event.id]?.[player.id]));
 
   return `
     <section class="toolbar register-toolbar" data-tour="attendance-session">
@@ -3714,6 +3770,9 @@ function seasonStatisticsView() {
 
 function resultsView() {
   if (!hasCoachAccess()) return homeView();
+  const mode = state.resultsMode === 'statistics' ? 'statistics' : 'results';
+  const modeChoice = '<div class="segmented light results-mode" aria-label="Results or statistics">' +
+    ['results', 'statistics'].map(value => '<button type="button" data-action="set-results-mode" data-mode="' + value + '" class="' + (mode === value ? 'active' : '') + '">' + (value === 'results' ? 'Match results' : 'Player statistics') + '</button>').join('') + '</div>';
   const fixtures = resultFixtureEvents();
   if (!fixtures.length) {
     return `
@@ -3732,8 +3791,9 @@ function resultsView() {
   const players = resultPlayersForEvent(selected);
 
   return `
+    ${modeChoice}
     ${seasonStatisticsView()}
-    <section class="toolbar">
+    <section class="toolbar" ${mode === 'statistics' ? 'hidden' : ''}>
       <label class="field compact-field">
         <span>Match</span>
         <select data-action="select-result-event">
@@ -3741,8 +3801,8 @@ function resultsView() {
         </select>
       </label>
     </section>
-    <section class="content-grid two-col">
-      <article class="panel">
+    <section class="results-content">
+      <article class="panel" ${mode === 'statistics' ? 'hidden' : ''}>
         <div class="panel-title">
           <div>
             <p class="eyebrow">Match result</p>
@@ -3773,7 +3833,7 @@ function resultsView() {
           <button class="primary-button" type="submit">Save result and stats</button>
         </form>
       </article>
-      <article class="panel">
+      <article class="panel" ${mode === 'results' ? 'hidden' : ''}>
         <div class="panel-title">
           <div>
             <p class="eyebrow">Player stats</p>
@@ -3781,7 +3841,7 @@ function resultsView() {
           </div>
           <span class="status-pill good">${activePlayers().length} players</span>
         </div>
-        <p class="muted">Appearances count fixture registers marked present or collected. Goals and assists total recorded, non-archived player stats. These totals are independent of the match selected above.</p>
+        <details class="stats-explanation"><summary>How these totals are calculated</summary><p class="muted">Appearances count fixture registers marked present or collected. Goals and assists total recorded, non-archived player stats. These totals are independent of the match selected above.</p></details>
         <div class="stats-table" aria-label="Player stats">
           <div class="stats-table-header">
             <span>Player</span>
@@ -4217,6 +4277,7 @@ function squadBuilderView() {
           ${formationArrowLayer(format)}
           ${starterSlots(format).map((slot) => formationSlot(slot, selections[slot.id], { editable: true })).join("")}
         </div>
+        ${canEditBoard ? '<div class="marker-actions"><label class="field"><span>Position actions</span><select data-action="select-marker-actions">' + starterSlots(format).map(slot => '<option value="' + escapeHtml(slot.id) + '" ' + ((state.markerActionSlot || 'gk') === slot.id ? 'selected' : '') + '>' + escapeHtml(slot.label + (selections[slot.id] ? ' · ' + (activePlayers().find(p => p.id === selections[slot.id])?.name || '') : ' · Empty')) + '</option>').join('') + '</select></label><button class="secondary-button" type="button" data-action="edit-builder-slot" data-slot-id="' + escapeHtml(state.markerActionSlot || 'gk') + '">Edit position</button><button class="secondary-button" type="button" data-action="clear-builder-slot" data-slot-id="' + escapeHtml(state.markerActionSlot || 'gk') + '">Clear player</button></div>' : ''}
         <div class="formation-bench" data-builder-bench>
           <div>
             <p class="eyebrow">Bench</p>
@@ -4306,6 +4367,7 @@ function builderPlayerCard(player) {
   return `
     <button class="builder-player-card ${selected ? "selected" : ""} ${player.alreadyPicked ? "picked" : ""}" type="button" draggable="${draggable ? "true" : "false"}" data-action="select-builder-player" data-player-id="${escapeHtml(player.id)}" data-player-drag="${escapeHtml(player.id)}" ${canEditBoard ? "" : "disabled"}>
       <strong>${escapeHtml(player.name)}</strong>
+      ${player.alreadyPicked ? '<span class="assigned-badge">Assigned</span>' : ''}
       <span>${escapeHtml(meta)}</span>
       <small>${escapeHtml(record.foot === "Not set" ? "Foot not set" : `${record.foot} foot`)}</small>
       <em>${record.positions.length ? escapeHtml(record.positions.join(", ")) : "No positions set"}</em>
@@ -4325,11 +4387,11 @@ function formationSlot(slot, playerId, options = {}) {
   return `
     <div class="formation-slot ${slot.isSub ? "sub-slot" : ""} ${editable ? "editable-slot" : ""} ${player ? "filled" : ""} ${match ? "" : "position-warning"}" ${style} data-builder-slot="${escapeHtml(slot.id)}" data-slot-player-id="${escapeHtml(player?.id || "")}" data-position="${escapeHtml(slot.position)}" data-action="assign-builder-slot" ${dragMarker}>
       <span class="slot-label">${escapeHtml(slot.label)}</span>
-      <strong>${player ? escapeHtml(player.name) : escapeHtml(slot.position)}</strong>
+      <strong title="${escapeHtml(player?.name || slot.position)}">${player ? escapeHtml(player.name) : escapeHtml(slot.position)}</strong>
       ${player && showDevelopmentLabels ? `<small>${escapeHtml(developmentLabel(record))}</small>` : !player && editable ? '<small>Drag to move</small>' : ""}
       <div class="slot-actions">
-        ${editable ? `<button class="slot-edit" type="button" data-action="edit-builder-slot" data-slot-id="${escapeHtml(slot.id)}">Edit</button>` : ""}
-        ${player && canEditBoard ? `<button class="slot-clear" type="button" data-action="clear-builder-slot" data-slot-id="${escapeHtml(slot.id)}" aria-label="Clear ${escapeHtml(slot.label)}">x</button>` : ""}
+        
+        ${slot.isSub && player && canEditBoard ? '<button class="slot-clear" type="button" data-action="clear-builder-slot" data-slot-id="' + escapeHtml(slot.id) + '" aria-label="Clear substitute">Clear</button>' : ''}
       </div>
     </div>
   `;
@@ -5243,6 +5305,7 @@ function modalView() {
     <div class="modal-backdrop ${type === "mobile-nav" ? "mobile-nav-backdrop" : ""}" data-action="close-modal">
       <section class="modal ${type === "mobile-nav" ? "mobile-nav-modal" : ""}" role="dialog" aria-modal="true" aria-labelledby="modal-title">
         <button class="modal-close" type="button" data-action="close-modal" aria-label="Close">x</button>
+        ${state.error ? errorBanner() : ""}
         ${modalContent(type)}
       </section>
     </div>
@@ -5327,6 +5390,7 @@ function editBuilderSlotModal(slotId = "") {
       </label>
       <p class="muted">The role is used by Auto fill to match suitable players. The short label is what appears on the pitch marker.</p>
       <button class="primary-button" type="submit">Save position</button>
+      <button class="secondary-button" type="button" data-action="clear-builder-slot" data-slot-id="${escapeHtml(slot.id)}">Clear player from ${escapeHtml(slot.label)}</button>
     </form>
   `;
 }
@@ -5634,6 +5698,12 @@ document.addEventListener("click", async (event) => {
   const backdropClick = event.target.classList.contains("modal-backdrop");
   const action = target.dataset.action;
 
+  if (action === 'set-results-mode') {
+    state.resultsMode = target.dataset.mode;
+    render();
+    document.querySelector('.results-mode')?.scrollIntoView({ block: 'nearest' });
+    return;
+  }
   if (action === "toggle-player-pool") {
     state.whiteboardPoolOpen = !state.whiteboardPoolOpen;
     render();
@@ -5661,6 +5731,7 @@ document.addEventListener("click", async (event) => {
   }
 
   if (target.dataset.modal) {
+    state.error = "";
     modalReturnSelector = `[data-modal="${CSS.escape(target.dataset.modal)}"]`;
     state.modal = {
       type: target.dataset.modal,
@@ -5998,6 +6069,7 @@ document.addEventListener("click", async (event) => {
   }
 
   if (action === "clear-builder-slot") {
+    delete state.modal;
     clearBuilderSlot(target.dataset.slotId);
     return;
   }
@@ -6234,6 +6306,8 @@ document.addEventListener("pointerup", (event) => {
 });
 
 document.addEventListener("pointercancel", () => {
+  // Native scrolling cancels pointer input. Keep its scrolling DOM alive.
+  if (!builderArrowDraft && !builderPointerDrag) return;
   builderArrowDraft = null;
   builderPointerDrag = null;
   render();
@@ -6257,6 +6331,11 @@ document.addEventListener("change", async (event) => {
   if (target.dataset.action === "select-child") {
     state.session.selectedPlayerId = target.value;
     saveState();
+    render();
+    return;
+  }
+  if (target.dataset.action === 'select-marker-actions') {
+    state.markerActionSlot = target.value;
     render();
     return;
   }
@@ -6482,6 +6561,7 @@ document.addEventListener("submit", async (event) => {
   rememberFormDraft(form);
   const draftKey = formDraftKey(form);
   const data = new FormData(form);
+  state.error = "";
   const submitButtons = [...form.querySelectorAll("button[type='submit'], button:not([type])")];
   submitButtons.forEach((button) => {
     button.dataset.idleLabel = button.textContent;
@@ -9131,10 +9211,17 @@ function startEventDataSubscriptions(runtime) {
       eventDataUnsubscribers.push(unsubscribe);
       return;
     }
+    // Each parent listener emits one child, not a complete collection snapshot.
+    // Merge those snapshots so a sibling update cannot erase another child's marks.
+    const childDocs = new Map();
     approvedChunks.flat().forEach((playerId) => {
       const unsubscribe = runtime.modules.onSnapshot(
         runtime.modules.doc(collectionRef, playerId),
-        (docSnap) => applyDocs(docSnap.exists() ? [docSnap] : []),
+        (docSnap) => {
+          if (docSnap.exists()) childDocs.set(playerId, docSnap);
+          else childDocs.delete(playerId);
+          applyDocs([...childDocs.values()]);
+        },
         (error) => console.error(error),
       );
       eventDataUnsubscribers.push(unsubscribe);

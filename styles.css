@@ -2561,7 +2561,7 @@ button[aria-busy="true"] { cursor: progress; }
 }
 
 .builder-player-card.picked {
-  opacity: 0.54;
+  opacity: 1;
 }
 
 .builder-player-card strong {
@@ -2636,7 +2636,7 @@ button[aria-busy="true"] { cursor: progress; }
     inset: auto 0 0 0;
     z-index: 60;
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(64px, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 6px;
     justify-content: stretch;
     overflow: visible;
@@ -3110,3 +3110,26 @@ h2, h3, h4 { line-height: 1.25; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
 }
+
+/* Audit remediation: keep visual markers compact without shrinking hit areas. */
+[hidden] { display: none !important; }
+.results-mode { margin-bottom: 16px; flex-wrap: wrap; }
+.assigned-badge { font-weight: 700; color: var(--success) !important; }
+.slot-actions { transform: none; position: static; margin-top: 4px; }
+.slot-edit, .slot-clear { min-width: 44px; min-height: 44px; height: auto; border-radius: 8px; }
+.formation-slot strong { max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; display: block; }
+.modal > .error-banner { position: sticky; top: 0; z-index: 3; padding-right: 44px; background: #fff2f0; }
+@media (max-width: 1023px) { .toast { bottom: calc(95px + var(--bottom-safe)); } }
+@media (max-width: 760px) {
+  .formation-slot { min-height: 56px; }
+  .slot-actions { transform: none; }
+  .formation-slot strong { font-size: .75rem; }
+}
+
+.marker-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; margin-top: 16px; }
+.marker-actions .field { flex: 1 1 100%; min-width: 0; }
+.marker-actions button { min-height: 44px; }
+
+.modal-close { z-index: 4; }
+/* Dialogs provide their own busy/error feedback; transient status must not cover them. */
+body:has([role="dialog"], [role="alertdialog"]) .toast { visibility: hidden; }
