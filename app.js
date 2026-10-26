@@ -1,0 +1,9888 @@
+const appVersion = "4.0-live-rollout-64";
+const crestPath = "assets/LargsColtsCrest.png";
+const backendConfig = window.largsFirebaseConfig || {
+  enabled: false,
+  supportEmail: "",
+  firebaseConfig: {},
+  vapidKey: "",
+};
+const supportEmail = backendConfig.supportEmail || "";
+const firebaseRuntime = {
+  ready: false,
+  modules: {},
+  app: null,
+  auth: null,
+  db: null,
+  messaging: null,
+  storage: null,
+  user: null,
+};
+const clubId = "largs-colts-2016s";
+const seasonBlocks = globalThis.LargsSeasonBlocks;
+let liveTeams = [];
+let liveUnsubscribers = [];
+let eventDataUnsubscribers = [];
+let builderPointerDrag = null;
+let builderArrowDraft = null;
+let whiteboardSyncTimer = null;
+let deferredRenderTimer = null;
+let reactiveRenderPauseUntil = 0;
+let applyingLiveWhiteboard = false;
+let suppressBuilderClickUntil = 0;
+let formScrollGesture = null;
+let listScrollGesture = null;
+let routeHistory = [];
+let nativeShellReady = false;
+let nativePushListenersReady = false;
+let webMessageListenerReady = false;
+let currentMembership = null;
+let currentProfile = null;
+let currentDeviceToken = null;
+let loggingOut = false;
+let discardFormDraftsOnRender = false;
+let verifiedCacheController = null;
+let privateSessionEpoch = 0;
+let authAttemptInProgress = false;
+const privateDocumentUrls = new Set();
+let parentHistoricalEvents = [];
+let parentHistoryRowsByPlayer = new Map();
+function parentHistoryEventsFromRows() {
+  const allowed = new Set(approvedPlayers().map(player => player.id)), events = new Map();
+  for (const [playerId, rows] of parentHistoryRowsByPlayer) {
+    if (!allowed.has(playerId)) continue;
+    for (const row of rows) {
+      if (row.playerId !== playerId || !row.event?.id) continue;
+      const ownSelected = Array.isArray(row.event.selectedPlayerIds) ? row.event.selectedPlayerIds.filter(id => allowed.has(id)) : null;
+      const existing = events.get(row.event.id);
+      if (!existing) events.set(row.event.id, { ...row.event, historicalAttendanceOnly: Date.parse(row.event.datetime) <= Date.now(), ...(ownSelected ? { selectedPlayerIds: [...ownSelected] } : {}) });
+      else if (ownSelected) existing.selectedPlayerIds = [...new Set([...(existing.selectedPlayerIds || []), ...ownSelected])];
+    }
+  }
+  return [...events.values()].sort((a, b) => a.id.localeCompare(b.id));
+}
+function mergeParentHistoryEvents(items) {
+  const events = new Map(items.filter(event => !event.cancelledAt).map(event => [event.id, event]));
+  if (!hasCoachAccess()) for (const event of parentHistoricalEvents) if (!events.has(event.id) && (!event.cancelledAt || event.historicalAttendanceOnly)) events.set(event.id, event);
+  return [...events.values()].sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
+}
+function activeAccount(profile) {
+  return profile && !["pending", "rejected", "revoked", "disabled", "deleted", "suspended"].includes(profile.status);
+}
+function memberTeams() { return ["all", ...Object.keys(currentMembership?.teamPlayers || {})]; }
+function isApprovedMember() {
+  return activeAccount(currentProfile) && (hasCoachAccess() || Boolean(currentMembership?.active &&
+    state.parentLinks.some(link => link.status === "approved" && link.playerId === currentMembership.anchorPlayerId)));
+}
+function scopedCollection(runtime, name) {
+  const collection = runtime.modules.collection(runtime.db, "clubs", clubId, name);
+  if (!hasCoachAccess() && ["events", "announcements", "messages", "liftOffers"].includes(name)) {
+    return runtime.modules.query(collection, runtime.modules.where(name === "liftOffers" ? "playerTeamId" : "teamId", "in", memberTeams()));
+  }
+  return collection;
+}
+function clearPrivateViewState() {
+  parentHistoricalEvents = [];
+  parentHistoryRowsByPlayer = new Map();
+  transientFormDrafts.clear();
+  discardFormDraftsOnRender = true;
+  clearPrivateDocuments();
+}
+function clearPrivateDocuments() {
+  for (const url of privateDocumentUrls) URL.revokeObjectURL(url);
+  privateDocumentUrls.clear();
+  document.querySelectorAll('[data-private-document]').forEach(node => node.remove());
+}
+async function clearLegacyPrivateCaches() {
+  if (!("caches" in window)) return;
+  for (const key of await caches.keys()) {
+    const publicVersion = key.match(/^largs-public-shell-(\d+)$/);
+    if (key.startsWith("largs-colts-") || (publicVersion && Number(publicVersion[1]) < 64)) await caches.delete(key);
+  }
+}
+async function verifyPublicCachePolicy() {
+  const worker = navigator.serviceWorker;
+  if (isNativeCapacitor() || !worker?.controller) return;
+  // A previous worker can finish a late cache write after it loses control.
+  await clearLegacyPrivateCaches();
+  if (worker.controller === verifiedCacheController) return;
+  const probe = controller => new Promise(resolve => {
+    const channel = new MessageChannel();
+    const finish = result => { clearTimeout(timer); channel.port1.close(); resolve(result); };
+    const timer = setTimeout(() => finish(false), 500);
+    channel.port1.onmessage = event => finish(event.data?.version === 64 && event.data?.publicOnly === true);
+    controller.postMessage({type:"PUBLIC_CACHE_POLICY"}, [channel.port2]);
+  });
+  if (await probe(worker.controller)) { await clearLegacyPrivateCaches(); verifiedCacheController = worker.controller; return; }
+  await (await worker.getRegistration())?.update();
+  for (let attempt = 0; attempt < 16; attempt++) {
+    if (!worker.controller) return;
+    if (await probe(worker.controller)) { await clearLegacyPrivateCaches(); verifiedCacheController = worker.controller; return; }
+  }
+  throw new Error("The app update has not finished. Reconnect and refresh before signing in.");
+}
+let keyboardVisible = false;
+let renderedModalType = "";
+let renderedRoute = "";
+let browserNavigation = false;
+let browserClosePending = false;
+let navigationScroll = null;
+const routeScrollPositions = new Map();
+function requestedRouteFromHash() {
+  try { return decodeURIComponent(location.hash.replace(/^#\/?/, "")); } catch { return ""; }
+}
+function loginDestination(requested, fallback = "home") {
+  const allowed = navRoutes(false).flatMap(item => [item.id, ...(item.group || [])]);
+  return allowed.includes(requested) ? resolveRouteTarget(requested) : fallback;
+}
+
+function syncBrowserNavigation() {
+  if (!state.session.loggedIn || browserClosePending || browserNavigation) return;
+  const current = history.state?.largs;
+  const next = { user: state.session.userId, route: state.route, modal: state.modal || null };
+  const url = new URL(location.href);
+  url.hash = '/' + state.route;
+  if (!current || current.user !== next.user) {
+    const requested = requestedRouteFromHash();
+    const allowed = navRoutes(false).flatMap(item => [item.id, ...(item.group || [])]);
+    if (allowed.includes(requested)) state.route = resolveRouteTarget(requested);
+    next.route = state.route;
+    url.hash = '/' + state.route;
+    history.replaceState({ largs: next }, '', url);
+  } else if (current.route !== next.route) {
+    history[current.modal ? 'replaceState' : 'pushState']({ largs: next }, '', url);
+  } else if (JSON.stringify(current.modal) !== JSON.stringify(next.modal)) {
+    if (current.modal && !next.modal) {
+      browserClosePending = true;
+      history.back();
+    } else history[current.modal ? 'replaceState' : 'pushState']({ largs: next }, '', url);
+  }
+}
+window.addEventListener('popstate', event => {
+  const entry = event.state?.largs;
+  if (!entry || !state.session.loggedIn || entry.user !== state.session.userId) return;
+  routeScrollPositions.set(renderedRoute, scrollSnapshot());
+  browserClosePending = false;
+  browserNavigation = true;
+  state.route = entry.route;
+  state.modal = entry.modal || undefined;
+  navigationScroll = routeScrollPositions.get(entry.route) || { top: 0, left: 0, keyed: [] };
+  render();
+  browserNavigation = false;
+});
+if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+let modalReturnSelector = "";
+const transientFormDrafts = new Map();
+
+const unassignedTeam = { id: "unassigned", name: "Unassigned", colour: "#6b7280" };
+const teams = [
+  { id: "team1", name: "Largs Orange", colour: "#f97316" },
+  { id: "team2", name: "Largs Blue", colour: "#2563eb" },
+];
+const legacyTeamIds = new Set(["orange", "blue", "yellow", "", null, undefined]);
+liveTeams = teams;
+const coachRoles = ["coach", "admin"];
+const parentRememberKey = "largs-colts-parent-remember";
+const parentEmailKey = "largs-colts-parent-email";
+const visibleSeasonStart = "2026-08-01";
+const resultSeasonStart = "2026-08-22";
+const registerHistoryStart = "2026-08-25";
+
+const squadSectionRoutes = ["squads", "development", "squad-builder", "awards", "results"];
+const coachClubSectionRoutes = ["coach-inbox", "coaches", "venues", "access", "privacy", "install"];
+const parentClubSectionRoutes = ["contact", "coaches", "venues", "access", "privacy", "install", "guide"];
+
+const coaches = []; // Contacts are loaded from protected Firebase records only.
+
+const venues = [
+  {
+    id: "bowencraig",
+    name: "Bowencraig (Home pitch)",
+    address: "55.77946, -4.856398",
+    parkingAddress: "Bowencraig East Car Park, Irvine Rd, Fairlie, Largs KA29 0BG",
+    surface: "Grass pitch",
+    notes: "Main home venue for Largs Colts 2016s.",
+    pitchImage: "",
+    parkingImage: "",
+  },
+  {
+    id: "inverclyde-3g",
+    name: "Inverclyde Sports Centre 3G",
+    address: "Burnside Road, Largs KA30 8RW",
+    parkingAddress: "Inverclyde Sports Centre, Burnside Road, Largs KA30 8RW",
+    surface: "3G pitch",
+    notes: "Used for selected training or fixtures.",
+    pitchImage: "",
+    parkingImage: "",
+  },
+  {
+    id: "barrfields",
+    name: "Barrfields Park",
+    address: "Barrfields Park, Greenock Road, Largs",
+    parkingAddress: "Barrfields Park, Greenock Road, Largs",
+    surface: "Grass pitch",
+    notes: "Occasional venue.",
+    pitchImage: "",
+    parkingImage: "",
+  },
+  {
+    id: "away-custom",
+    name: "Away destination",
+    address: "Address to be confirmed",
+    parkingAddress: "",
+    surface: "To be confirmed",
+    notes: "Use this for typed away venues.",
+    pitchImage: "",
+    parkingImage: "",
+  },
+];
+
+const kitOptions = ["TBC", "Home kit", "Away kit"];
+const developmentLevels = ["Not assessed", "Developmental", "Intermediate", "Advanced"];
+const developmentBands = ["Not set", "Low", "Mid", "High"];
+const footOptions = ["Not set", "Right", "Left", "Both"];
+const allowedDocumentExtensions = [".pdf", ".doc", ".docx"];
+const allowedDocumentTypes = new Set([
+  "application/pdf",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+]);
+const maxDocumentBytes = 15 * 1024 * 1024;
+const coachDocumentCategories = [
+  { id: "handbooks", label: "Handbooks" },
+  { id: "drills", label: "Drills" },
+  { id: "coaching-plans", label: "Coaching Plans" },
+];
+const playerPositions = [
+  "Goalkeeper",
+  "Left Back",
+  "Centre Back",
+  "Right Back",
+  "Left Wing Back",
+  "Right Wing Back",
+  "Defensive Midfielder",
+  "Centre Midfield",
+  "Attacking Midfielder",
+  "Left Winger",
+  "Right Winger",
+  "Striker",
+];
+const formationDefinitions = {
+  "7": {
+    label: "7-a-side",
+    slots: [
+      { id: "gk", label: "GK", position: "Goalkeeper", x: 50, y: 86 },
+      { id: "lb", label: "LB", position: "Left Back", x: 30, y: 66 },
+      { id: "rb", label: "RB", position: "Right Back", x: 70, y: 66 },
+      { id: "lw", label: "LW", position: "Left Winger", x: 22, y: 40 },
+      { id: "cm", label: "CM", position: "Centre Midfield", x: 50, y: 43 },
+      { id: "rw", label: "RW", position: "Right Winger", x: 78, y: 40 },
+      { id: "st", label: "ST", position: "Striker", x: 50, y: 18 },
+    ],
+  },
+  "9": {
+    label: "9-a-side",
+    slots: [
+      { id: "gk", label: "GK", position: "Goalkeeper", x: 50, y: 88 },
+      { id: "lb", label: "LB", position: "Left Back", x: 22, y: 68 },
+      { id: "cb", label: "CB", position: "Centre Back", x: 50, y: 70 },
+      { id: "rb", label: "RB", position: "Right Back", x: 78, y: 68 },
+      { id: "lm", label: "LM", position: "Left Winger", x: 18, y: 44 },
+      { id: "cm", label: "CM", position: "Centre Midfield", x: 50, y: 46 },
+      { id: "rm", label: "RM", position: "Right Winger", x: 82, y: 44 },
+      { id: "am", label: "AM", position: "Attacking Midfielder", x: 50, y: 28 },
+      { id: "st", label: "ST", position: "Striker", x: 50, y: 13 },
+    ],
+  },
+};
+const leavers = []; // Historical identity must be represented by protected record status, never names in public source.
+const placeholderParent = "Parent Placeholder";
+const placeholderPhone = "07000 000000";
+
+const defaultState = {
+  loading: true,
+  error: "",
+  isOffline: typeof navigator !== "undefined" ? navigator.onLine === false : false,
+  session: {
+    loggedIn: false,
+    role: "",
+    userId: "",
+    email: "",
+    phone: "",
+    parentName: "",
+    coachName: "",
+    selectedPlayerId: "p1",
+    canSwitchPortal: false,
+  },
+  route: "home",
+  authRole: "parent",
+  scheduleFilter: "all",
+  scheduleType: "matches",
+  schedulePeriod: "upcoming",
+  scheduleBlock: "B",
+  statisticsScope: "season",
+  seasonReports: [],
+  attendancePeriod: "upcoming",
+  attendanceStatusFilter: "all",
+  selectedEventId: "e1",
+  selectedResultEventId: "",
+  resultDrafts: {},
+  awardsTab: "weekly",
+  awardTallies: {},
+  coachGuide: {
+    active: false,
+    step: 0,
+    completed: false,
+  },
+  teams,
+  players: [],
+  parentLinks: [],
+  accessRequests: [],
+  dataRequests: [],
+  coachQueries: [],
+  playerDocuments: [],
+  coachDocuments: [],
+  playerAwards: [],
+  matchStats: [],
+  liftOffers: [],
+  documentFilter: "all",
+  documentSort: "newest",
+  coachDocumentCategory: "handbooks",
+  coachSectionTab: "contacts",
+  availabilityTab: "responses",
+  availabilityResponseFilter: "all",
+  events: [],
+  availability: {},
+  attendance: {},
+  notifications: [],
+  messages: [],
+  users: [],
+  coachContacts: [],
+  venues: [],
+  playerDevelopment: {},
+  squadListSort: "name",
+  squadListPositionFilter: "all",
+  squadPlayerFilter: "all",
+  squadPlayerSort: "selection-priority",
+  squadAvailabilityDateKey: "",
+  squadBuilder: {
+    format: "7",
+    teamFilter: "all",
+    levelFilter: "all",
+    showDevelopmentLabels: true,
+    selectedPlayerId: "",
+    arrowMode: false,
+    arrows: {
+      "7": [],
+      "9": [],
+    },
+    customSlots: {
+      "7": {},
+      "9": {},
+    },
+    selections: {
+      "7": {},
+      "9": {},
+    },
+  },
+  liveWhiteboard: {
+    active: false,
+    joined: false,
+    hostUid: "",
+    hostName: "",
+    remoteState: null,
+  },
+  messageReadAt: "",
+};
+
+function defaultAvailabilityEntry(entry = {}) {
+  return {
+    status: "unknown",
+    note: "",
+    liftOffer: false,
+    liftSeats: 0,
+    liftFrom: "",
+    ...entry,
+  };
+}
+
+function defaultDevelopmentRecord(playerId = "", record = {}) {
+  return {
+    id: playerId || record.id || "",
+    playerId: playerId || record.playerId || record.id || "",
+    level: developmentLevels.includes(record.level) ? record.level : "Not assessed",
+    band: developmentBands.includes(record.band) ? record.band : "Not set",
+    foot: footOptions.includes(record.foot) ? record.foot : "Not set",
+    positions: Array.isArray(record.positions) ? record.positions.filter((position) => playerPositions.includes(position)) : [],
+    notes: record.notes || "",
+  };
+}
+
+function normalizeMatchStat(record = {}) {
+  const eventId = record.eventId || "";
+  const playerId = record.playerId || "";
+  return {
+    id: record.id || (eventId && playerId ? `${eventId}_${playerId}` : ""),
+    eventId,
+    playerId,
+    playerName: record.playerName || "",
+    teamId: normalizeTeamId(record.teamId),
+    goals: Math.max(0, Number(record.goals || 0)),
+    assists: Math.max(0, Number(record.assists || 0)),
+    status: record.status || "active",
+    createdAt: record.createdAt || "",
+    updatedAt: record.updatedAt || "",
+  };
+}
+
+function sortMatchStats(items = [], events = state.events) {
+  return (items || []).map(normalizeMatchStat).sort((a, b) => {
+    const aEvent = events.find((event) => event.id === a.eventId);
+    const bEvent = events.find((event) => event.id === b.eventId);
+    return new Date(bEvent?.datetime || 0) - new Date(aEvent?.datetime || 0) || a.playerName.localeCompare(b.playerName);
+  });
+}
+
+function normalizePlayerAward(record = {}) {
+  return {
+    id: record.id || (record.date ? `potw-${record.date}` : ""),
+    date: record.date || "",
+    playerId: record.playerId || "",
+    playerName: record.playerName || "",
+    teamId: normalizeTeamId(record.teamId),
+    trophyWithPlayerId: record.trophyWithPlayerId || record.playerId || "",
+    trophyWithName: record.trophyWithName || record.playerName || "",
+    notes: record.notes || "",
+    status: record.status || "active",
+    createdAt: record.createdAt || "",
+    updatedAt: record.updatedAt || "",
+  };
+}
+
+function sortPlayerAwards(items = []) {
+  return (items || []).map(normalizePlayerAward).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+}
+
+function developmentFor(playerId) {
+  return defaultDevelopmentRecord(playerId, state.playerDevelopment?.[playerId] || {});
+}
+
+function developmentLabel(record) {
+  const safe = defaultDevelopmentRecord(record.playerId, record);
+  if (safe.level === "Not assessed") return "Not assessed";
+  return safe.band === "Not set" ? safe.level : `${safe.band} ${safe.level}`;
+}
+
+function developmentClass(record) {
+  return defaultDevelopmentRecord(record.playerId, record).level.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+}
+
+function developmentScore(record) {
+  const safe = defaultDevelopmentRecord(record.playerId, record);
+  const levelScore = { "Not assessed": -3, Developmental: 0, Intermediate: 3, Advanced: 6 }[safe.level] ?? -3;
+  const bandScore = { "Not set": 0, Low: 0, Mid: 1, High: 2 }[safe.band] ?? 0;
+  return levelScore + bandScore;
+}
+
+function formationDefinition(format = state.squadBuilder.format) {
+  return formationDefinitions[format] || formationDefinitions["7"];
+}
+
+function formationSlotOverrides(format = state.squadBuilder.format) {
+  state.squadBuilder.customSlots = state.squadBuilder.customSlots || { "7": {}, "9": {} };
+  state.squadBuilder.customSlots[format] = state.squadBuilder.customSlots[format] || {};
+  return state.squadBuilder.customSlots[format];
+}
+
+function shortLabelForPosition(position = "") {
+  const labels = {
+    Goalkeeper: "GK",
+    "Left Back": "LB",
+    "Centre Back": "CB",
+    "Right Back": "RB",
+    "Left Wing Back": "LWB",
+    "Right Wing Back": "RWB",
+    "Defensive Midfielder": "DM",
+    "Centre Midfield": "CM",
+    "Attacking Midfielder": "AM",
+    "Left Winger": "LW",
+    "Right Winger": "RW",
+    Striker: "ST",
+  };
+  return labels[position] || position.split(" ").map((part) => part[0]).join("").slice(0, 4).toUpperCase() || "POS";
+}
+
+function pitchPositionFromPoint(x, y) {
+  if (y >= 84 && x >= 35 && x <= 65) return "Goalkeeper";
+  if (y >= 68) {
+    if (x < 38) return "Left Back";
+    if (x > 62) return "Right Back";
+    return "Centre Back";
+  }
+  if (y >= 54) {
+    if (x < 24) return "Left Wing Back";
+    if (x > 76) return "Right Wing Back";
+    return "Defensive Midfielder";
+  }
+  if (y >= 36) {
+    if (x < 30) return "Left Winger";
+    if (x > 70) return "Right Winger";
+    return "Centre Midfield";
+  }
+  if (y >= 20) {
+    if (x < 30) return "Left Winger";
+    if (x > 70) return "Right Winger";
+    return "Attacking Midfielder";
+  }
+  if (x < 30) return "Left Winger";
+  if (x > 70) return "Right Winger";
+  return "Striker";
+}
+
+function starterSlots(format = state.squadBuilder.format) {
+  const overrides = formationSlotOverrides(format);
+  return formationDefinition(format).slots.map((slot) => {
+    const custom = overrides[slot.id] || {};
+    const x = Number(custom.x);
+    const y = Number(custom.y);
+    return {
+      ...slot,
+      ...custom,
+      id: slot.id,
+      isSub: false,
+      position: playerPositions.includes(custom.position) ? custom.position : slot.position,
+      label: String(custom.label || slot.label || shortLabelForPosition(custom.position || slot.position)).slice(0, 8),
+      x: Number.isFinite(x) ? x : slot.x,
+      y: Number.isFinite(y) ? y : slot.y,
+    };
+  });
+}
+
+function substituteSlots() {
+  return [
+    { id: "sub1", label: "SUB 1", position: "Substitute", isSub: true },
+    { id: "sub2", label: "SUB 2", position: "Substitute", isSub: true },
+  ];
+}
+
+function allBuilderSlots(format = state.squadBuilder.format) {
+  return [
+    ...starterSlots(format),
+    ...substituteSlots(),
+  ];
+}
+
+function builderSelections(format = state.squadBuilder.format) {
+  state.squadBuilder.selections[format] = state.squadBuilder.selections[format] || {};
+  return state.squadBuilder.selections[format];
+}
+
+function builderArrows(format = state.squadBuilder.format) {
+  state.squadBuilder.arrows = state.squadBuilder.arrows || { "7": [], "9": [] };
+  state.squadBuilder.arrows[format] = state.squadBuilder.arrows[format] || [];
+  return state.squadBuilder.arrows[format];
+}
+
+function liveWhiteboardState() {
+  return state.liveWhiteboard || defaultState.liveWhiteboard;
+}
+
+function isLiveWhiteboardPresenter() {
+  const live = liveWhiteboardState();
+  return hasCoachAccess() && live.active && live.joined && live.hostUid === state.session.userId;
+}
+
+function isLiveWhiteboardViewerOnly() {
+  const live = liveWhiteboardState();
+  return hasCoachAccess() && live.active && live.joined && live.hostUid && live.hostUid !== state.session.userId;
+}
+
+function hasWhiteboardControl() {
+  return hasCoachAccess() && !isLiveWhiteboardViewerOnly();
+}
+
+function requireWhiteboardControl() {
+  if (hasWhiteboardControl()) return true;
+  toast("Live whiteboard is controlled by the presenter");
+  return false;
+}
+
+function clampBoardCoordinate(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 50;
+  return Math.round(Math.min(92, Math.max(8, number)) * 10) / 10;
+}
+
+function sanitizeBuilderSelections(source = state.squadBuilder.selections) {
+  const result = {};
+  Object.keys(formationDefinitions).forEach((format) => {
+    const slots = source?.[format] || {};
+    result[format] = {};
+    Object.entries(slots).forEach(([slotId, playerId]) => {
+      if (typeof slotId === "string" && typeof playerId === "string" && playerId) {
+        result[format][slotId] = playerId;
+      }
+    });
+  });
+  return result;
+}
+
+function sanitizeBuilderCustomSlots(source = state.squadBuilder.customSlots) {
+  const result = {};
+  Object.keys(formationDefinitions).forEach((format) => {
+    const slots = source?.[format] || {};
+    result[format] = {};
+    formationDefinitions[format].slots.forEach((baseSlot) => {
+      const custom = slots[baseSlot.id] || {};
+      const position = playerPositions.includes(custom.position) ? custom.position : baseSlot.position;
+      const label = String(custom.label || shortLabelForPosition(position)).trim().toUpperCase().slice(0, 8);
+      const x = Number(custom.x);
+      const y = Number(custom.y);
+      const next = {};
+      if (Number.isFinite(x)) next.x = clampBoardCoordinate(x);
+      if (Number.isFinite(y)) next.y = clampBoardCoordinate(y);
+      if (position !== baseSlot.position) next.position = position;
+      if (label && label !== baseSlot.label) next.label = label;
+      if (Object.keys(next).length) result[format][baseSlot.id] = next;
+    });
+  });
+  return result;
+}
+
+function sanitizeBuilderArrows(source = state.squadBuilder.arrows) {
+  const result = {};
+  Object.keys(formationDefinitions).forEach((format) => {
+    const arrows = Array.isArray(source?.[format]) ? source[format] : [];
+    result[format] = arrows.slice(-40).map((arrow) => ({
+      id: String(arrow.id || uid("arrow")),
+      x1: clampBoardCoordinate(arrow.x1),
+      y1: clampBoardCoordinate(arrow.y1),
+      x2: clampBoardCoordinate(arrow.x2),
+      y2: clampBoardCoordinate(arrow.y2),
+    }));
+  });
+  return result;
+}
+
+function sanitizedSquadBuilderSnapshot(source = state.squadBuilder) {
+  const format = Object.keys(formationDefinitions).includes(String(source.format)) ? String(source.format) : "7";
+  const teamFilter = source.teamFilter === "all" || filterTeamOptions().some((team) => team.id === source.teamFilter) ? source.teamFilter : "all";
+  const levelFilter = source.levelFilter === "all" || developmentLevels.includes(source.levelFilter) ? source.levelFilter : "all";
+  return {
+    format,
+    teamFilter,
+    levelFilter,
+    showDevelopmentLabels: source.showDevelopmentLabels !== false,
+    arrowMode: Boolean(source.arrowMode),
+    selectedPlayerId: typeof source.selectedPlayerId === "string" ? source.selectedPlayerId : "",
+    customSlots: sanitizeBuilderCustomSlots(source.customSlots),
+    arrows: sanitizeBuilderArrows(source.arrows),
+    selections: sanitizeBuilderSelections(source.selections),
+  };
+}
+
+function applyLiveWhiteboardState(boardState = {}) {
+  applyingLiveWhiteboard = true;
+  const snapshot = sanitizedSquadBuilderSnapshot(boardState);
+  state.squadBuilder = {
+    ...state.squadBuilder,
+    ...snapshot,
+    customSlots: {
+      ...defaultState.squadBuilder.customSlots,
+      ...snapshot.customSlots,
+    },
+    arrows: {
+      ...defaultState.squadBuilder.arrows,
+      ...snapshot.arrows,
+    },
+    selections: {
+      ...defaultState.squadBuilder.selections,
+      ...snapshot.selections,
+    },
+  };
+  applyingLiveWhiteboard = false;
+}
+
+const coachGuideSteps = [
+  {
+    route: "home",
+    target: "dashboard-next",
+    title: "Coach walkthrough start",
+    body: "The dashboard starts with the next event and gives coaches quick access to fixtures, availability, the register and parent verification.",
+  },
+  {
+    route: "home",
+    target: "coach-tools",
+    title: "Quick coach actions",
+    body: "Add a fixture or training session, send a message, or take the register here. Pending access requests appear in Needs your attention and Club & account.",
+  },
+  {
+    route: "schedule",
+    target: "schedule-toolbar",
+    title: "Fixtures and training",
+    body: "Use the team filters to show All, Largs Orange or Largs Blue. The add button lets a coach add either a fixture or training session.",
+  },
+  {
+    route: "schedule",
+    target: "event-list",
+    title: "Fixture cards",
+    body: "Fixture cards show kick-off time, report time, venue, map buttons and the Remove button for fixtures that need cleared.",
+  },
+  {
+    route: "schedule",
+    target: "away-support",
+    title: "Away destinations",
+    body: "When adding a fixture, choose Away destination if the pitch is not Bowencraig, Inverclyde Sports Centre 3G or Barrfields Park. The app then asks for the venue name and address so maps still work.",
+  },
+  {
+    route: "availability",
+    target: "availability-summary",
+    eventId: "e1",
+    title: "Availability responses",
+    body: "Availability shows who has replied for the selected date. Coaches can then pick which players go to each fixture on that date and review lift offers.",
+  },
+  {
+    route: "attendance",
+    target: "attendance-grid",
+    eventId: "t1",
+    title: "Register",
+    body: "This is where a coach marks players present, absent or collected. Present and collected also log the parent push/in-app notification that would be sent in the live system.",
+  },
+  {
+    route: "squads",
+    target: "team-board",
+    title: "Teams and squads",
+    body: "The team board lists Unassigned, Largs Orange and Largs Blue. Coaches can add a player, edit parent contact placeholders, or move a player when squads are agreed.",
+  },
+  {
+    route: "messages",
+    target: "messages-panel",
+    title: "Coach messages",
+    body: "Messages can go to all parents or a selected team. In the real rollout this area links naturally to push notifications.",
+  },
+  {
+    route: "coaches",
+    target: "coach-contacts",
+    title: "Coach contacts",
+    body: "This page shows Carl, Faroque, Ed, Martin and Gordy with tap-to-call and tap-to-text links so parents know who to contact.",
+  },
+  {
+    route: "venues",
+    target: "venue-list",
+    title: "Venues and parking",
+    body: "This page keeps Bowencraig, Inverclyde and Barrfields in one place with pitch pins, parking pins and photo spaces for matchday directions.",
+  },
+  {
+    route: "access",
+    target: "access-queue",
+    title: "Parent verification",
+    body: "This is the safeguarding gate. A parent requests access to a child, a coach checks the request and approves the child link.",
+  },
+  {
+    route: "install",
+    target: "install-panel",
+    title: "Phone testing",
+    body: "This page gives the test link and package download. On iPhone use Safari and Add to Home Screen; on Android use Chrome and Install app.",
+  },
+];
+
+let state = loadState();
+
+function loadState() {
+  return normalizeState({
+    ...structuredClone(defaultState),
+    players: [],
+    events: [],
+    availability: {},
+    attendance: {},
+    parentLinks: [],
+    accessRequests: [],
+    dataRequests: [],
+    coachQueries: [],
+    notifications: [],
+    messages: [],
+    users: [],
+    session: { ...defaultState.session },
+  });
+}
+
+function parentRememberPreference() {
+  try {
+    const saved = localStorage.getItem(parentRememberKey);
+    return saved !== "false";
+  } catch {
+    return true;
+  }
+}
+
+function parentRememberedEmail() {
+  try {
+    return localStorage.getItem(parentEmailKey) || "";
+  } catch {
+    return "";
+  }
+}
+
+function updateParentRememberPreference(remember, email) {
+  try {
+    localStorage.setItem(parentRememberKey, remember ? "true" : "false");
+    if (remember && email) {
+      localStorage.setItem(parentEmailKey, email);
+    } else if (!remember) {
+      localStorage.removeItem(parentEmailKey);
+    }
+  } catch {
+    // Storage can be blocked in some browsers; Firebase sign-in still works.
+  }
+}
+
+function normalizeState(saved) {
+  const merged = {
+    ...structuredClone(defaultState),
+    ...saved,
+    session: { ...defaultState.session, ...(saved.session || {}) },
+  };
+
+  merged.players = (merged.players || [])
+    .filter((player) => !leavers.includes(player.name))
+    .map(normalizePlayerRecord);
+  merged.teams = normalizeLiveTeams(merged.teams?.length ? merged.teams : teams);
+  liveTeams = merged.teams;
+  merged.events = merged.events || [];
+  merged.messages = merged.messages || [];
+  merged.notifications = merged.notifications || [];
+  merged.dataRequests = merged.dataRequests || [];
+  merged.coachQueries = merged.coachQueries || [];
+  merged.playerAwards = sortPlayerAwards(merged.playerAwards || []);
+  merged.matchStats = sortMatchStats(merged.matchStats || [], merged.events || []);
+  merged.users = merged.users || [];
+  merged.coachContacts = merged.coachContacts || [];
+  merged.venues = merged.venues || [];
+  merged.playerDevelopment = merged.playerDevelopment || {};
+  merged.squadBuilder = {
+    ...defaultState.squadBuilder,
+    ...(saved.squadBuilder || {}),
+    customSlots: {
+      ...defaultState.squadBuilder.customSlots,
+      ...(saved.squadBuilder?.customSlots || {}),
+    },
+    arrows: {
+      ...defaultState.squadBuilder.arrows,
+      ...(saved.squadBuilder?.arrows || {}),
+    },
+    selections: {
+      ...defaultState.squadBuilder.selections,
+      ...(saved.squadBuilder?.selections || {}),
+    },
+  };
+  merged.liveWhiteboard = {
+    ...defaultState.liveWhiteboard,
+    ...(saved.liveWhiteboard || {}),
+  };
+  merged.messageReadAt = merged.messageReadAt || "";
+  merged.selectedEventId = merged.selectedEventId || merged.events[0]?.id || "";
+  if (!merged.events.some((event) => event.id === merged.selectedEventId)) {
+    merged.selectedEventId = merged.events[0]?.id || "";
+  }
+  merged.scheduleFilter = merged.scheduleFilter || "all";
+  if (merged.scheduleFilter !== "all" && !eventTeamOptions().some((team) => team.id === merged.scheduleFilter)) {
+    merged.scheduleFilter = "all";
+  }
+  merged.scheduleType = ["matches", "training"].includes(merged.scheduleType) ? merged.scheduleType : "matches";
+  merged.schedulePeriod = merged.schedulePeriod || "upcoming";
+  merged.attendancePeriod = ["upcoming", "past"].includes(merged.attendancePeriod) ? merged.attendancePeriod : "upcoming";
+  merged.attendanceStatusFilter = ["all", "present", "unmarked", "absent"].includes(merged.attendanceStatusFilter) ? merged.attendanceStatusFilter : "all";
+  merged.availabilityResponseFilter = merged.availabilityResponseFilter || "all";
+  merged.awardsTab = ["weekly", "tally"].includes(merged.awardsTab) ? merged.awardsTab : "weekly";
+  merged.awardTallies = merged.awardTallies || {};
+  merged.coachGuide = {
+    ...defaultState.coachGuide,
+    ...(saved.coachGuide || {}),
+  };
+  if (merged.coachGuide.step >= coachGuideSteps.length) {
+    merged.coachGuide.step = coachGuideSteps.length - 1;
+  }
+  merged.squadBuilder.teamFilter = normalizeTeamId(merged.squadBuilder.teamFilter);
+  if (!["all", ...filterTeamOptions().map((team) => team.id)].includes(merged.squadBuilder.teamFilter)) merged.squadBuilder.teamFilter = "all";
+  merged.squadBuilder.showDevelopmentLabels = merged.squadBuilder.showDevelopmentLabels !== false;
+  if (!["all", "available-date", "available-unpicked-date", "picked-date", "trained-month", "missed-training-month", "waiting-selection"].includes(merged.squadPlayerFilter)) {
+    merged.squadPlayerFilter = "all";
+  }
+  if (!["name", "selection-priority", "training-high", "training-low", "availability-high", "picked-low", "waiting-high"].includes(merged.squadPlayerSort)) {
+    merged.squadPlayerSort = "selection-priority";
+  }
+  merged.squadAvailabilityDateKey = merged.squadAvailabilityDateKey || "";
+
+  merged.events.forEach((event) => {
+    event.venueId = event.venueId || venueIdFromName(event.venue);
+    event.notes = event.notes || "";
+    event.meetTime = event.meetTime || "";
+    event.finishTime = event.finishTime || suggestFinishTime(event.datetime, event.type);
+    event.kit = event.kit || (event.type === "Fixture" ? "Home kit" : "");
+    event.homeScore = event.homeScore ?? "";
+    event.awayScore = event.awayScore ?? "";
+    event.resultNotes = event.resultNotes || "";
+    merged.availability[event.id] = merged.availability[event.id] || {};
+    getPlayersForEvent(event, merged.players).forEach((player) => {
+      merged.availability[event.id][player.id] = defaultAvailabilityEntry(merged.availability[event.id][player.id]);
+    });
+    merged.attendance[event.id] = merged.attendance[event.id] || {};
+  });
+  const resultEvents = merged.events.filter((event) => event.type === "Fixture");
+  merged.selectedResultEventId = merged.selectedResultEventId || resultEvents[0]?.id || "";
+  if (!resultEvents.some((event) => event.id === merged.selectedResultEventId)) {
+    merged.selectedResultEventId = resultEvents[0]?.id || "";
+  }
+  merged.resultDrafts = merged.resultDrafts || {};
+
+  return merged;
+}
+
+function saveState() {}
+
+function $(selector, root = document) {
+  return root.querySelector(selector);
+}
+
+function formDraftKey(form) {
+  if (!form?.dataset?.form) return "";
+  const parts = [state?.route || "auth", form.dataset.form];
+  ["eventId", "playerId", "coachId", "venueId", "slotId"].forEach((name) => {
+    const field = form.elements?.[name];
+    const value = field && !field.length ? field.value : "";
+    if (value) parts.push(`${name}:${value}`);
+  });
+  if (state?.modal?.type) parts.push(`modal:${state.modal.type}`);
+  return parts.join("|");
+}
+
+function formDraftControls(form) {
+  return [...(form?.elements || [])].filter((control) => {
+    if (!control.name || control.disabled) return false;
+    const type = String(control.type || "").toLowerCase();
+    return !["button", "submit", "reset", "file", "hidden"].includes(type);
+  });
+}
+
+function rememberFormDraft(form) {
+  if (["parent-login", "coach-login"].includes(form?.dataset?.form)) return;
+  const key = formDraftKey(form);
+  if (!key) return;
+  transientFormDrafts.set(key, {
+    controls: formDraftControls(form).map((control) => ({
+      name: control.name,
+      type: String(control.type || "").toLowerCase(),
+      value: control.value,
+      checked: Boolean(control.checked),
+    })),
+    details: [...form.querySelectorAll("details")].map((node) => Boolean(node.open)),
+  });
+}
+
+function rememberVisibleFormDrafts() {
+  document.querySelectorAll("form[data-form]").forEach(rememberFormDraft);
+}
+
+function restoreFormDrafts(root = document) {
+  root.querySelectorAll("form[data-form]").forEach((form) => {
+    const draft = transientFormDrafts.get(formDraftKey(form));
+    if (!draft) return;
+    const controls = formDraftControls(form);
+    const remaining = draft.controls.slice();
+    controls.forEach((control) => {
+      // Switching Match/Training changes disabled controls and their positions.
+      const index = remaining.findIndex(saved => saved.name === control.name && saved.type === String(control.type || "").toLowerCase());
+      if (index === -1) return;
+      const saved = remaining.splice(index, 1)[0];
+      if (["checkbox", "radio"].includes(saved.type)) {
+        control.checked = saved.checked;
+      } else {
+        control.value = saved.value;
+      }
+    });
+    form.querySelectorAll("details").forEach((node, index) => {
+      node.open = Boolean(draft.details[index]);
+    });
+  });
+}
+
+function clearFormDraft(formOrKey) {
+  const key = typeof formOrKey === "string" ? formOrKey : formDraftKey(formOrKey);
+  if (key) transientFormDrafts.delete(key);
+}
+
+function scrollSnapshot() {
+  const root = document.scrollingElement || document.documentElement;
+  return {
+    route: renderedRoute,
+    top: root?.scrollTop || 0,
+    left: root?.scrollLeft || 0,
+    keyed: [...document.querySelectorAll("[data-scroll-key]")].map((node) => ({
+      key: node.dataset.scrollKey,
+      top: node.scrollTop,
+      left: node.scrollLeft,
+    })),
+  };
+}
+
+function restoreScrollSnapshot(snapshot) {
+  if (!snapshot || snapshot.route !== (state?.route || "")) return;
+  requestAnimationFrame(() => {
+    const keyed = new Map(snapshot.keyed.map((item) => [item.key, item]));
+    document.querySelectorAll("[data-scroll-key]").forEach((node) => {
+      const saved = keyed.get(node.dataset.scrollKey);
+      if (!saved) return;
+      node.scrollTop = saved.top;
+      node.scrollLeft = saved.left;
+    });
+  });
+}
+
+function scrollableContainerForTarget(target) {
+  const node = target.closest?.("[data-scroll-key]");
+  if (!node) return null;
+  const canScrollY = node.scrollHeight > node.clientHeight + 1;
+  const canScrollX = node.scrollWidth > node.clientWidth + 1;
+  return canScrollY || canScrollX ? node : null;
+}
+
+function touchScrollGuardForTarget(target) {
+  const node = target.closest?.("[data-touch-scroll-guard]");
+  if (!node) return null;
+  const canScrollY = node.scrollHeight > node.clientHeight + 1;
+  const canScrollX = node.scrollWidth > node.clientWidth + 1;
+  return canScrollY || canScrollX ? node : null;
+}
+
+function useNativeDrag() {
+  return !window.matchMedia?.("(hover: none) and (pointer: coarse)")?.matches;
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function uid(prefix) {
+  return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+}
+
+function currentPlayer() {
+  return activePlayers().find((player) => player.id === state.session.selectedPlayerId) || approvedPlayers()[0];
+}
+
+function activePlayers() {
+  return state.players.filter((player) => player.status === "active");
+}
+
+function approvedLinks() {
+  return state.parentLinks.filter((link) => {
+    if (link.status !== "approved") return false;
+    if (hasCoachAccess()) return true;
+    return link.parentUid === state.session.userId;
+  });
+}
+
+function pendingRequests() {
+  return state.accessRequests.filter((request) => {
+    if (request.status !== "pending") return false;
+    if (hasCoachAccess()) return true;
+    return request.parentUid === state.session.userId;
+  });
+}
+
+function approvedPlayers() {
+  const ids = new Set(approvedLinks().map((link) => link.playerId));
+  return activePlayers().filter((player) => ids.has(player.id));
+}
+
+function sameName(a, b) {
+  return String(a || "").trim().toLowerCase() === String(b || "").trim().toLowerCase();
+}
+
+function normalizeTeamId(teamId) {
+  if (teamId === "all") return "all";
+  if (teams.some((team) => team.id === teamId)) return teamId;
+  if (teamId === "unassigned" || legacyTeamIds.has(teamId)) return "unassigned";
+  return "unassigned";
+}
+
+function normalizeEventTeamId(teamId) {
+  if (teamId === "all") return "all";
+  if (teams.some((team) => team.id === teamId)) return teamId;
+  return "all";
+}
+
+function normalizePlayerRecord(player) {
+  return {
+    ...player,
+    teamId: normalizeTeamId(player.teamId),
+  };
+}
+
+function appTeams() {
+  return normalizeLiveTeams(liveTeams);
+}
+
+function normalizeLiveTeams(items = []) {
+  const liveById = new Map((items || []).filter((team) => teams.some((item) => item.id === team.id)).map((team) => [team.id, team]));
+  return teams.map((team) => ({
+    ...team,
+    ...(liveById.get(team.id) || {}),
+    id: team.id,
+    name: liveById.get(team.id)?.name || team.name,
+    colour: liveById.get(team.id)?.colour || team.colour,
+  }));
+}
+
+function playerTeamOptions() {
+  return [unassignedTeam, ...appTeams()];
+}
+
+function eventTeamOptions() {
+  return appTeams();
+}
+
+function filterTeamOptions() {
+  return [unassignedTeam, ...appTeams()];
+}
+
+function teamById(teamId) {
+  if (teamId === "all") return { id: "all", name: "All teams", colour: "#850008" };
+  if (normalizeTeamId(teamId) === "unassigned") return unassignedTeam;
+  return appTeams().find((team) => team.id === teamId) || unassignedTeam;
+}
+
+function teamName(teamId) {
+  return teamById(teamId).name;
+}
+
+function appVenues() {
+  const merged = new Map(venues.map((venue) => [venue.id, { ...venue }]));
+  (state.venues || []).forEach((venue) => {
+    if (!venue?.id) return;
+    merged.set(venue.id, { ...(merged.get(venue.id) || {}), ...venue });
+  });
+  return Array.from(merged.values());
+}
+
+function appCoachContacts() {
+  const merged = new Map(coaches.map((coach) => [coach.id, { ...coach }]));
+  (state.coachContacts || []).forEach((coach) => {
+    if (!coach?.id) return;
+    merged.set(coach.id, { ...(merged.get(coach.id) || {}), ...coach });
+  });
+  return Array.from(merged.values());
+}
+
+function venueById(venueId) {
+  return appVenues().find((venue) => venue.id === venueId) || appVenues()[0] || venues[0];
+}
+
+function venueIdFromName(name = "") {
+  const normalized = name.toLowerCase();
+  return venues.find((venue) => venue.name.toLowerCase() === normalized)?.id || "away-custom";
+}
+
+function eventVenue(event) {
+  const knownVenue = appVenues().find((venue) => venue.id === event.venueId);
+  if (knownVenue && knownVenue.id !== "away-custom") return knownVenue;
+
+  if (event.venueId === "away-custom" || event.address) {
+    return {
+      id: event.venueId || "away-custom",
+      name: event.venue || "Away destination",
+      address: event.address || "Address to be confirmed",
+      parkingAddress: event.parkingAddress || "",
+    };
+  }
+  return venueById(event.venueId || venueIdFromName(event.venue));
+}
+
+function startOfToday() {
+  const date = new Date();
+  date.setHours(0, 0, 0, 0);
+  return date;
+}
+
+function addDays(date, days) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function parentEventWindowEnd() {
+  const date = addDays(startOfToday(), 14);
+  date.setHours(23, 59, 59, 999);
+  return date;
+}
+
+function isWithinParentEventWindow(event) {
+  const date = new Date(event?.datetime || "");
+  return !Number.isNaN(date.getTime()) && date >= startOfToday() && date <= parentEventWindowEnd();
+}
+
+function isBeforeVisibleSeason(event) {
+  const dateKey = dateValue(event?.datetime);
+  return Boolean(dateKey) && dateKey < visibleSeasonStart;
+}
+
+function visibleEventsForSession(events = state.events) {
+  const currentSeasonEvents = events.filter((event) => !isBeforeVisibleSeason(event));
+  if (hasCoachAccess()) return currentSeasonEvents;
+  return currentSeasonEvents.filter(isWithinParentEventWindow);
+}
+
+function timeSlots() {
+  const slots = [];
+  for (let hour = 0; hour < 24; hour += 1) {
+    for (let minute = 0; minute < 60; minute += 15) {
+      slots.push(`${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`);
+    }
+  }
+  return slots;
+}
+
+function timeOptions(selected = "", includeBlank = false) {
+  return `${includeBlank ? '<option value="">TBC / not set</option>' : ""}${timeSlots()
+    .map((slot) => `<option value="${slot}" ${slot === selected ? "selected" : ""}>${slot}</option>`)
+    .join("")}`;
+}
+
+function dateValue(datetime = "") {
+  if (!datetime) return "";
+  if (typeof datetime === "string" && /^\d{4}-\d{2}-\d{2}/.test(datetime)) return datetime.slice(0, 10);
+  const date = typeof datetime.toDate === "function" ? datetime.toDate() : new Date(datetime);
+  if (Number.isNaN(date.getTime())) return String(datetime).slice(0, 10);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function timeValue(datetime = "") {
+  return datetime ? String(datetime).slice(11, 16) : "";
+}
+
+function combineDateTime(date, time) {
+  return `${date}T${time}`;
+}
+
+function addMinutesToTime(datetime, minutes) {
+  const date = new Date(datetime);
+  if (Number.isNaN(date.getTime())) return "";
+  date.setMinutes(date.getMinutes() + minutes);
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+function suggestFinishTime(datetime, type) {
+  return addMinutesToTime(datetime, type === "Training" ? 90 : 75);
+}
+
+function mapsUrl(address) {
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`;
+}
+
+function mapsAppleUrl(address) {
+  return `https://maps.apple.com/?q=${encodeURIComponent(address)}`;
+}
+
+function venueParkingLine(venue) {
+  return venue.parkingAddress ? `<p>Parking: ${escapeHtml(venue.parkingAddress)}</p>` : "";
+}
+
+function venueMapActions(venue) {
+  const parkingActions = venue.parkingAddress
+    ? `
+      <a class="secondary-link" href="${mapsUrl(venue.parkingAddress)}" target="_blank" rel="noreferrer">Parking Google Maps</a>
+      <a class="secondary-link" href="${mapsAppleUrl(venue.parkingAddress)}" target="_blank" rel="noreferrer">Parking Apple Maps</a>
+      <button class="secondary-button" type="button" data-action="copy-link" data-copy="${escapeHtml(venue.parkingAddress)}">Copy parking</button>
+    `
+    : "";
+
+  return `
+    <a class="secondary-link" href="${mapsUrl(venue.address)}" target="_blank" rel="noreferrer">Pitch Google Maps</a>
+    <a class="secondary-link" href="${mapsAppleUrl(venue.address)}" target="_blank" rel="noreferrer">Pitch Apple Maps</a>
+    <button class="secondary-button" type="button" data-action="copy-link" data-copy="${escapeHtml(venue.address)}">Copy pitch</button>
+    ${parkingActions}
+  `;
+}
+
+function getPlayersForEvent(event, players = activePlayers()) {
+  if (Array.isArray(event?.selectedPlayerIds) && event.selectedPlayerIds.length) {
+    const selected = new Set(event.selectedPlayerIds);
+    return players.filter((player) => selected.has(player.id));
+  }
+  const eventTeamId = normalizeTeamId(event.teamId);
+  if (eventTeamId === "all") return players;
+  return players.filter((player) => normalizeTeamId(player.teamId) === eventTeamId);
+}
+
+function availabilityPlayersForEvent(event, players = activePlayers()) {
+  if (!event) return [];
+  if (!hasCoachAccess()) return approvedPlayers();
+  return event.type === "Training" ? getPlayersForEvent(event, players) : players;
+}
+
+function availabilityKeyForEvent(event) {
+  return event?.type === "Training" ? event.id : dateValue(event?.datetime) || event?.id || "";
+}
+
+function availabilityEntry(event, playerId) {
+  const key = availabilityKeyForEvent(event);
+  return defaultAvailabilityEntry(state.availability[key]?.[playerId] || state.availability[event?.id]?.[playerId]);
+}
+
+function eventsForAvailabilityDate(event) {
+  if (event?.type === "Training") return [];
+  const key = availabilityKeyForEvent(event);
+  return state.events
+    .filter((item) => availabilityKeyForEvent(item) === key && item.type !== "Training" && item.type !== "Free Week")
+    .sort((a, b) => new Date(a.datetime) - new Date(b.datetime) || String(a.title).localeCompare(String(b.title)));
+}
+
+function availabilityDateLabel(event) {
+  return event ? formatDateOnly(event.datetime) : "Selected date";
+}
+
+function selectedFixtureForPlayer(event, playerId) {
+  return eventsForAvailabilityDate(event).find((item) => Array.isArray(item.selectedPlayerIds) && item.selectedPlayerIds.includes(playerId));
+}
+
+function availabilityDateOptions() {
+  const grouped = new Map();
+  visibleEventsForSession(state.events)
+    .filter((event) => ["Fixture", "Training"].includes(event.type))
+    .forEach((event) => {
+      const key = availabilityKeyForEvent(event);
+      if (!key || grouped.has(key)) return;
+      grouped.set(key, {
+        key,
+        event,
+        fixtures: eventsForAvailabilityDate(event),
+      });
+    });
+  return [...grouped.values()].sort((a, b) => new Date(a.event.datetime) - new Date(b.event.datetime));
+}
+
+function todayDateKey() {
+  return dateValue(startOfToday());
+}
+
+function dateKeyIsCurrentOrFuture(dateKey) {
+  const date = new Date(`${dateKey}T23:59:59`);
+  return !Number.isNaN(date.getTime()) && date >= startOfToday();
+}
+
+function nextAvailabilityDateOption(options = availabilityDateOptions()) {
+  return options.find((option) => dateKeyIsCurrentOrFuture(dateValue(option.event.datetime))) || options[options.length - 1] || null;
+}
+
+function selectedAvailabilityDateOption(options = availabilityDateOptions()) {
+  const requestedEvent = state.events.find((item) => item.id === state.selectedEventId);
+  const requestedKey = availabilityKeyForEvent(requestedEvent);
+  return options.find((option) => option.event.id === state.selectedEventId || option.key === requestedKey)
+    || nextAvailabilityDateOption(options)
+    || options[0]
+    || null;
+}
+
+function availabilityDateOptionLabel(option) {
+  if (!option) return "Selected date";
+  const fixtureCount = option.fixtures.length;
+  if (fixtureCount === 1) return `${formatDateOnly(option.event.datetime)} - ${option.fixtures[0].title}`;
+  if (fixtureCount > 1) return `${formatDateOnly(option.event.datetime)} - ${fixtureCount} fixtures`;
+  return `${formatDateOnly(option.event.datetime)} - ${option.event.title}`;
+}
+
+function formatDate(value) {
+  return new Intl.DateTimeFormat("en-GB", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+function formatDateOnly(value) {
+  return new Intl.DateTimeFormat("en-GB", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+  }).format(new Date(value));
+}
+
+function displayDate(value) {
+  if (!value) return "Just now";
+  if (typeof value === "string") return value;
+  if (typeof value.toDate === "function") return formatDate(value.toDate().toISOString());
+  return String(value);
+}
+
+function dateTile(value) {
+  const date = new Date(value);
+  return {
+    day: new Intl.DateTimeFormat("en-GB", { day: "2-digit" }).format(date),
+    month: new Intl.DateTimeFormat("en-GB", { month: "short" }).format(date),
+  };
+}
+
+function eventEndDate(event) {
+  const datePart = dateValue(event.datetime);
+  const endTime = event.finishTime || timeValue(event.datetime);
+  const value = datePart && endTime ? `${datePart}T${endTime}` : event.datetime;
+  const end = new Date(value);
+  return Number.isNaN(end.getTime()) ? new Date(event.datetime) : end;
+}
+
+function isPastEvent(event) {
+  return eventEndDate(event) < new Date();
+}
+
+function resultSummary(event) {
+  if (event.type === "Free Week") return "No fixture";
+  if (event.type !== "Fixture") return "";
+  const hasHome = event.homeScore !== "" && event.homeScore != null;
+  const hasAway = event.awayScore !== "" && event.awayScore != null;
+  if (hasHome && hasAway) return `Result ${event.homeScore}-${event.awayScore}`;
+  return isPastEvent(event) ? "Result pending" : "";
+}
+
+function eventDateLine(event, venue) {
+  if (event.type === "Free Week") return `${formatDateOnly(event.datetime)} - no match scheduled`;
+  if (event.timeTbc) return `${formatDateOnly(event.datetime)} - Kick-off TBC at ${escapeHtml(venue.name)}`;
+  return `${formatDate(event.datetime)}${event.finishTime ? ` to ${escapeHtml(event.finishTime)}` : ""} at ${escapeHtml(venue.name)}`;
+}
+
+function eventPitchLine(event, venue) {
+  if (event.type === "Free Week") return "";
+  if (event.timeTbc && event.meetTime) return `Pitch: ${escapeHtml(venue.address)} - Report ${escapeHtml(event.meetTime)}`;
+  if (event.timeTbc) return `Pitch: ${escapeHtml(venue.address)} - Report TBC`;
+  return `Pitch: ${escapeHtml(venue.address)}${event.meetTime ? ` - Report ${escapeHtml(event.meetTime)}` : ""}`;
+}
+
+function statusText(status) {
+  return {
+    available: "Available",
+    unavailable: "Unavailable",
+    unknown: "No reply",
+    present: "Present",
+    absent: "Absent",
+    collected: "Collected",
+    pending: "Pending",
+    approved: "Approved",
+    rejected: "Rejected",
+    open: "Open",
+    handled: "Handled",
+  }[status] || status;
+}
+
+function statusClass(status) {
+  if (["available", "present", "approved", "collected", "handled"].includes(status)) return "good";
+  if (["unavailable", "absent", "rejected"].includes(status)) return "bad";
+  return "warn";
+}
+
+function availabilityCounts(eventId) {
+  const event = state.events.find((item) => item.id === eventId);
+  const players = event ? availabilityPlayersForEvent(event) : activePlayers();
+  return players.reduce(
+    (acc, player) => {
+      const entry = event ? availabilityEntry(event, player.id) : defaultAvailabilityEntry(state.availability[eventId]?.[player.id]);
+      const status = entry?.status || "unknown";
+      acc[status] += 1;
+      if (entry.liftOffer) {
+        acc.lifts += 1;
+        acc.liftSeats += Number(entry.liftSeats || 0);
+      }
+      return acc;
+    },
+    { available: 0, unavailable: 0, unknown: 0, lifts: 0, liftSeats: 0 },
+  );
+}
+
+function percentValue(value, total) {
+  return total ? Math.round((Number(value || 0) / total) * 100) : 0;
+}
+
+function metricCountLabel(value, total) {
+  return `${value}/${total}${total ? ` (${percentValue(value, total)}%)` : ""}`;
+}
+
+function dateKeysToText(dateKeys = []) {
+  if (!dateKeys.length) return "None recorded";
+  return dateKeys.map((dateKey) => formatDateOnly(`${dateKey}T12:00:00`)).join(", ");
+}
+
+function registerHistoryStartLabel() {
+  return formatDateOnly(`${registerHistoryStart}T12:00:00`);
+}
+
+function isPastMatchdayDateKey(dateKey) {
+  const date = new Date(`${dateKey}T23:59:59`);
+  return !Number.isNaN(date.getTime()) && date < startOfToday();
+}
+
+function trainingMetricEvents() {
+  return state.events
+    .filter((event) => event.type === "Training"
+      && !isRemovedRegisterEvent(event)
+      && dateValue(event.datetime) >= registerHistoryStart
+      && attendanceHasRegisterMarks(event))
+    .sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
+}
+
+function matchdayHasTracking(dateKey) {
+  const availability = state.availability[dateKey] || {};
+  const hasAvailability = activePlayers().some((player) => {
+    const status = defaultAvailabilityEntry(availability[player.id]).status;
+    return ["available", "unavailable"].includes(status);
+  });
+  const hasSelection = fixturesOnDate(dateKey).some((fixture) => Array.isArray(fixture.selectedPlayerIds) && fixture.selectedPlayerIds.length);
+  return hasAvailability || hasSelection;
+}
+
+function trackedMatchdayDateKeys() {
+  return matchdayDateKeys().filter(matchdayHasTracking);
+}
+
+function playerTrainingMetrics(playerId) {
+  const sessions = trainingMetricEvents();
+  const attendedEvents = sessions.filter((event) => ["present", "collected"].includes(state.attendance[event.id]?.[playerId]));
+  const absentEvents = sessions.filter((event) => state.attendance[event.id]?.[playerId] === "absent");
+  return {
+    total: sessions.length,
+    attended: attendedEvents.length,
+    absent: absentEvents.length,
+    sessionDateKeys: sessions.map((event) => dateValue(event.datetime)).filter(Boolean),
+    attendedDateKeys: attendedEvents.map((event) => dateValue(event.datetime)).filter(Boolean),
+    absentDateKeys: absentEvents.map((event) => dateValue(event.datetime)).filter(Boolean),
+    percent: percentValue(attendedEvents.length, sessions.length),
+  };
+}
+
+function playerMatchAvailabilityMetrics(playerId) {
+  const dateKeys = trackedMatchdayDateKeys();
+  const availableDateKeys = dateKeys.filter((dateKey) => defaultAvailabilityEntry(state.availability[dateKey]?.[playerId]).status === "available");
+  const unavailableDateKeys = dateKeys.filter((dateKey) => defaultAvailabilityEntry(state.availability[dateKey]?.[playerId]).status === "unavailable");
+  const selectedDateKeys = dateKeys.filter((dateKey) => playerPickedOnDate(playerId, dateKey));
+  const selectedWhenAvailableDateKeys = availableDateKeys.filter((dateKey) => playerPickedOnDate(playerId, dateKey));
+  const availableUnpickedDateKeys = availableDateKeys.filter((dateKey) => isPastMatchdayDateKey(dateKey) && !playerPickedOnDate(playerId, dateKey));
+  const selectedWhenAvailablePercent = percentValue(selectedWhenAvailableDateKeys.length, availableDateKeys.length);
+  return {
+    total: dateKeys.length,
+    available: availableDateKeys.length,
+    unavailable: unavailableDateKeys.length,
+    noReply: Math.max(0, dateKeys.length - availableDateKeys.length - unavailableDateKeys.length),
+    selected: selectedDateKeys.length,
+    selectedWhenAvailable: selectedWhenAvailableDateKeys.length,
+    waiting: availableUnpickedDateKeys.length,
+    dateKeys,
+    availableDateKeys,
+    unavailableDateKeys,
+    selectedDateKeys,
+    selectedWhenAvailableDateKeys,
+    availableUnpickedDateKeys,
+    availablePercent: percentValue(availableDateKeys.length, dateKeys.length),
+    selectedWhenAvailablePercent,
+    missedSelectionPercent: availableDateKeys.length ? percentValue(availableUnpickedDateKeys.length, availableDateKeys.length) : 0,
+    fairSharePercent: availableDateKeys.length ? 100 - selectedWhenAvailablePercent : 0,
+  };
+}
+
+function playerSelectedMatchAttendanceMetrics(playerId) {
+  const selectedFixtures = resultFixtureEvents().filter((event) => Array.isArray(event.selectedPlayerIds) && event.selectedPlayerIds.includes(playerId));
+  const markedFixtures = selectedFixtures.filter((event) => ["present", "collected", "absent"].includes(state.attendance[event.id]?.[playerId]));
+  const attendedFixtures = markedFixtures.filter((event) => ["present", "collected"].includes(state.attendance[event.id]?.[playerId]));
+  const absentFixtures = markedFixtures.filter((event) => state.attendance[event.id]?.[playerId] === "absent");
+  return {
+    total: markedFixtures.length,
+    attended: attendedFixtures.length,
+    absent: absentFixtures.length,
+    selectedDateKeys: selectedFixtures.map((event) => dateValue(event.datetime)).filter(Boolean),
+    markedDateKeys: markedFixtures.map((event) => dateValue(event.datetime)).filter(Boolean),
+    attendedDateKeys: attendedFixtures.map((event) => dateValue(event.datetime)).filter(Boolean),
+    absentDateKeys: absentFixtures.map((event) => dateValue(event.datetime)).filter(Boolean),
+    percent: percentValue(attendedFixtures.length, markedFixtures.length),
+  };
+}
+
+function selectionPriorityForPlayer(player, dateKey = selectedSquadAvailabilityDateKey()) {
+  const training = playerTrainingMetrics(player.id);
+  const match = playerMatchAvailabilityMetrics(player.id);
+  const matchAttendance = playerSelectedMatchAttendanceMetrics(player.id);
+  const currentStatus = dateKey ? defaultAvailabilityEntry(state.availability[dateKey]?.[player.id]).status : "available";
+  const trainingPercent = training.total ? training.percent : 100;
+  const missedSelectionPercent = match.missedSelectionPercent;
+  const fairSharePercent = match.fairSharePercent;
+  const rawScore = Math.round(
+    missedSelectionPercent * 0.45
+    + fairSharePercent * 0.35
+    + trainingPercent * 0.2,
+  );
+  const currentStatusRank = currentStatus === "available" ? 2 : currentStatus === "unknown" ? 1 : 0;
+  return {
+    score: Math.max(0, Math.min(100, rawScore)),
+    currentStatusRank,
+    currentStatus,
+    training,
+    match,
+    matchAttendance,
+    trainingPercent,
+    missedSelectionPercent,
+    fairSharePercent,
+    dateKey,
+  };
+}
+
+function selectionPriorityTitle(priority) {
+  const dateText = priority.dateKey ? formatDateOnly(`${priority.dateKey}T12:00`) : "the selected weekend";
+  return [
+    `Priority ${priority.score}/100 for ${dateText}. Higher means a stronger selection case.`,
+    `Current response: ${statusText(priority.currentStatus)}. Score uses 45% past available-but-not-picked weekends, 35% fair-share opportunity balance, and 20% training attendance.`,
+    `Training: ${priority.training.attended} of ${priority.training.total}. Available: ${priority.match.available} of ${priority.match.total}. Picked when available: ${priority.match.selectedWhenAvailable} of ${priority.match.available}.`,
+    `Past weekends available but not selected: ${dateKeysToText(priority.match.availableUnpickedDateKeys)}.`,
+  ].join(" ");
+}
+
+function coachPlayerMetrics(player) {
+  return {
+    training: playerTrainingMetrics(player.id),
+    match: playerMatchAvailabilityMetrics(player.id),
+    matchAttendance: playerSelectedMatchAttendanceMetrics(player.id),
+  };
+}
+
+function coachPlayerMetricTags(player, mode = "compact", dateKey = selectedSquadAvailabilityDateKey()) {
+  if (!hasCoachAccess()) return "";
+  const metrics = coachPlayerMetrics(player);
+  const priority = selectionPriorityForPlayer(player, dateKey);
+  const tags = [
+    {
+      label: `Priority ${priority.score}/100`,
+      title: selectionPriorityTitle(priority),
+      className: "priority",
+    },
+    {
+      label: `Trained ${metrics.training.attended} of ${metrics.training.total}`,
+      title: `Training season so far from ${registerHistoryStartLabel()} with a saved register. Attended: ${dateKeysToText(metrics.training.attendedDateKeys)}. Marked absent: ${dateKeysToText(metrics.training.absentDateKeys)}.`,
+    },
+    {
+      label: `Available ${metrics.match.available} of ${metrics.match.total} weekends`,
+      title: `Weekend matchdays tracked so far. Marked available: ${dateKeysToText(metrics.match.availableDateKeys)}. Marked unavailable: ${dateKeysToText(metrics.match.unavailableDateKeys)}.`,
+    },
+    {
+      label: `Picked ${metrics.match.selectedWhenAvailable} of ${metrics.match.available} available`,
+      title: `Selected after saying available: ${dateKeysToText(metrics.match.selectedWhenAvailableDateKeys)}. Past weekends available but not selected: ${dateKeysToText(metrics.match.availableUnpickedDateKeys)}.`,
+    },
+  ];
+  if (metrics.match.waiting) {
+    tags.push({
+      label: `${metrics.match.waiting} past unpicked`,
+      title: `Past weekends where they said they were available but were not selected: ${dateKeysToText(metrics.match.availableUnpickedDateKeys)}.`,
+      className: "attention",
+    });
+  }
+  return `
+    <div class="coach-metric-tags ${escapeHtml(mode)}">
+      ${tags.map((tag) => `<span class="${escapeHtml(tag.className || "")}" title="${escapeHtml(tag.title)}" aria-label="${escapeHtml(tag.title)}">${escapeHtml(tag.label)}</span>`).join("")}
+    </div>
+  `;
+}
+
+function coachPlayerProfileMetrics(player) {
+  if (!hasCoachAccess() || !player) return "";
+  const metrics = coachPlayerMetrics(player);
+  const priority = selectionPriorityForPlayer(player);
+  return `
+    <section class="coach-player-profile-metrics">
+      <p class="eyebrow">Coach-only availability profile</p>
+      <div class="profile-metric-grid">
+        <div title="${escapeHtml(selectionPriorityTitle(priority))}">
+          <span>Selection priority</span>
+          <strong>${priority.score}/100</strong>
+        </div>
+        <div>
+          <span>Training season</span>
+          <strong>Trained ${metrics.training.attended} of ${metrics.training.total}</strong>
+        </div>
+        <div>
+          <span>Match turn-up</span>
+          <strong>${metrics.matchAttendance.total ? `Turned up ${metrics.matchAttendance.attended} of ${metrics.matchAttendance.total}` : "No match registers"}</strong>
+        </div>
+        <div>
+          <span>Match availability</span>
+          <strong>Available ${metrics.match.available} of ${metrics.match.total}</strong>
+        </div>
+        <div>
+          <span>Selected when available</span>
+          <strong>Picked ${metrics.match.selectedWhenAvailable} of ${metrics.match.available}</strong>
+        </div>
+        <div>
+          <span>Available not picked</span>
+          <strong>${metrics.match.waiting}</strong>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function messageTimestamp(message) {
+  const value = message.createdAt || message.sentAt || "";
+  if (!value) return 0;
+  if (typeof value.toMillis === "function") return value.toMillis();
+  if (typeof value.toDate === "function") return value.toDate().getTime();
+  if (typeof value.seconds === "number") return value.seconds * 1000;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function alertTimestamp(alert) {
+  return messageTimestamp({ createdAt: alert.createdAt || alert.sentAt || alert.updatedAt });
+}
+
+function visibleMessagesForUser() {
+  const child = currentPlayer();
+  return state.messages.filter((message) => hasCoachAccess() || message.teamId === "all" || normalizeTeamId(message.teamId) === normalizeTeamId(child?.teamId));
+}
+
+function visibleParentNotificationsForUser() {
+  const child = currentPlayer();
+  if (state.session.role !== "parent" || !child) return [];
+  return (state.notifications || []).filter((alert) => alert.data?.playerId === child.id || alert.playerId === child.id);
+}
+
+function unreadMessageCount() {
+  const readAt = Date.parse(state.messageReadAt || "") || 0;
+  const items = [
+    ...visibleMessagesForUser().map((message) => ({ timestamp: messageTimestamp(message) })),
+    ...visibleParentNotificationsForUser().map((alert) => ({ timestamp: alertTimestamp(alert) })),
+  ];
+  return items.filter((item) => item.timestamp > readAt).length;
+}
+
+async function markMessagesRead() {
+  state.messageReadAt = new Date().toISOString();
+  saveState();
+  if (!isFirebaseSignedIn() || !state.session.userId) return;
+  try {
+    const runtime = await ensureFirebase();
+    await runtime.modules.setDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "users", state.session.userId), {
+      messageReadAt: state.messageReadAt,
+      updatedAt: runtime.modules.serverTimestamp(),
+    }, { merge: true });
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+function attendancePercent(playerId) {
+  let total = 0;
+  let present = 0;
+  state.events.forEach((event) => {
+    const value = state.attendance[event.id]?.[playerId];
+    if (value && value !== "unknown") {
+      total += 1;
+      if (value === "present" || value === "collected") present += 1;
+    }
+  });
+  return total ? Math.round((present / total) * 100) : 0;
+}
+
+function averageAttendance() {
+  const players = activePlayers();
+  if (!players.length) return 0;
+  return Math.round(players.reduce((sum, player) => sum + attendancePercent(player.id), 0) / players.length);
+}
+
+function toast(message) {
+  const node = $("#toast");
+  node.textContent = message;
+  node.classList.add("show");
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => node.classList.remove("show"), 2600);
+}
+
+function setAppShellClasses() {
+  document.body.classList.toggle("native-shell", isNativeCapacitor());
+  document.body.classList.toggle("keyboard-open", keyboardVisible);
+  document.body.classList.toggle("offline", Boolean(state.isOffline));
+}
+
+function nativePlugin(name) {
+  return window.Capacitor?.Plugins?.[name] || window[name] || null;
+}
+
+function nativePlatform() {
+  return window.Capacitor?.getPlatform?.() || (isNativeCapacitor() ? "native" : "web");
+}
+
+function appRootRoute() {
+  if (state.session.loggedIn) return "home";
+  return "auth";
+}
+
+function offlineBanner() {
+  return state.isOffline
+    ? '<section class="pending-banner offline-banner"><strong>Offline</strong><span>You can look at loaded information, but saving and uploads need a connection.</span></section>'
+    : "";
+}
+
+function actionErrorMessage(error) {
+  if (state.isOffline || error?.code === "unavailable" || String(error?.message || "").toLowerCase().includes("network")) {
+    return "This needs an internet connection. Reconnect and try again.";
+  }
+  if (error?.code) return authErrorMessage(error);
+  return "That action could not be completed. Please try again.";
+}
+
+function setBusy(message = "Loading...") {
+  state.loading = true;
+  state.error = "";
+  render();
+  if (message) toast(message);
+}
+
+function showError(message) {
+  state.loading = false;
+  state.error = message;
+  render();
+  toast(message);
+}
+
+function confirmAction({ title = "Are you sure?", message = "", confirmLabel = "Confirm", cancelLabel = "Cancel", danger = false } = {}) {
+  return new Promise((resolve) => {
+    const returnFocus = document.activeElement;
+    const backdrop = document.createElement("div");
+    backdrop.className = "app-confirm-backdrop";
+    backdrop.innerHTML = `
+      <section class="app-confirm" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title">
+        <h2 id="confirm-title">${escapeHtml(title)}</h2>
+        ${message ? `<p>${escapeHtml(message)}</p>` : ""}
+        <div class="confirm-actions">
+          <button class="secondary-button" type="button" data-confirm="cancel">${escapeHtml(cancelLabel)}</button>
+          <button class="${danger ? "danger-button" : "primary-button"}" type="button" data-confirm="ok">${escapeHtml(confirmLabel)}</button>
+        </div>
+      </section>
+    `;
+    const finish = (value) => {
+      backdrop.remove();
+      if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
+      resolve(value);
+    };
+    backdrop.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        finish(false);
+      } else if (event.key === "Tab") {
+        const buttons = [...backdrop.querySelectorAll("button")];
+        if ((event.shiftKey && document.activeElement === buttons[0]) || (!event.shiftKey && document.activeElement === buttons.at(-1))) {
+          event.preventDefault();
+          (event.shiftKey ? buttons.at(-1) : buttons[0]).focus();
+        }
+      }
+    });
+    backdrop.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-confirm]");
+      if (button) finish(button.dataset.confirm === "ok");
+      if (event.target === backdrop) finish(false);
+    });
+    document.body.appendChild(backdrop);
+    backdrop.querySelector("[data-confirm='cancel']")?.focus();
+  });
+}
+
+function firebaseConfigDebugSummary() {
+  const config = backendConfig.firebaseConfig || {};
+  const apiKey = String(config.apiKey || "");
+  const keyEnding = apiKey ? `...${apiKey.slice(-14)}` : "missing";
+  return `Loaded project: ${config.projectId || "missing"}. Loaded API key ending: ${keyEnding}.`;
+}
+
+function authErrorMessage(error) {
+  const code = String(error?.code || "");
+  if (code.includes("api-key-not-valid")) {
+    return `Firebase rejected the web API key before checking the email or password. ${firebaseConfigDebugSummary()}`;
+  }
+
+  const friendlyMessage = {
+    "device/disconnect-pending": "Notifications from the previous account still need disconnecting. Reconnect and retry, or disable notifications for this website in your browser settings.",
+    "auth/invalid-credential": "Those Firebase login details were not recognised.",
+    "auth/user-not-found": "No account was found for that email address.",
+    "auth/wrong-password": "That password is not correct.",
+    "auth/invalid-email": "That email address does not look right.",
+    "auth/operation-not-allowed": "Email/password sign-in is not enabled in Firebase Authentication.",
+    "auth/unauthorized-domain": "This website address is not authorised in Firebase Authentication.",
+    "auth/network-request-failed": "Firebase could not be reached from this device. Check the internet connection and try again.",
+    "auth/too-many-requests": "Firebase has temporarily blocked sign-in attempts for this account. Please wait a few minutes and try again.",
+    "auth/email-already-in-use": "That email is already registered. Please sign in with the existing password.",
+    "auth/weak-password": "Please choose a password with at least six characters.",
+    "auth/requires-recent-login": "Please sign out and back in before changing the password.",
+    "permission-denied": "Firebase blocked access to the app data. Check the coach user document is in clubs / largs-colts-2016s / users and the document ID is the full Authentication UID.",
+  }[error?.code];
+
+  return friendlyMessage || `Firebase could not complete that action. Error code: ${error?.code || "unknown"}.`;
+}
+
+function requireCoach() {
+  if (hasCoachAccess()) return true;
+  toast("Coach access required");
+  return false;
+}
+
+function hasCoachAccess(role = state.session.role) {
+  return coachRoles.includes(String(role || "").toLowerCase());
+}
+
+function isCoachGuide() {
+  return state.session.loggedIn && hasCoachAccess() && state.coachGuide?.active;
+}
+
+function currentCoachGuideStep() {
+  return coachGuideSteps[state.coachGuide?.step || 0] || coachGuideSteps[0];
+}
+
+function applyCoachGuideStep() {
+  if (!isCoachGuide()) return;
+  const step = currentCoachGuideStep();
+  state.route = step.route;
+  if (step.eventId) state.selectedEventId = step.eventId;
+  if (step.route === "schedule") state.scheduleFilter = "all";
+}
+
+function updateCoachGuide(direction) {
+  if (!isCoachGuide()) return;
+  const nextStep = (state.coachGuide.step || 0) + direction;
+  if (nextStep >= coachGuideSteps.length) {
+    state.coachGuide.active = false;
+    state.coachGuide.completed = true;
+    saveState();
+    render();
+    toast("Coach walkthrough complete");
+    return;
+  }
+  state.coachGuide.step = Math.max(0, nextStep);
+  applyCoachGuideStep();
+  saveState();
+  render();
+}
+
+function stopCoachGuide() {
+  state.coachGuide.active = false;
+  state.coachGuide.completed = true;
+  saveState();
+  render();
+}
+
+function restartCoachGuide() {
+  state.coachGuide = { active: true, step: 0, completed: false };
+  applyCoachGuideStep();
+  saveState();
+  render();
+}
+
+function coachGuideButton() {
+  if (!isCoachGuide()) return "";
+  return `<button class="secondary-button guide-start-button" type="button" data-action="coach-guide-restart">${state.coachGuide.active ? "Restart walkthrough" : "Start walkthrough"}</button>`;
+}
+
+function coachGuideView() {
+  if (!isCoachGuide()) return "";
+  const step = currentCoachGuideStep();
+  const stepNumber = (state.coachGuide.step || 0) + 1;
+  const lastStep = stepNumber === coachGuideSteps.length;
+  return `
+    <section class="coach-guide-card" role="dialog" aria-live="polite" aria-label="Coach walkthrough">
+      <div class="coach-guide-progress">
+        <span>Coach walkthrough</span>
+        <strong>${stepNumber}/${coachGuideSteps.length}</strong>
+      </div>
+      <h2>${escapeHtml(step.title)}</h2>
+      <p>${escapeHtml(step.body)}</p>
+      <div class="coach-guide-actions">
+        <button class="secondary-button" type="button" data-action="coach-guide-back" ${stepNumber === 1 ? "disabled" : ""}>Back</button>
+        <button class="primary-button" type="button" data-action="coach-guide-next">${lastStep ? "Finish" : "Next"}</button>
+        <button class="tiny-button" type="button" data-action="coach-guide-stop">Skip</button>
+      </div>
+    </section>
+  `;
+}
+
+function highlightCoachGuideTarget() {
+  document.querySelectorAll(".coach-guide-highlight").forEach((node) => node.classList.remove("coach-guide-highlight"));
+  if (!isCoachGuide()) return;
+  const target = currentCoachGuideStep().target;
+  const node = target ? document.querySelector(`[data-tour="${target}"]`) : null;
+  if (!node) return;
+  node.classList.add("coach-guide-highlight");
+  node.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+}
+
+function render() {
+  const snapshot = scrollSnapshot();
+  syncBrowserNavigation();
+  const routeChanged = renderedRoute !== state.route;
+  if (routeChanged && renderedRoute) routeScrollPositions.set(renderedRoute, snapshot);
+  if (discardFormDraftsOnRender) { transientFormDrafts.clear(); discardFormDraftsOnRender = false; }
+  else rememberVisibleFormDrafts();
+  applyCoachGuideStep();
+  setAppShellClasses();
+  const app = $("#app");
+  if (state.loading) {
+    app.innerHTML = loadingView();
+    return;
+  }
+  if (!state.session.loggedIn) {
+    app.innerHTML = authView();
+  } else {
+    app.innerHTML = shellView();
+  }
+  restoreFormDrafts(app);
+  bindFormDefaults();
+  app.querySelectorAll('.segmented button, .auth-tabs button').forEach((button) => button.setAttribute("aria-pressed", String(button.classList.contains("active"))));
+  if (routeChanged || navigationScroll) {
+    const saved = navigationScroll || { top: 0, left: 0, keyed: [] };
+    navigationScroll = null;
+    window.scrollTo(saved.left, saved.top);
+    restoreScrollSnapshot({ ...saved, route: state.route });
+  } else restoreScrollSnapshot({ ...snapshot, route: state.route });
+  renderedRoute = state.route;
+  highlightCoachGuideTarget();
+  keepActiveBottomNavVisible();
+  const modal = document.querySelector('.modal[role="dialog"]');
+  const nextModalType = state.modal?.type || "";
+  if (modal && nextModalType !== renderedModalType) {
+    modal.querySelector("input:not([type='hidden']), select, textarea, button")?.focus({ preventScroll: true });
+  } else if (!nextModalType && renderedModalType) {
+    const returnTarget = modalReturnSelector && document.querySelector(modalReturnSelector);
+    (returnTarget || document.querySelector(".app-main"))?.focus({ preventScroll: true });
+  }
+  renderedModalType = nextModalType;
+}
+
+function pauseReactiveRenders(duration = 1800) {
+  reactiveRenderPauseUntil = Math.max(reactiveRenderPauseUntil, Date.now() + duration);
+}
+
+function activeControlShouldHoldRender() {
+  const active = document.activeElement;
+  return Boolean(active?.matches?.("select, input, textarea"));
+}
+
+function shouldDeferReactiveRender() {
+  return Date.now() < reactiveRenderPauseUntil || activeControlShouldHoldRender();
+}
+
+function requestRender(options = {}) {
+  if (options.force) {
+    if (deferredRenderTimer) clearTimeout(deferredRenderTimer);
+    deferredRenderTimer = null;
+    render();
+    return;
+  }
+
+  if (!shouldDeferReactiveRender()) {
+    if (deferredRenderTimer) clearTimeout(deferredRenderTimer);
+    deferredRenderTimer = null;
+    render();
+    return;
+  }
+
+  if (deferredRenderTimer) return;
+  const wait = Math.max(activeControlShouldHoldRender() ? 500 : 180, reactiveRenderPauseUntil - Date.now() + 120);
+  deferredRenderTimer = window.setTimeout(() => {
+    deferredRenderTimer = null;
+    if (shouldDeferReactiveRender()) {
+      requestRender();
+      return;
+    }
+    render();
+  }, wait);
+}
+
+function keepActiveBottomNavVisible() {
+  const nav = document.querySelector(".bottom-nav");
+  const active = nav?.querySelector(".nav-link.active");
+  if (!nav || !active) return;
+  if (window.matchMedia?.("(hover: none) and (pointer: coarse)")?.matches) return;
+  requestAnimationFrame(() => {
+    active.scrollIntoView({ block: "nearest", inline: "center" });
+  });
+}
+
+function loadingView() {
+  return `
+    <main class="auth-page" id="main-content" tabindex="-1">
+      <section class="auth-card loading-card">
+        <div class="auth-brand">
+          <img src="${crestPath}" alt="Largs Colts F.C. crest">
+          <div>
+            <p class="eyebrow">Loading secure app</p>
+            <h1>Largs Colts 2016s</h1>
+            <p>Checking Firebase sign-in and loading the latest club data.</p>
+          </div>
+        </div>
+        <div class="loading-bar" aria-hidden="true"><span></span></div>
+      </section>
+    </main>
+  `;
+}
+
+function errorBanner() {
+  return state.error ? `<section class="pending-banner error-banner" role="alert"><strong>Action needed</strong><span>${escapeHtml(state.error)}</span></section>` : "";
+}
+
+function authView() {
+  return `
+    <main class="auth-page" id="main-content" tabindex="-1">
+      <section class="auth-card">
+        <div class="auth-brand">
+          <img src="${crestPath}" alt="Largs Colts F.C. crest">
+          <div>
+            <p class="eyebrow">Private team app</p>
+            <h1>Largs Colts 2016s</h1>
+          <p>Fixtures, availability, register and verified parent access.</p>
+          </div>
+        </div>
+
+        <div class="auth-tabs" role="group" aria-label="Choose account type">
+          <button class="${state.authRole === "parent" ? "active" : ""}" type="button" data-action="set-auth-role" data-role="parent">Parent</button>
+          <button class="${state.authRole === "coach" ? "active" : ""}" type="button" data-action="set-auth-role" data-role="coach">Coach</button>
+        </div>
+
+        ${offlineBanner()}
+        ${state.authRole === "parent" ? parentLoginView() : coachLoginView()}
+        ${errorBanner()}
+      </section>
+    </main>
+  `;
+}
+
+function parentLoginView() {
+  const remember = parentRememberPreference();
+  const rememberedEmail = remember ? parentRememberedEmail() : "";
+  return `
+    <form class="auth-form" data-form="parent-login">
+      <label>
+        <span>Email</span>
+        <input name="email" type="email" autocomplete="email" required value="${escapeHtml(rememberedEmail)}" placeholder="parent@example.com">
+      </label>
+      <label>
+        <span>Password</span>
+        <input name="passcode" type="password" autocomplete="current-password" minlength="6" required placeholder="Your private password">
+      </label>
+      <div class="consent-control">
+        <div class="check-row compact-consent">
+          <input id="parentConsent" name="consent" type="checkbox" required aria-labelledby="parentConsentText">
+          <label id="parentConsentText" for="parentConsent">I confirm that I am authorised to request access for my child.</label>
+        </div>
+        <details class="consent-details">
+          <summary>View full consent statement</summary>
+          <div class="privacy-copy">
+            <p>I confirm that I am a parent, guardian, or otherwise authorised to request access for this child.</p>
+            <p>I understand that Largs Colts 2016 will store and use the child's profile information, attendance records, availability status, and app notification data for the legitimate purpose of managing football training, matches, team communication, player welfare, and general team administration.</p>
+            <p>I understand that this information will only be accessible to authorised coaches and team administrators and will not be shared outside the club except where required for football administration or safeguarding purposes.</p>
+            <p>For support or data queries, contact ${escapeHtml(supportEmail || "your club coach using your usual club contact details")}.</p>
+          </div>
+        </details>
+      </div>
+      <div class="check-row compact-consent">
+        <input id="parentRememberMe" name="rememberMe" type="checkbox" ${remember ? "checked" : ""} aria-labelledby="parentRememberMeText">
+        <label id="parentRememberMeText" for="parentRememberMe">Remember me on this device</label>
+      </div>
+      <div class="auth-actions">
+        <button class="primary-button" type="submit">Continue</button>
+        <button class="secondary-button" type="button" data-action="reset-password">Forgot password</button>
+      </div>
+      <details class="privacy-preview">
+        <summary>Privacy notice</summary>
+        ${privacyNoticeContent()}
+      </details>
+    </form>
+  `;
+}
+
+function coachLoginView() {
+  return `
+    <form class="auth-form" data-form="coach-login">
+      <label>
+        <span>Email</span>
+        <input name="email" type="email" autocomplete="email" required placeholder="coach@example.com">
+      </label>
+      <label>
+        <span>Password</span>
+        <input name="passcode" type="password" autocomplete="current-password" required placeholder="Coach account password">
+      </label>
+      <div class="auth-actions">
+        <button class="primary-button" type="submit">Sign in</button>
+        <button class="secondary-button" type="button" data-action="reset-password">Forgot password</button>
+      </div>
+      <p class="live-build-note">Build ${appVersion} uses live Firebase Auth, Firestore and push notifications.</p>
+    </form>
+  `;
+}
+
+function shellView() {
+  const pendingOnly = state.session.role === "parent" && !approvedPlayers().length;
+  const route = pendingOnly && !["access", "install"].includes(state.route) ? "access" : state.route;
+  const routes = navRoutes(pendingOnly);
+  const child = currentPlayer();
+  const unread = unreadMessageCount();
+
+  return `
+    <div class="app-shell">
+      <aside class="side-nav">
+        <a class="brand" href="#home" data-route="home">
+          <span><img src="${crestPath}" alt=""></span>
+          <strong>Largs Colts</strong>
+          <small>2016s Team App</small>
+        </a>
+        <nav aria-label="Primary">
+          ${mobilePrimaryRouteIds().map((id) => routes.find((item) => item.id === id)).filter(Boolean).map((item) => navItem(item, route)).join("")}
+          ${navigationGroups(mobileMenuRoutes(routes)).map((group) => `<p class="nav-group-title">${group.title}</p>${group.items.map((item) => navItem(item, route)).join("")}`).join("")}
+        </nav>
+        <button class="sign-out" type="button" data-action="sign-out">Sign out</button>
+      </aside>
+
+      <main class="app-main" id="main-content" tabindex="-1">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">${hasCoachAccess() ? "Coach portal" : "Parent portal"}</p>
+            <h1>${pageTitle(route)}</h1>
+          </div>
+          <div class="topbar-actions">
+            ${state.session.role === "parent" && approvedPlayers().length ? childSelector(child) : ""}
+            ${coachGuideButton()}
+            <button class="notification-button ${unread ? "has-unread" : ""}" type="button" data-route-target="messages" aria-label="Messages">
+              <span class="message-icon">M</span>
+              ${unread ? `<span class="message-count">${unread}</span>` : ""}
+            </button>
+            ${accountControls()}
+          </div>
+        </header>
+
+        ${errorBanner()}
+        ${offlineBanner()}
+        ${pendingOnly ? pendingBanner() : ""}
+        <section class="page-frame">
+          ${pageView(route)}
+        </section>
+      </main>
+
+      <nav class="bottom-nav" aria-label="Mobile navigation">
+        ${mobileNav(routes, route)}
+      </nav>
+    </div>
+    ${modalView()}
+    ${coachGuideView()}
+  `;
+}
+
+function accountControls() {
+  const isCoach = hasCoachAccess();
+  const canSwitch = Boolean(state.session.canSwitchPortal);
+  const displayName = isCoach
+    ? state.session.coachName || state.session.email || "Coach"
+    : state.session.parentName || state.session.email || "Parent";
+  return `
+    <div class="account-controls" aria-label="Account controls">
+      <span class="account-chip">
+        <strong>${escapeHtml(displayName)}</strong>
+        <small>${isCoach ? "Coach" : "Parent"}</small>
+      </span>
+      ${canSwitch ? `<button class="secondary-button account-button" type="button" data-action="switch-account" data-role="${isCoach ? "parent" : "coach"}">
+        ${isCoach ? "Parent login" : "Coach login"}
+      </button>` : ""}
+      <button class="secondary-button account-button" type="button" data-action="sign-out">Log out</button>
+    </div>
+  `;
+}
+
+function navRoutes(pendingOnly = false) {
+  const coachRoutes = [
+    { id: "home", label: "Dashboard", mark: "H" },
+    { id: "schedule", label: "Schedule", mark: "S" },
+    { id: "availability", label: "Availability", mark: "AV" },
+    { id: "attendance", label: "Register", mark: "R" },
+    { id: "squad-section", label: "Squad", mark: "SQ", group: squadSectionRoutes },
+    { id: "documents", label: "Documents", mobileLabel: "Docs", mark: "DOC" },
+    { id: "messages", label: "Messages", mark: "M" },
+    { id: "club-section", label: "Club", mark: "CL", group: coachClubSectionRoutes },
+  ];
+  const parentRoutes = [
+    { id: "home", label: "Home", mark: "H" },
+    { id: "schedule", label: "Schedule", mark: "S" },
+    { id: "availability", label: "Availability", mark: "AV" },
+    { id: "attendance", label: "Register", mark: "R" },
+    { id: "documents", label: "Documents", mobileLabel: "Docs", mark: "DOC" },
+    { id: "messages", label: "Messages", mark: "M" },
+    { id: "club-section", label: "Club", mark: "CL", group: parentClubSectionRoutes },
+  ];
+  const base = hasCoachAccess() ? coachRoutes : parentRoutes;
+  return pendingOnly ? base.filter((item) => item.id === "club-section") : base;
+}
+
+function navItem(item, route, compact = false) {
+  const label = compact ? item.mobileLabel || item.label : item.label;
+  const active = route === item.id || (Array.isArray(item.group) && item.group.includes(route));
+  return `
+    <button class="nav-link ${active ? "active" : ""}" ${active ? 'aria-current="page"' : ""} type="button" data-route-target="${item.id}" data-tour="nav-${item.id}">
+      <span class="nav-mark" aria-hidden="true">${escapeHtml(item.mark || item.label.slice(0, 1))}</span>
+      <span>${escapeHtml(label)}</span>
+    </button>
+  `;
+}
+
+function mobilePrimaryRouteIds() {
+  return hasCoachAccess()
+    ? ["home", "schedule", "attendance", "squad-section"]
+    : ["home", "schedule", "availability", "messages"];
+}
+
+function routeItem(id, label, mark, group = "", mobileLabel = "") {
+  return { id, label, mark, group, mobileLabel };
+}
+
+function mobileMenuRoutes(routes = navRoutes()) {
+  const topLevelIds = new Set(routes.map((item) => item.id));
+  const items = [];
+  const add = (item) => {
+    if (!item?.id || items.some((existing) => existing.id === item.id)) return;
+    items.push(item);
+  };
+
+  routes.forEach((item) => {
+    if (item.id === "squad-section" && hasCoachAccess()) {
+      add(routeItem("development", "Development", "D", "squad"));
+      add(routeItem("squad-builder", "Whiteboard", "WB", "squad"));
+      add(routeItem("awards", "Awards", "AW", "squad"));
+      add(routeItem("results", "Results & Stats", "RS", "squad"));
+      return;
+    }
+    if (mobilePrimaryRouteIds().includes(item.id)) return;
+    if (item.id === "club-section") {
+      const clubRoutes = hasCoachAccess() ? coachClubSectionRoutes : parentClubSectionRoutes;
+      clubRoutes.forEach((clubRoute) => add(routeItem(clubRoute, pageTitle(clubRoute), routeMark(clubRoute), "club")));
+      return;
+    }
+    add(item);
+  });
+
+  if (topLevelIds.has("documents")) add(routeItem("documents", "Documents", "DOC"));
+  if (topLevelIds.has("messages") && !mobilePrimaryRouteIds().includes("messages")) add(routeItem("messages", "Messages", "M"));
+  return items;
+}
+
+function navigationGroups(items) {
+  const definitions = [
+    { title: "Matchday", ids: ["availability", "attendance", "results", "awards"] },
+    { title: "Squad tools", ids: ["development", "squad-builder", "squads"] },
+    { title: "Communication", ids: ["messages", "documents", "coach-inbox", "contact"] },
+    { title: "Club & account", ids: ["coaches", "venues", "access", "privacy", "install", "guide"] },
+  ];
+  return definitions.map((group) => ({ ...group, items: items.filter((item) => group.ids.includes(item.id)) })).filter((group) => group.items.length);
+}
+
+function routeMark(route) {
+  return {
+    home: "H",
+    schedule: "S",
+    availability: "AV",
+    attendance: "R",
+    documents: "DOC",
+    messages: "M",
+    squads: "T",
+    development: "D",
+    "squad-builder": "WB",
+    awards: "AW",
+    results: "RS",
+    "coach-inbox": "IN",
+    coaches: "C",
+    venues: "V",
+    contact: "CT",
+    access: "RQ",
+    privacy: "P",
+    install: "I",
+    guide: "G",
+  }[route] || route.slice(0, 2).toUpperCase();
+}
+
+function mobileNav(routes, route) {
+  if (routes.length <= 5 && !routes.some((item) => item.group)) {
+    return routes.map((item) => navItem(item, route, true)).join("");
+  }
+  const primaryIds = mobilePrimaryRouteIds();
+  const primary = primaryIds.map((id) => routes.find((item) => item.id === id)).filter(Boolean);
+  const hidden = mobileMenuRoutes(routes);
+  const moreActive = !primary.some((item) => item.id === route || (Array.isArray(item.group) && item.group.includes(route))) && hidden.some((item) => item.id === route);
+  return `
+    ${primary.map((item) => navItem(item, route, true)).join("")}
+    <button class="nav-link ${moreActive ? "active" : ""}" type="button" data-modal="mobile-nav" data-tour="nav-more" aria-haspopup="dialog" aria-expanded="${state.modal?.type === "mobile-nav"}">
+      <span class="nav-mark">M</span>
+      <span>More</span>
+    </button>
+  `;
+}
+
+function pageTitle(route) {
+  return {
+    home: hasCoachAccess() ? "Dashboard" : "Home",
+    schedule: "Schedule",
+    availability: "Availability",
+    attendance: "Register",
+    "squad-section": "Squad",
+    "club-section": "Club",
+    awards: "Player of the Week",
+    results: "Results & Stats",
+    squads: "Teams",
+    development: "Player Development",
+    documents: "Documents",
+    "squad-builder": "Squad Whiteboard",
+    messages: "Messages",
+    "coach-inbox": "Coach Inbox",
+    coaches: "Coaches",
+    venues: "Venues",
+    contact: "Contact Coaches",
+    access: "Access",
+    privacy: "Privacy",
+    install: "Mobile Test",
+    guide: "Parent Guide",
+  }[route] || "Dashboard";
+}
+
+function childSelector(child) {
+  const players = approvedPlayers();
+  return `
+    <label class="child-switcher">
+      <span>Child</span>
+      <select data-action="select-child">
+        ${players.map((player) => `<option value="${player.id}" ${player.id === child?.id ? "selected" : ""}>${escapeHtml(player.name)}</option>`).join("")}
+      </select>
+    </label>
+  `;
+}
+
+function pendingBanner() {
+  return `
+    <section class="pending-banner">
+      <strong>Access pending</strong>
+      <span>A coach needs to approve your child link before private player details are shown.</span>
+    </section>
+  `;
+}
+
+function defaultClubRoute() {
+  if (hasCoachAccess()) return "coach-inbox";
+  if (state.session.role === "parent" && !approvedPlayers().length) return "access";
+  return "contact";
+}
+
+function tabButton(route, label, activeRoute) {
+  return `<button type="button" class="${route === activeRoute ? "active" : ""}" data-route-target="${route}">${escapeHtml(label)}</button>`;
+}
+
+function resolveRouteTarget(route) {
+  if (route === "squad-section") return "squads";
+  if (route === "club-section") return defaultClubRoute();
+  return route;
+}
+
+function primeRouteDefaults(route) {
+  if (route === "availability") {
+    const option = nextAvailabilityDateOption();
+    if (option) state.selectedEventId = option.event.id;
+  }
+  if (route === "attendance") {
+    state.attendancePeriod = "upcoming";
+    const event = preferredRegisterEvent("upcoming");
+    if (event) state.selectedEventId = event.id;
+  }
+  if (squadSectionRoutes.includes(route)) {
+    const option = preferredSquadAvailabilityOption();
+    if (option) state.squadAvailabilityDateKey = option.key;
+  }
+}
+
+function navigateToRoute(route, options = {}) {
+  const nextRoute = resolveRouteTarget(route);
+  if (options.track !== false && state.route && state.route !== nextRoute) {
+    routeHistory.push(state.route);
+    routeHistory = routeHistory.slice(-12);
+  }
+  state.route = nextRoute;
+  primeRouteDefaults(state.route);
+}
+
+function squadSectionView(route = "squads") {
+  const activeRoute = squadSectionRoutes.includes(route) ? route : "squads";
+  const views = {
+    squads: squadsView,
+    development: developmentView,
+    "squad-builder": squadBuilderView,
+    awards: awardsView,
+    results: resultsView,
+  };
+  return `
+    <section class="toolbar section-toolbar">
+      <div class="segmented light section-tabs">
+        ${tabButton("squads", "Teams", activeRoute)}
+        ${tabButton("development", "Development", activeRoute)}
+        ${tabButton("squad-builder", "Whiteboard", activeRoute)}
+        ${tabButton("awards", "Awards", activeRoute)}
+        ${tabButton("results", "Results", activeRoute)}
+      </div>
+    </section>
+    ${views[activeRoute]?.() || squadsView()}
+  `;
+}
+
+function clubSectionView(route = defaultClubRoute()) {
+  const allowedRoutes = hasCoachAccess() ? coachClubSectionRoutes : parentClubSectionRoutes;
+  const activeRoute = allowedRoutes.includes(route) ? route : defaultClubRoute();
+  const views = {
+    "coach-inbox": coachInboxView,
+    contact: contactCoachesView,
+    coaches: coachesView,
+    venues: venuesView,
+    access: accessView,
+    privacy: privacyView,
+    install: installView,
+    guide: guideView,
+  };
+  return `
+    <section class="toolbar section-toolbar">
+      <div class="segmented light section-tabs club-section-tabs">
+        ${hasCoachAccess() ? tabButton("coach-inbox", "Inbox", activeRoute) : tabButton("contact", "Contact", activeRoute)}
+        ${tabButton("coaches", "Coaches", activeRoute)}
+        ${tabButton("venues", "Venues", activeRoute)}
+        ${tabButton("access", hasCoachAccess() ? "Requests" : "Access", activeRoute)}
+        ${tabButton("privacy", "Privacy", activeRoute)}
+        ${tabButton("install", "Install", activeRoute)}
+        ${hasCoachAccess() ? "" : tabButton("guide", "Guide", activeRoute)}
+      </div>
+    </section>
+    ${views[activeRoute]?.() || accessView()}
+  `;
+}
+
+function pageView(route) {
+  const pendingOnly = state.session.role === "parent" && !approvedPlayers().length;
+  if (pendingOnly && route === "club-section") return clubSectionView("access");
+  if (pendingOnly && !["access", "contact", "privacy", "install", "guide"].includes(route)) return accessView();
+  if (!hasCoachAccess() && ["awards", "results", "squads", "development", "squad-builder", "coach-inbox"].includes(route)) return homeView();
+  if (hasCoachAccess() && route === "contact") return coachInboxView();
+  if (hasCoachAccess() && (route === "squad-section" || squadSectionRoutes.includes(route))) return squadSectionView(route);
+  if (route === "club-section" || coachClubSectionRoutes.includes(route) || parentClubSectionRoutes.includes(route)) return clubSectionView(route);
+  return {
+    home: homeView,
+    schedule: scheduleView,
+    availability: availabilityView,
+    attendance: attendanceView,
+    awards: awardsView,
+    results: resultsView,
+    squads: squadsView,
+    development: developmentView,
+    documents: documentsView,
+    "squad-builder": squadBuilderView,
+    messages: messagesView,
+    "coach-inbox": coachInboxView,
+    coaches: coachesView,
+    venues: venuesView,
+    contact: contactCoachesView,
+    access: accessView,
+    privacy: privacyView,
+    install: installView,
+    guide: guideView,
+  }[route]?.() || homeView();
+}
+
+function homeView() {
+  const dashboardEvents = visibleEventsForSession(state.events);
+  const next = dashboardEvents
+    .filter((event) => event.type !== "Free Week" && new Date(event.datetime) >= startOfToday())
+    .sort((a, b) => new Date(a.datetime) - new Date(b.datetime))[0];
+  const child = currentPlayer();
+  if (!next) {
+    return `
+      <section class="hero-panel" data-tour="dashboard-next">
+        <div class="hero-text">
+          <img src="${crestPath}" alt="">
+          <div>
+            <p class="eyebrow">Looking ahead</p>
+            <h2>No upcoming events</h2>
+            <p>${hasCoachAccess() ? "Add the next fixture or training session when the details are ready." : "Your coaches will share the next fixture or training session here."}</p>
+          </div>
+        </div>
+        ${hasCoachAccess() ? '<div class="hero-actions"><button class="primary-button" type="button" data-modal="event">Add fixture/training</button></div>' : ""}
+      </section>
+      <section class="content-grid two-col">${!hasCoachAccess() && child ? linkedChildCard(child) : coachOverviewCard()}${messageCard()}</section>
+    `;
+  }
+  const counts = availabilityCounts(next.id);
+  const pendingCount = hasCoachAccess() ? state.accessRequests.filter((request) => request.status === "pending").length : pendingRequests().length;
+  const training = dashboardEvents.filter((event) => event.type === "Training" && new Date(event.datetime) >= startOfToday() && event.id !== next.id).sort((a, b) => new Date(a.datetime) - new Date(b.datetime))[0];
+
+  return `
+    <section class="hero-panel" data-tour="dashboard-next">
+      <div class="hero-text">
+        <img src="${crestPath}" alt="">
+        <div>
+          <p class="eyebrow">Next up</p>
+          <h2>${escapeHtml(next.title)}</h2>
+          <p>${next.timeTbc ? `${formatDateOnly(next.datetime)} · Time to be confirmed` : formatDate(next.datetime)} · ${escapeHtml(next.venue || "Venue to be confirmed")}</p>
+        </div>
+      </div>
+      <div class="hero-actions">
+        <button class="primary-button" type="button" data-route-target="${hasCoachAccess() ? "attendance" : "availability"}">${hasCoachAccess() ? "Open register" : "Update availability"}</button>
+        <button class="secondary-button on-dark" type="button" data-route-target="schedule">Schedule</button>
+      </div>
+    </section>
+
+    <section class="panel dashboard-priorities" aria-labelledby="priorities-title">
+      <h2 id="priorities-title">${hasCoachAccess() ? "Needs your attention" : "For your family"}</h2>
+      ${hasCoachAccess() ? `<button class="priority-row" type="button" data-route-target="availability"><span><strong>${counts.unknown ? `${counts.unknown} availability ${counts.unknown === 1 ? "reply" : "replies"} outstanding` : "Availability replies are up to date"}</strong><small>Next event · ${counts.available} available · Review replies and lifts</small></span><span aria-hidden="true">→</span></button>` : `<button class="priority-row" type="button" data-route-target="availability"><span><strong>${escapeHtml(child?.name || "Your child")} · ${child ? statusText(availabilityEntry(next, child.id).status) : "Next event availability"}</strong><small>Check or change your response and offer a lift</small></span><span aria-hidden="true">→</span></button>`}
+      ${hasCoachAccess() && next.type === "Fixture" ? `<button class="priority-row" type="button" data-route-target="squad-section"><span><strong>${next.selectedPlayerIds?.length ? `${next.selectedPlayerIds.length} players selected` : "Review squad selection"}</strong><small>Open Teams to check the squad for the next matchday</small></span><span aria-hidden="true">→</span></button>` : ""}
+      ${next.timeTbc || !next.venue ? '<p class="attention-note">To be confirmed: ' + [next.timeTbc ? "event time" : "", !next.venue ? "venue" : ""].filter(Boolean).join(" and ") + '. Check Schedule for updates.</p>' : ""}
+      ${pendingCount ? `<button class="priority-row" type="button" data-route-target="access"><span><strong>${pendingCount} access request${pendingCount === 1 ? "" : "s"} pending</strong><small>${hasCoachAccess() ? "Review parent access" : "View your access requests"}</small></span><span aria-hidden="true">→</span></button>` : ""}
+      ${training ? `<button class="priority-row" type="button" data-route-target="schedule"><span><strong>Upcoming training</strong><small>${escapeHtml(formatDate(training.datetime))} · ${escapeHtml(training.venue || "Venue to be confirmed")}</small></span><span aria-hidden="true">→</span></button>` : ""}
+    </section>
+
+    <section class="content-grid two-col">
+        ${!hasCoachAccess() && child ? linkedChildCard(child) : coachOverviewCard()}
+      ${messageCard()}
+    </section>
+  `;
+}
+
+function linkedChildCard(child) {
+  return `
+    <article class="panel" data-tour="coach-tools">
+      <div class="panel-title">
+        <div>
+          <p class="eyebrow">Linked child</p>
+          <h3>${escapeHtml(child.name)}</h3>
+        </div>
+        <span class="team-pill ${normalizeTeamId(child.teamId)}">${teamName(child.teamId)}</span>
+      </div>
+      <dl class="info-list">
+        <div><dt>Role</dt><dd>${escapeHtml(child.role)}</dd></div>
+        <div><dt>Register</dt><dd>${attendancePercent(child.id)}%</dd></div>
+        <div><dt>Access</dt><dd>Verified</dd></div>
+      </dl>
+      <button class="secondary-button panel-action" type="button" data-route-target="documents">View documents</button>
+    </article>
+  `;
+}
+
+function coachOverviewCard() {
+  return `
+    <article class="panel" data-tour="coach-tools">
+      <div class="panel-title">
+        <div>
+          <p class="eyebrow">Coach tools</p>
+          <h3>Matchday control</h3>
+        </div>
+      </div>
+      <div class="quick-grid">
+        <button type="button" data-modal="event">Add fixture</button>
+        <button type="button" data-modal="message">Send message</button>
+        <button type="button" data-route-target="attendance">Take register</button>
+      </div>
+    </article>
+  `;
+}
+
+function messageCard() {
+  const latest = visibleMessagesForUser()[0];
+  return `
+    <article class="panel">
+      <div class="panel-title">
+        <div>
+          <p class="eyebrow">Latest update</p>
+          <h3>${escapeHtml(latest?.title || "No messages")}</h3>
+        </div>
+        ${hasCoachAccess() ? '<button class="icon-button" type="button" data-modal="message" aria-label="New message">+</button>' : ""}
+      </div>
+      <p class="muted">${escapeHtml(latest?.body || "New club messages will appear here.")}</p>
+      <button class="secondary-button" type="button" data-route-target="messages">View messages</button>
+    </article>
+  `;
+}
+
+function scheduleView() {
+  const scheduleType = state.scheduleType || "matches";
+  const period = hasCoachAccess() ? state.schedulePeriod || "upcoming" : "upcoming";
+  const block = state.scheduleBlock || "B";
+  const allVisibleEvents = visibleEventsForSession(state.events)
+    .filter((event) => hasCoachAccess() || ["Fixture", "Free Week", "Training"].includes(event.type))
+    .filter((event) => !hasCoachAccess() || state.scheduleFilter === "all" || normalizeTeamId(event.teamId) === normalizeTeamId(state.scheduleFilter) || event.teamId === "all")
+    .filter((event) => !hasCoachAccess() || block === "all" || seasonBlocks.inScope(event, block));
+  const matchEvents = allVisibleEvents.filter((event) => event.type !== "Training");
+  const trainingEvents = allVisibleEvents.filter((event) => event.type === "Training");
+  const typeEvents = scheduleType === "training" ? trainingEvents : matchEvents;
+  const upcomingCount = typeEvents.filter((event) => !isPastEvent(event)).length;
+  const pastCount = typeEvents.filter(isPastEvent).length;
+  const visibleEvents = typeEvents
+    .filter((event) => period === "past" ? isPastEvent(event) : !isPastEvent(event))
+    .sort((a, b) => period === "past"
+      ? eventEndDate(b) - eventEndDate(a)
+      : eventEndDate(a) - eventEndDate(b));
+  const emptyLabel = scheduleType === "training" ? "training sessions" : "matches";
+  const emptyCopy = scheduleType === "training"
+    ? "Coaches will add upcoming training sessions when the dates are confirmed."
+    : "No matches have been added for this view. Choose another block or add a fixture.";
+
+  return `
+    <section class="toolbar" data-tour="schedule-toolbar">
+      <div class="schedule-controls">
+        ${hasCoachAccess() ? `<label class="field compact-field"><span>Season 2026/27 · Fixture block</span><select data-action="set-schedule-block"><option value="B" ${block === "B" ? "selected" : ""}>Block B — Current · League 1 / League 2</option><option value="A" ${block === "A" ? "selected" : ""}>Block A — Archived</option><option value="all" ${block === "all" ? "selected" : ""}>All blocks & older records</option></select></label>` : ""}
+        <div class="segmented light schedule-type">
+          <button type="button" class="${scheduleType === "matches" ? "active" : ""}" data-action="set-schedule-type" data-type="matches">Matches (${matchEvents.length})</button>
+          <button type="button" class="${scheduleType === "training" ? "active" : ""}" data-action="set-schedule-type" data-type="training">Training (${trainingEvents.length})</button>
+        </div>
+        ${hasCoachAccess() ? `<div class="segmented light schedule-period">
+          <button type="button" class="${period === "upcoming" ? "active" : ""}" data-action="set-schedule-period" data-period="upcoming">Upcoming (${upcomingCount})</button>
+          <button type="button" class="${period === "past" ? "active" : ""}" data-action="set-schedule-period" data-period="past">Past (${pastCount})</button>
+        </div>` : ""}
+      ${hasCoachAccess() ? `<div class="segmented light">
+        ${["all", ...eventTeamOptions().map((team) => team.id)].map((id) => `
+          <button type="button" class="${state.scheduleFilter === id ? "active" : ""}" data-action="set-schedule-filter" data-team-id="${id}">
+            ${id === "all" ? "All" : teamName(id)}
+          </button>
+        `).join("")}
+      </div>` : ""}
+      </div>
+      ${hasCoachAccess() ? '<button class="primary-button" type="button" data-modal="event">Add fixture/training</button>' : ""}
+    </section>
+    ${isCoachGuide() ? '<aside class="coach-guide-hint" data-tour="away-support">Away destination adds venue name and address fields, so map buttons still work for places like Bellfield Estate.</aside>' : ""}
+    <div class="event-list" data-tour="event-list">
+      ${visibleEvents.length ? visibleEvents.map(eventCard).join("") : `<article class="panel"><h3>No ${period === "past" ? "past" : "upcoming"} ${emptyLabel} to show</h3><p class="muted">${period === "past" ? "Completed items will appear here automatically." : emptyCopy}</p></article>`}
+    </div>
+  `;
+}
+
+function eventCard(event) {
+  const tile = dateTile(event.datetime);
+  const counts = availabilityCounts(event.id);
+  const venue = eventVenue(event);
+  const past = isPastEvent(event);
+  const result = resultSummary(event);
+  const openLabel = hasCoachAccess() ? "Responses" : "Respond";
+  const isFreeWeek = event.type === "Free Week";
+  const coachActions = hasCoachAccess()
+    ? `
+      <button class="secondary-button" type="button" data-modal="edit-event" data-event-id="${event.id}">Edit</button>
+      <button class="secondary-button danger-button" type="button" data-action="delete-event" data-event-id="${event.id}">Remove</button>
+    `
+    : "";
+  return `
+    <article class="event-card">
+      <div class="date-tile"><strong>${tile.day}</strong><span>${tile.month}</span></div>
+      <div class="event-main">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">${escapeHtml(event.type)}${event.seasonId === seasonBlocks.seasonId ? ` · 2026/27 · Block ${escapeHtml(event.blockId)}` : ""}${event.competition ? ` · ${escapeHtml(event.competition)}` : ""}</p>
+            <h3>${escapeHtml(event.title)}</h3>
+          </div>
+          <div class="event-badges">
+            <span class="team-pill ${normalizeTeamId(event.teamId)}">${teamName(event.teamId)}</span>
+            ${event.blockStatus === "archived" ? '<span class="status-pill warn">Block archived</span>' : past ? '<span class="status-pill">Past event</span>' : '<span class="status-pill">Scheduled</span>'}
+          </div>
+        </div>
+        <p>${eventDateLine(event, venue)}</p>
+        ${eventPitchLine(event, venue) ? `<p>${eventPitchLine(event, venue)}</p>` : ""}
+        ${isFreeWeek ? "" : venueParkingLine(venue)}
+        <div class="mini-stats">
+          ${isFreeWeek ? "" : `<span>${counts.available} available</span><span>${counts.unavailable} unavailable</span><span>${counts.unknown} no reply</span>`}
+          ${event.type === "Fixture" ? `<span>${counts.liftSeats} lift seats</span>` : ""}
+          ${result ? `<span>${escapeHtml(result)}</span>` : ""}
+          ${event.resultNotes ? `<span>${escapeHtml(event.resultNotes)}</span>` : ""}
+          ${event.kit ? `<span>${escapeHtml(event.kit)}</span>` : ""}
+          ${event.notes ? `<span>${escapeHtml(event.notes)}</span>` : ""}
+        </div>
+      </div>
+      <div class="event-actions">
+        ${isFreeWeek ? "" : `<button class="secondary-button" type="button" data-action="focus-event" data-event-id="${event.id}">${openLabel}</button>`}
+        ${isFreeWeek || event.venueTbc ? "" : `<button class="secondary-button" type="button" data-modal="directions" data-event-id="${event.id}">Directions</button>`}
+        ${coachActions}
+      </div>
+    </article>
+  `;
+}
+
+function availabilityView() {
+  const dateOptions = availabilityDateOptions();
+  const selectedOption = selectedAvailabilityDateOption(dateOptions);
+  const event = selectedOption?.event;
+  if (!event) return emptyEventsView("Availability");
+  if (state.selectedEventId !== event.id) state.selectedEventId = event.id;
+  const child = currentPlayer();
+  const allPlayers = hasCoachAccess() ? availabilityPlayersForEvent(event) : [child].filter(Boolean);
+  if (hasCoachAccess() && !availabilityResponseFilters(event).some((filter) => filter.id === state.availabilityResponseFilter)) {
+    state.availabilityResponseFilter = "all";
+  }
+  const players = hasCoachAccess() && event.type === "Fixture" ? availabilityFilteredPlayers(event, allPlayers) : allPlayers;
+  const counts = availabilityCounts(event.id);
+  const tab = event.type === "Training" ? "responses" : state.availabilityTab || "responses";
+
+  return `
+    <section class="toolbar" data-tour="availability-summary">
+      <label class="field compact-field">
+        <span>Date</span>
+        <select data-action="select-event">
+          ${dateOptions.map((option) => `<option value="${option.event.id}" ${option.key === availabilityKeyForEvent(event) ? "selected" : ""}>${escapeHtml(availabilityDateOptionLabel(option))}</option>`).join("")}
+        </select>
+      </label>
+      <div class="summary-strip">
+        <span>${counts.available} available</span>
+        <span>${counts.unavailable} unavailable</span>
+        <span>${counts.unknown} no reply</span>
+        <span>${counts.liftSeats} lift seats</span>
+      </div>
+      ${hasCoachAccess() && event.type === "Fixture" && tab === "responses" ? availabilityResponseFilterControl(event) : ""}
+      <div class="segmented light">
+        <button type="button" class="${tab === "responses" ? "active" : ""}" data-action="set-availability-tab" data-tab="responses">Responses</button>
+        ${event.type === "Training" ? "" : `<button type="button" class="${tab === "lifts" ? "active" : ""}" data-action="set-availability-tab" data-tab="lifts">Lifts</button>`}
+      </div>
+    </section>
+    ${hasCoachAccess() && event.type === "Fixture" ? coachMetricKey() : ""}
+
+    ${tab === "lifts" ? liftOffersView(event) : `
+    <section class="content-grid ${hasCoachAccess() ? "" : "two-col"}">
+      ${!hasCoachAccess() ? parentAvailabilityCard(event, child) : ""}
+      <article class="panel" data-tour="availability-responses">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Responses</p>
+            <h3>${escapeHtml(availabilityDateLabel(event))}</h3>
+          </div>
+          ${hasCoachAccess() ? `<span class="status-pill warn">${players.length} shown</span>` : ""}
+        </div>
+        ${availabilityFixtureSummary(event)}
+        <div class="response-list" data-scroll-key="availability-${availabilityKeyForEvent(event)}-${state.availabilityResponseFilter}">
+          ${players.length ? players.map((player) => responseRow(event, player)).join("") : '<p class="muted">No players match this availability view.</p>'}
+        </div>
+      </article>
+      ${hasCoachAccess() && event.type === "Fixture" ? selectionBalancePanel(event) : ""}
+    </section>
+    `}
+  `;
+}
+
+function availabilityFixtureSummary(event) {
+  const fixtures = eventsForAvailabilityDate(event);
+  if (event.type === "Training") return `<p class="muted"><strong>${escapeHtml(event.title)}</strong> · ${eventDateLine(event, eventVenue(event))}</p>`;
+  if (!fixtures.length) return '<p class="muted">Availability is collected for this date.</p>';
+  const selectedPlayerIds = new Set(fixtures.flatMap((fixture) => fixture.selectedPlayerIds || []));
+  const availablePlayerIds = new Set(
+    activePlayers()
+      .filter((player) => availabilityEntry(event, player.id).status === "available")
+      .map((player) => player.id)
+  );
+  const showPastUnpicked = isPastMatchdayDateKey(availabilityKeyForEvent(event));
+  const unpickedCount = [...availablePlayerIds].filter((playerId) => !selectedPlayerIds.has(playerId)).length;
+  return `
+    <div class="availability-fixture-list">
+      ${fixtures.map((fixture) => {
+        const selectedCount = Array.isArray(fixture.selectedPlayerIds) ? fixture.selectedPlayerIds.length : 0;
+        return `<span>${escapeHtml(fixture.title)}${hasCoachAccess() || selectedCount ? ` - ${selectedCount} picked` : ""}</span>`;
+      }).join("")}
+      ${hasCoachAccess() && showPastUnpicked ? `<span class="attention">${unpickedCount} available unpicked</span>` : ""}
+    </div>
+  `;
+}
+
+function availabilityResponseFilters(event) {
+  const fixtureFilters = eventsForAvailabilityDate(event).map((fixture) => ({
+    id: `fixture:${fixture.id}`,
+    label: `${teamName(fixture.teamId)} selected`,
+  }));
+  return [
+    { id: "all", label: "All players" },
+    { id: "available", label: "Available" },
+    { id: "available-unpicked", label: "Available not picked" },
+    ...fixtureFilters,
+    { id: "unknown", label: "No reply" },
+    { id: "unavailable", label: "Unavailable" },
+  ];
+}
+
+function availabilityResponseFilterControl(event) {
+  const filters = availabilityResponseFilters(event);
+  const active = filters.some((filter) => filter.id === state.availabilityResponseFilter) ? state.availabilityResponseFilter : "all";
+  return `
+    <label class="field compact-field availability-filter-field">
+      <span>Show</span>
+      <select data-action="set-availability-response-filter">
+        ${filters.map((filter) => `<option value="${escapeHtml(filter.id)}" ${active === filter.id ? "selected" : ""}>${escapeHtml(filter.label)}</option>`).join("")}
+      </select>
+    </label>
+  `;
+}
+
+function availabilityFilteredPlayers(event, players = availabilityPlayersForEvent(event)) {
+  const filter = state.availabilityResponseFilter || "all";
+  const fixtures = eventsForAvailabilityDate(event);
+  const selectedIds = new Set(fixtures.flatMap((fixture) => fixture.selectedPlayerIds || []));
+  const sorted = [...players].sort((a, b) => a.name.localeCompare(b.name));
+
+  if (filter.startsWith("fixture:")) {
+    const fixtureId = filter.slice("fixture:".length);
+    const fixture = fixtures.find((item) => item.id === fixtureId);
+    const orderedIds = fixture?.selectedPlayerIds || [];
+    return orderedIds
+      .map((playerId) => players.find((player) => player.id === playerId))
+      .filter(Boolean);
+  }
+
+  return sorted.filter((player) => {
+    const entry = availabilityEntry(event, player.id);
+    if (filter === "available-unpicked") return entry.status === "available" && !selectedIds.has(player.id);
+    if (["available", "unavailable", "unknown"].includes(filter)) return entry.status === filter;
+    return true;
+  });
+}
+
+function parentAvailabilityCard(event, child) {
+  if (!child) {
+    return `
+      <article class="panel">
+        <p class="eyebrow">Availability</p>
+        <h3>No child linked yet</h3>
+        <p class="muted">A coach needs to approve your child before availability can be submitted.</p>
+      </article>
+    `;
+  }
+  const entry = availabilityEntry(event, child.id);
+  const selectedFixture = selectedFixtureForPlayer(event, child.id);
+
+  return `
+    <article class="panel">
+      <div class="panel-title">
+        <div>
+          <p class="eyebrow">Your response</p>
+          <h3>${escapeHtml(child.name)} - ${escapeHtml(availabilityDateLabel(event))}</h3>
+        </div>
+        <span class="status-pill ${statusClass(entry.status)}">${statusText(entry.status)}</span>
+      </div>
+      <p class="muted">${event.type === "Training" ? "Mark whether your child can attend this training session." : "Mark whether your child is available on this date. Coaches will decide which fixture each child is selected for."}</p>
+      ${event.type === "Training" ? "" : selectedFixture ? `
+        <p class="muted"><strong>Selected fixture:</strong> ${escapeHtml(selectedFixture.title)} - ${eventDateLine(selectedFixture, eventVenue(selectedFixture))}</p>
+      ` : `
+        <p class="muted"><strong>Fixture selection:</strong> coaches have not confirmed this yet.</p>
+      `}
+      ${availabilityFixtureSummary(event)}
+      <div class="choice-row">
+        ${(selectedFixture || event).venueTbc ? '<span class="muted">Directions will be available when the venue is confirmed.</span>' : `<button class="secondary-button" type="button" data-modal="directions" data-mode="availability" data-event-id="${event.id}">Directions</button>`}
+      </div>
+      <div class="choice-row">
+        <button class="available-button" type="button" data-action="set-availability" data-status="available">Available</button>
+        <button class="unavailable-button" type="button" data-action="set-availability" data-status="unavailable">Unavailable</button>
+      </div>
+      <label class="field">
+        <span>Note to coach</span>
+        <textarea rows="4" data-action="availability-note" placeholder="Anything the coach should know">${escapeHtml(entry.note)}</textarea>
+      </label>
+      ${event.type === "Training" ? "" : availabilityExtras(entry)}
+    </article>
+  `;
+}
+
+function availabilityExtras(entry) {
+  const seats = Number(entry.liftSeats || 0);
+  return `
+    <div class="availability-options">
+      <label class="toggle-card">
+        <input type="checkbox" data-action="lift-offer" ${entry.liftOffer ? "checked" : ""}>
+        <span>
+          <strong>Can offer lifts</strong>
+          <small>Add spare seats and where you are leaving from.</small>
+        </span>
+      </label>
+      ${entry.liftOffer ? `
+        <div class="lift-fields">
+          <label class="field">
+            <span>Spare seats</span>
+            <select data-action="lift-seats">
+              ${[1, 2, 3, 4, 5, 6].map((count) => `<option value="${count}" ${count === seats ? "selected" : ""}>${count}</option>`).join("")}
+            </select>
+          </label>
+          <label class="field">
+            <span>Leaving from</span>
+            <input data-action="lift-from" value="${escapeHtml(entry.liftFrom)}" placeholder="Skelmorlie">
+          </label>
+        </div>
+      ` : ""}
+    </div>
+  `;
+}
+
+function responseRow(event, player) {
+  const entry = availabilityEntry(event, player.id);
+  const selectedFixture = selectedFixtureForPlayer(event, player.id);
+  const dateKey = availabilityKeyForEvent(event);
+  const extras = [];
+  if (entry.liftOffer) {
+    const seatCount = Number(entry.liftSeats || 0);
+    const seatLabel = `${seatCount || "?"} ${seatCount === 1 ? "seat" : "seats"}`;
+    extras.push(`Lift: ${seatLabel}${entry.liftFrom ? ` from ${entry.liftFrom}` : ""}`);
+  }
+  return `
+    <div class="person-row">
+      <div>
+        <strong>${escapeHtml(player.name)}</strong>
+        <p>${teamName(player.teamId)} - ${escapeHtml(player.role)}${selectedFixture ? ` - Picked for ${escapeHtml(selectedFixture.title)}` : ""}${entry.note ? ` - ${escapeHtml(entry.note)}` : ""}</p>
+        ${event.type === "Fixture" ? coachPlayerMetricTags(player, "availability", dateKey) : ""}
+        ${extras.length ? `<div class="availability-tags">${extras.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}
+      </div>
+      <div class="inline-actions availability-row-actions">
+        ${hasCoachAccess() ? coachAvailabilityControl(entry, player) : ""}
+        ${hasCoachAccess() ? fixtureAllocationControl(event, player) : ""}
+        <span class="status-pill ${statusClass(entry.status)}">${statusText(entry.status)}</span>
+      </div>
+    </div>
+  `;
+}
+
+function coachAvailabilityControl(entry, player) {
+  const current = defaultAvailabilityEntry(entry).status;
+  return `
+    <label class="field compact-field availability-status-field">
+      <span>Response</span>
+      <select data-action="set-coach-availability-status" data-player-id="${escapeHtml(player.id)}">
+        <option value="unknown" ${current === "unknown" ? "selected" : ""}>No reply</option>
+        <option value="available" ${current === "available" ? "selected" : ""}>Available</option>
+        <option value="unavailable" ${current === "unavailable" ? "selected" : ""}>Unavailable</option>
+      </select>
+    </label>
+  `;
+}
+
+function fixtureAllocationControl(event, player) {
+  const fixtures = eventsForAvailabilityDate(event);
+  if (!fixtures.length) return "";
+  const selected = selectedFixtureForPlayer(event, player.id)?.id || "";
+  return `
+    <label class="field compact-field allocation-field">
+      <span>Pick fixture</span>
+      <select data-action="set-player-fixture" data-player-id="${escapeHtml(player.id)}">
+        <option value="" ${selected ? "" : "selected"}>Not picked</option>
+        ${fixtures.map((fixture) => `<option value="${escapeHtml(fixture.id)}" ${selected === fixture.id ? "selected" : ""}>${escapeHtml(fixture.title)}</option>`).join("")}
+      </select>
+    </label>
+  `;
+}
+
+function matchdayDateKeys() {
+  return [...new Set(state.events
+    .filter((event) => event.type === "Fixture" && dateValue(event.datetime) >= resultSeasonStart)
+    .map(availabilityKeyForEvent)
+    .filter(Boolean))]
+    .sort();
+}
+
+function fixturesOnDate(dateKey) {
+  return state.events.filter((event) => event.type === "Fixture" && availabilityKeyForEvent(event) === dateKey);
+}
+
+function playerPickedOnDate(playerId, dateKey) {
+  return fixturesOnDate(dateKey).some((fixture) => Array.isArray(fixture.selectedPlayerIds) && fixture.selectedPlayerIds.includes(playerId));
+}
+
+function selectionBalanceRows(currentEvent) {
+  const currentDateKey = availabilityKeyForEvent(currentEvent);
+  return activePlayers().map((player) => {
+    const metrics = playerMatchAvailabilityMetrics(player.id);
+    const priority = selectionPriorityForPlayer(player, currentDateKey);
+    const currentStatus = defaultAvailabilityEntry(state.availability[currentDateKey]?.[player.id]).status;
+    const pickedThisDate = playerPickedOnDate(player.id, currentDateKey);
+    return {
+      player,
+      priority,
+      available: metrics.available,
+      picked: metrics.selectedWhenAvailable,
+      waiting: metrics.waiting,
+      currentStatus,
+      pickedThisDate,
+    };
+  }).sort((a, b) => b.priority.currentStatusRank - a.priority.currentStatusRank || b.priority.score - a.priority.score || b.waiting - a.waiting || a.picked - b.picked || a.player.name.localeCompare(b.player.name));
+}
+
+function selectionBalancePanel(event) {
+  const rows = selectionBalanceRows(event);
+  return `
+    <article class="panel selection-balance-panel">
+      <div class="panel-title">
+        <div>
+          <p class="eyebrow">Game time balance</p>
+          <h3>Available vs selected weekends</h3>
+        </div>
+        <span class="status-pill warn">Coach only</span>
+      </div>
+      <p class="muted">Use this to keep an eye on who has made themselves available and who has actually been picked for weekend fixtures.</p>
+      <div class="stats-table selection-balance-table" role="table" aria-label="Selection balance" data-scroll-key="selection-balance-${availabilityKeyForEvent(event)}">
+        <div class="stats-table-header">
+          <span>Player</span>
+          <span>Priority</span>
+          <span>Avail.</span>
+          <span>Picked</span>
+          <span>Waiting</span>
+          <span>This date</span>
+        </div>
+        ${rows.map((row) => `
+          <div class="stats-table-row">
+            <span><strong>${escapeHtml(row.player.name)}</strong><small>${escapeHtml(teamName(row.player.teamId))}</small></span>
+            <span title="${escapeHtml(selectionPriorityTitle(row.priority))}">${row.priority.score}/100</span>
+            <span>${row.available}</span>
+            <span>${row.picked}</span>
+            <span>${row.waiting}</span>
+            <span>${row.currentStatus === "available" ? (row.pickedThisDate ? "Picked" : "Available") : statusText(row.currentStatus || "unknown")}</span>
+          </div>
+        `).join("")}
+      </div>
+    </article>
+  `;
+}
+
+function coachMetricKey() {
+  if (!hasCoachAccess()) return "";
+  return `
+    <section class="coach-metric-key" aria-label="Player number key">
+      <strong>Player number key</strong>
+      <span><b>Trained</b> means training sessions attended since ${registerHistoryStartLabel()}.</span>
+      <span><b>Available</b> means weekends they said yes to matches.</span>
+      <span><b>Picked</b> means selected on weekends they were available.</span>
+      <span><b>Unpicked</b> means available but not selected on past weekends only.</span>
+      <span><b>Priority</b> uses 45% past available-but-not-picked weekends, 35% fair-share opportunity balance, and 20% training attendance. Current response still affects list order.</span>
+    </section>
+  `;
+}
+
+function liftOffersForEvent(event) {
+  const dateKey = availabilityKeyForEvent(event);
+  return (state.liftOffers || [])
+    .filter((offer) => offer.dateKey === dateKey && offer.status === "active" && Number(offer.liftSeats || 0) > 0)
+    .sort((a, b) => String(a.liftFrom || "").localeCompare(String(b.liftFrom || "")) || String(a.playerName || "").localeCompare(String(b.playerName || "")));
+}
+
+function liftOffersView(event) {
+  const offers = liftOffersForEvent(event);
+  const child = currentPlayer();
+  const childFixture = child ? selectedFixtureForPlayer(event, child.id) : null;
+  const matchOffers = childFixture
+    ? offers.filter((offer) => selectedFixtureForPlayer(event, offer.playerId)?.id === childFixture.id)
+    : [];
+
+  return `
+    <section class="content-grid two-col">
+      <article class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">All lift offers</p>
+            <h3>${escapeHtml(availabilityDateLabel(event))}</h3>
+          </div>
+          <span class="status-pill good">${offers.reduce((total, offer) => total + Number(offer.liftSeats || 0), 0)} seats</span>
+        </div>
+        <p class="muted">These are the parents who have offered lifts for the selected date.</p>
+        <div class="response-list">
+          ${offers.length ? offers.map((offer) => liftOfferRow(offer, event, true)).join("") : '<p class="muted">No lift offers yet for this date.</p>'}
+        </div>
+      </article>
+      <article class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">${hasCoachAccess() ? "Fixture lift groups" : "Your match lifts"}</p>
+            <h3>${hasCoachAccess() ? "By coach selection" : childFixture ? childFixture.title : "Awaiting selection"}</h3>
+          </div>
+        </div>
+        ${hasCoachAccess() ? fixtureLiftGroups(event, offers) : parentMatchLiftPanel(event, childFixture, matchOffers)}
+      </article>
+    </section>
+  `;
+}
+
+function liftOfferRow(offer, event, showFixture = false) {
+  const fixture = selectedFixtureForPlayer(event, offer.playerId);
+  return `
+    <div class="person-row compact">
+      <div>
+        <strong>${escapeHtml(offer.parentName || "Parent")} - ${escapeHtml(offer.playerName || "Player")}</strong>
+        <p>${Number(offer.liftSeats || 0)} ${Number(offer.liftSeats || 0) === 1 ? "seat" : "seats"}${offer.liftFrom ? ` from ${escapeHtml(offer.liftFrom)}` : ""}${showFixture && fixture ? ` - ${escapeHtml(fixture.title)}` : ""}</p>
+      </div>
+      <span class="status-pill good">Lift</span>
+    </div>
+  `;
+}
+
+function fixtureLiftGroups(event, offers) {
+  const fixtures = eventsForAvailabilityDate(event);
+  if (!fixtures.length) return '<p class="muted">No fixtures on this date to group lifts against.</p>';
+  return fixtures.map((fixture) => {
+    const selected = new Set(fixture.selectedPlayerIds || []);
+    const fixtureOffers = offers.filter((offer) => selected.has(offer.playerId));
+    return `
+      <div class="fixture-lift-group">
+        <strong>${escapeHtml(fixture.title)}</strong>
+        ${fixtureOffers.length ? fixtureOffers.map((offer) => liftOfferRow(offer, event)).join("") : '<p class="muted">No lift offers from selected players for this fixture yet.</p>'}
+      </div>
+    `;
+  }).join("");
+}
+
+function parentMatchLiftPanel(event, childFixture, offers) {
+  if (!childFixture) {
+    return '<p class="muted">Once coaches confirm which match your child is selected for, this panel will show lift offers for that match.</p>';
+  }
+  return `
+    <p class="muted">These lift offers are from parents whose children are also picked for this fixture.</p>
+    <div class="response-list">
+      ${offers.length ? offers.map((offer) => liftOfferRow(offer, event)).join("") : '<p class="muted">No lift offers for this selected fixture yet.</p>'}
+    </div>
+  `;
+}
+
+function attendanceOptionLabel(event) {
+  if (!event) return "Session";
+  const finish = event.finishTime ? ` to ${event.finishTime}` : "";
+  return `${formatDate(event.datetime)}${finish} - ${event.title}`;
+}
+
+function attendanceSummary(event, players = []) {
+  const register = state.attendance[event.id] || {};
+  return players.reduce((acc, player) => {
+    const value = register[player.id] || "unknown";
+    if (value === "present" || value === "collected") acc.inAttendance += 1;
+    if (value === "collected") acc.collected += 1;
+    if (value === "absent") acc.absent += 1;
+    if (!["present", "collected", "absent"].includes(value)) acc.unmarked += 1;
+    return acc;
+  }, { inAttendance: 0, collected: 0, absent: 0, unmarked: 0, total: players.length });
+}
+
+function attendanceTracker(event, players) {
+  const summary = attendanceSummary(event, players);
+  return `
+    <section class="metric-grid attendance-summary">
+      <article>
+        <strong>${summary.inAttendance}</strong>
+        <span>Currently here</span>
+      </article>
+      <article>
+        <strong>${summary.collected}</strong>
+        <span>Collected</span>
+      </article>
+      <article>
+        <strong>${summary.absent}</strong>
+        <span>Marked absent</span>
+      </article>
+      <article>
+        <strong>${summary.unmarked}</strong>
+        <span>Still to mark</span>
+      </article>
+    </section>
+  `;
+}
+
+function isRemovedRegisterEvent(event) {
+  return event?.id === "training-20260818"
+    || (event?.type === "Training" && dateValue(event.datetime) === "2026-08-18");
+}
+
+function attendanceHasRegisterMarks(event) {
+  const values = Object.values(state.attendance[event.id] || {});
+  return values.some((value) => ["present", "absent", "collected"].includes(value));
+}
+
+function isRegisterHistoryEvent(event) {
+  return isPastEvent(event) && dateValue(event.datetime) >= registerHistoryStart && attendanceHasRegisterMarks(event);
+}
+
+function registerEventsForSession() {
+  const child = currentPlayer();
+  const events = hasCoachAccess() ? visibleEventsForSession(state.events) : state.events.filter(event => {
+    if (!child || !approvedPlayers().some(player => player.id === child.id)) return false;
+    const marked = ['present', 'absent', 'collected'].includes(state.attendance[event.id]?.[child.id]);
+    return !isBeforeVisibleSeason(event) && (isWithinParentEventWindow(event) || marked);
+  });
+  return events
+    .filter((event) => !isRemovedRegisterEvent(event))
+    .sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
+}
+
+function preferredRegisterEvent(period = state.attendancePeriod === "past" ? "past" : "upcoming") {
+  const events = registerEventsForSession();
+  if (period === "past") {
+    return events
+      .filter(isRegisterHistoryEvent)
+      .sort((a, b) => eventEndDate(b) - eventEndDate(a))[0] || null;
+  }
+  const upcoming = events
+    .filter((event) => !isPastEvent(event))
+    .sort((a, b) => eventEndDate(a) - eventEndDate(b));
+  const tonightTraining = upcoming.find((event) => event.type === "Training" && dateValue(event.datetime) === todayDateKey());
+  return tonightTraining || upcoming[0] || null;
+}
+
+function attendancePeriodTabs(events) {
+  const upcomingCount = events.filter((event) => !isPastEvent(event)).length;
+  const pastCount = events.filter(isRegisterHistoryEvent).length;
+  return `
+    <div class="segmented light register-period-tabs">
+      <button type="button" class="${state.attendancePeriod !== "past" ? "active" : ""}" data-action="set-attendance-period" data-period="upcoming">Current (${upcomingCount})</button>
+      <button type="button" class="${state.attendancePeriod === "past" ? "active" : ""}" data-action="set-attendance-period" data-period="past">History (${pastCount})</button>
+    </div>
+  `;
+}
+
+function attendanceFilterControl() {
+  const options = [
+    { id: "all", label: "All players" },
+    { id: "unmarked", label: "Still to mark" },
+    { id: "present", label: "Present or collected" },
+    { id: "absent", label: "Absent" },
+  ];
+  const active = options.some((option) => option.id === state.attendanceStatusFilter) ? state.attendanceStatusFilter : "all";
+  return `
+    <label class="field compact-field register-filter-field">
+      <span>Show</span>
+      <select data-action="set-attendance-filter">
+        ${options.map((option) => `<option value="${option.id}" ${active === option.id ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
+      </select>
+    </label>
+  `;
+}
+
+function attendanceStatusForPlayer(event, playerId) {
+  return state.attendance[event.id]?.[playerId] || "unknown";
+}
+
+function attendanceStatusRank(status) {
+  if (status === "present" || status === "collected") return 0;
+  if (status === "unknown") return 1;
+  if (status === "absent") return 2;
+  return 3;
+}
+
+function attendancePlayersForView(event, players = getPlayersForEvent(event)) {
+  const filter = state.attendanceStatusFilter || "all";
+  return [...players]
+    .filter((player) => {
+      const status = attendanceStatusForPlayer(event, player.id);
+      if (filter === "present") return status === "present" || status === "collected";
+      if (filter === "unmarked") return !["present", "collected", "absent"].includes(status);
+      if (filter === "absent") return status === "absent";
+      return true;
+    })
+    .sort((a, b) => {
+      const aStatus = attendanceStatusForPlayer(event, a.id);
+      const bStatus = attendanceStatusForPlayer(event, b.id);
+      return attendanceStatusRank(aStatus) - attendanceStatusRank(bStatus) || a.name.localeCompare(b.name);
+    });
+}
+
+function attendanceView() {
+  const allRegisterEvents = registerEventsForSession();
+  const period = state.attendancePeriod === "past" ? "past" : "upcoming";
+  const eventOptions = allRegisterEvents
+    .filter((event) => period === "past" ? isRegisterHistoryEvent(event) : !isPastEvent(event))
+    .sort((a, b) => period === "past" ? eventEndDate(b) - eventEndDate(a) : eventEndDate(a) - eventEndDate(b));
+  const event = eventOptions.find((item) => item.id === state.selectedEventId) || preferredRegisterEvent(period) || eventOptions[0];
+  if (event && state.selectedEventId !== event.id) state.selectedEventId = event.id;
+  if (!allRegisterEvents.length) return emptyEventsView("Register");
+  if (!event) {
+    return `
+      <section class="toolbar register-toolbar" data-tour="attendance-session">
+        ${attendancePeriodTabs(allRegisterEvents)}
+      </section>
+      <section class="panel">
+        <p class="eyebrow">Register ${period === "past" ? "history" : "current sessions"}</p>
+        <h3>No ${period === "past" ? "past" : "current"} sessions to show</h3>
+        <p class="muted">${period === "past" ? "Completed sessions move here once a register has actually been taken." : "Upcoming sessions and live matchday registers will appear here."}</p>
+      </section>
+    `;
+  }
+  const eventPlayers = getPlayersForEvent(event);
+  const child = currentPlayer();
+  const players = hasCoachAccess()
+    ? attendancePlayersForView(event, eventPlayers)
+    : [child].filter(Boolean).filter((player) => eventPlayers.some((eventPlayer) => eventPlayer.id === player.id) || ['present', 'absent', 'collected'].includes(state.attendance[event.id]?.[player.id]));
+
+  return `
+    <section class="toolbar register-toolbar" data-tour="attendance-session">
+      ${attendancePeriodTabs(allRegisterEvents)}
+      <label class="field compact-field">
+        <span>${period === "past" ? "Past session" : "Session"}</span>
+        <select data-action="select-event">
+          ${eventOptions.map((item) => `<option value="${item.id}" ${item.id === event.id ? "selected" : ""}>${escapeHtml(attendanceOptionLabel(item))}</option>`).join("")}
+        </select>
+      </label>
+      ${hasCoachAccess() ? attendanceFilterControl() : ""}
+    </section>
+    ${hasCoachAccess() ? attendanceTracker(event, eventPlayers) : ""}
+    <div class="attendance-grid" data-tour="attendance-grid" data-scroll-key="register-${event.id}-${state.attendanceStatusFilter}">
+      ${players.length ? players.map((player) => attendanceCard(event, player)).join("") : '<article class="panel"><p class="muted">No players match this register filter.</p></article>'}
+    </div>
+    ${hasCoachAccess() ? parentAlertLog(event) : ""}
+  `;
+}
+
+function emptyEventsView(title) {
+  return `
+    <section class="panel">
+      <p class="eyebrow">${escapeHtml(title)}</p>
+      <h3>No events yet</h3>
+      <p class="muted">Add a fixture or training session before using this page.</p>
+      ${hasCoachAccess() ? '<button class="primary-button" type="button" data-modal="event">Add fixture/training</button>' : ""}
+    </section>
+  `;
+}
+
+function attendanceCard(event, player) {
+  const value = state.attendance[event.id]?.[player.id] || "unknown";
+  return `
+    <article class="attendance-card">
+      <div class="panel-title">
+        <div>
+          <h3>${escapeHtml(player.name)}</h3>
+          <p>${teamName(player.teamId)} - ${attendancePercent(player.id)}% season</p>
+        </div>
+        <span class="status-pill ${statusClass(value)}">${statusText(value)}</span>
+      </div>
+      ${hasCoachAccess() ? `
+        <div class="choice-row">
+          <button type="button" class="available-button" data-action="set-attendance" data-player-id="${player.id}" data-status="present">Present</button>
+          <button type="button" class="unavailable-button" data-action="set-attendance" data-player-id="${player.id}" data-status="absent">Absent</button>
+          <button type="button" class="collected-button" data-action="set-attendance" data-player-id="${player.id}" data-status="collected">Collected</button>
+        </div>
+      ` : ""}
+    </article>
+  `;
+}
+
+function parentAlertLog(event) {
+  const alerts = (state.notifications || []).filter((alert) => alert.data?.eventId === event.id || alert.eventId === event.id).slice(0, 8);
+  return `
+    <article class="panel parent-alert-log">
+      <div class="panel-title">
+        <div>
+          <p class="eyebrow">Parent alerts</p>
+          <h3>Push and in-app notification log</h3>
+        </div>
+        <span class="status-pill good">Firebase</span>
+      </div>
+      <p class="muted">Present and collected updates are written to Firestore. Firebase Cloud Functions sends the parent push notification and records it here.</p>
+      ${alerts.length ? alerts.map((alert) => `
+        <div class="person-row compact">
+          <div>
+            <strong>${escapeHtml(alert.title)}</strong>
+            <p>${escapeHtml(alert.body)}</p>
+          </div>
+          <span class="status-pill good">${escapeHtml(displayDate(alert.createdAt || alert.sentAt))}</span>
+        </div>
+      `).join("") : '<p class="muted">No Firebase parent alerts recorded for this session yet.</p>'}
+    </article>
+  `;
+}
+
+function inputDateValue(date = new Date()) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function nextWednesdayValue() {
+  const date = new Date();
+  const diff = (3 - date.getDay() + 7) % 7;
+  date.setDate(date.getDate() + diff);
+  return inputDateValue(date);
+}
+
+function awardsView() {
+  if (!hasCoachAccess()) return homeView();
+  const activeTab = state.awardsTab === "tally" ? "tally" : "weekly";
+  return `
+    <section class="toolbar">
+      <div class="segmented light register-period-tabs">
+        <button type="button" class="${activeTab === "weekly" ? "active" : ""}" data-action="set-awards-tab" data-tab="weekly">Weekly winner</button>
+        <button type="button" class="${activeTab === "tally" ? "active" : ""}" data-action="set-awards-tab" data-tab="tally">Vote tally</button>
+      </div>
+    </section>
+    ${activeTab === "tally" ? awardTallyView() : weeklyAwardsView()}
+  `;
+}
+
+function weeklyAwardsView() {
+  const players = activePlayers().sort((a, b) => a.name.localeCompare(b.name));
+  const awards = sortPlayerAwards(state.playerAwards || []);
+
+  return `
+    <section class="content-grid two-col">
+      <article class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Coach only</p>
+            <h3>Player of the Week</h3>
+          </div>
+          <span class="status-pill good">Wednesday</span>
+        </div>
+        <form class="stacked-form" data-form="player-award">
+          <label class="field">
+            <span>Wednesday date</span>
+            <input name="date" type="date" value="${nextWednesdayValue()}" required>
+          </label>
+          <label class="field">
+            <span>Winner</span>
+            <select name="playerId" required>
+              <option value="">Select player</option>
+              ${players.map((player) => `<option value="${escapeHtml(player.id)}">${escapeHtml(player.name)} - ${escapeHtml(teamName(player.teamId))}</option>`).join("")}
+            </select>
+          </label>
+          <label class="field">
+            <span>Trophy with</span>
+            <select name="trophyWithPlayerId">
+              <option value="">Same as winner</option>
+              ${players.map((player) => `<option value="${escapeHtml(player.id)}">${escapeHtml(player.name)}</option>`).join("")}
+            </select>
+          </label>
+          <label class="field">
+            <span>Notes</span>
+            <textarea name="notes" rows="3" placeholder="Optional reason, behaviour note or handover detail"></textarea>
+          </label>
+          <button class="primary-button" type="submit">Save weekly winner</button>
+        </form>
+      </article>
+      <article class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Trophy history</p>
+            <h3>Recent winners</h3>
+          </div>
+          <span class="status-pill warn">${awards.length} saved</span>
+        </div>
+        <div class="award-timeline">
+          ${awards.length ? awards.map((award) => `
+            <div class="person-row">
+              <div>
+                <strong>${escapeHtml(award.playerName)}</strong>
+                <p>${escapeHtml(formatDateOnly(`${award.date}T12:00`))} - Trophy with ${escapeHtml(award.trophyWithName || award.playerName)}</p>
+                ${award.notes ? `<p>${escapeHtml(award.notes)}</p>` : ""}
+              </div>
+              <button class="tiny-button" type="button" data-action="delete-award" data-award-id="${escapeHtml(award.id)}">Remove</button>
+            </div>
+          `).join("") : '<p class="muted">No weekly winners saved yet.</p>'}
+        </div>
+      </article>
+    </section>
+  `;
+}
+
+function awardTallyRows() {
+  const players = activePlayers().sort((a, b) => {
+    const aVotes = Number(state.awardTallies?.[a.id] || 0);
+    const bVotes = Number(state.awardTallies?.[b.id] || 0);
+    return bVotes - aVotes || a.name.localeCompare(b.name);
+  });
+  return players.map((player) => {
+    const votes = Number(state.awardTallies?.[player.id] || 0);
+    return `
+      <div class="tally-row">
+        <div>
+          <strong>${escapeHtml(player.name)}</strong>
+          <p>${escapeHtml(teamName(player.teamId))}</p>
+        </div>
+        <div class="tally-controls">
+          <button class="icon-button" type="button" data-action="adjust-award-tally" data-player-id="${escapeHtml(player.id)}" data-delta="-1" aria-label="Remove vote for ${escapeHtml(player.name)}">-</button>
+          <strong>${votes}</strong>
+          <button class="icon-button" type="button" data-action="adjust-award-tally" data-player-id="${escapeHtml(player.id)}" data-delta="1" aria-label="Add vote for ${escapeHtml(player.name)}">+</button>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+function awardTallyView() {
+  const tallies = state.awardTallies || {};
+  const totalVotes = Object.values(tallies).reduce((sum, value) => sum + Number(value || 0), 0);
+  const leader = activePlayers()
+    .map((player) => ({ player, votes: Number(tallies[player.id] || 0) }))
+    .sort((a, b) => b.votes - a.votes || a.player.name.localeCompare(b.player.name))[0];
+
+  return `
+    <section class="content-grid two-col">
+      <article class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Temporary tool</p>
+            <h3>Player of the Week vote tally</h3>
+          </div>
+          <span class="status-pill warn">Not saved</span>
+        </div>
+        <p class="muted">Use this while the kids give verbal votes. It stays on this device while the app is open, then can be cleared once the winner is decided.</p>
+        <div class="metric-grid attendance-summary">
+          <article>
+            <strong>${totalVotes}</strong>
+            <span>Total votes</span>
+          </article>
+          <article>
+            <strong>${leader?.votes || 0}</strong>
+            <span>${leader?.votes ? escapeHtml(leader.player.name) : "Top vote"}</span>
+          </article>
+        </div>
+        <button class="secondary-button danger-button" type="button" data-action="clear-award-tallies">Clear tallies</button>
+      </article>
+      <article class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Live counter</p>
+            <h3>Votes by player</h3>
+          </div>
+        </div>
+        <div class="tally-list">
+          ${activePlayers().length ? awardTallyRows() : '<p class="muted">No active players available to tally.</p>'}
+        </div>
+      </article>
+    </section>
+  `;
+}
+
+function resultFixtureEvents() {
+  return state.events
+    .filter((event) => event.type === "Fixture" && !isBeforeVisibleSeason(event) && dateValue(event.datetime) >= resultSeasonStart)
+    .sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
+}
+
+function resultPlayersForEvent(event) {
+  const selected = getPlayersForEvent(event);
+  return (selected.length ? selected : activePlayers()).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function matchStatFor(eventId, playerId) {
+  return normalizeMatchStat((state.matchStats || []).find((stat) => stat.eventId === eventId && stat.playerId === playerId) || { eventId, playerId });
+}
+
+function resultDraftValue(eventId, fieldName, fallback = "") {
+  const draft = state.resultDrafts?.[eventId] || {};
+  return Object.prototype.hasOwnProperty.call(draft, fieldName) ? draft[fieldName] : fallback;
+}
+
+function resultStatEntryRow(event, player) {
+  const stat = matchStatFor(event.id, player.id);
+  const development = developmentFor(player.id);
+  const positionText = development.positions.length ? development.positions.join(", ") : "Positions not set";
+  const goalsName = `goals:${player.id}`;
+  const assistsName = `assists:${player.id}`;
+  return `
+    <div class="stat-entry-row">
+      <div>
+        <strong>${escapeHtml(player.name)}</strong>
+        <p>${escapeHtml(teamName(player.teamId))} - ${escapeHtml(positionText)}</p>
+      </div>
+      <label class="field">
+        <span>Goals</span>
+        <input name="${escapeHtml(goalsName)}" type="number" min="0" max="50" inputmode="numeric" value="${escapeHtml(resultDraftValue(event.id, goalsName, stat.goals))}">
+      </label>
+      <label class="field">
+        <span>Assists</span>
+        <input name="${escapeHtml(assistsName)}" type="number" min="0" max="50" inputmode="numeric" value="${escapeHtml(resultDraftValue(event.id, assistsName, stat.assists))}">
+      </label>
+    </div>
+  `;
+}
+
+function playerStatsRows() {
+  const fixtures = state.events.filter((event) => event.type === "Fixture");
+  const totals = activePlayers().map((player) => {
+    const stats = (state.matchStats || []).filter((stat) => stat.playerId === player.id && stat.status !== "archived");
+    const appearances = fixtures.filter((event) => ["present", "collected"].includes(state.attendance[event.id]?.[player.id])).length;
+    const goals = stats.reduce((sum, stat) => sum + Number(stat.goals || 0), 0);
+    const assists = stats.reduce((sum, stat) => sum + Number(stat.assists || 0), 0);
+    return { player, appearances, goals, assists, total: goals + assists };
+  }).sort((a, b) => b.total - a.total || b.goals - a.goals || a.player.name.localeCompare(b.player.name));
+
+  return totals.map((row) => `
+    <div class="stats-table-row">
+      <span><strong>${escapeHtml(row.player.name)}</strong><small>${escapeHtml(teamName(row.player.teamId))}</small></span>
+      <span><small class="stat-label">Appearances</small>${row.appearances}</span>
+      <span><small class="stat-label">Goals</small>${row.goals}</span>
+      <span><small class="stat-label">Assists</small>${row.assists}</span>
+      <span><small class="stat-label">Goals + assists</small>${row.total}</span>
+    </div>
+  `).join("");
+}
+
+function squadAvailabilityDateOptions() {
+  const byKey = new Map();
+  availabilityDateOptions().filter(option => option.event.type === "Fixture").forEach((option) => {
+    if (option.key) byKey.set(option.key, option);
+  });
+  trackedMatchdayDateKeys().forEach((dateKey) => {
+    if (byKey.has(dateKey)) return;
+    const fixtures = fixturesOnDate(dateKey);
+    const event = fixtures[0] || { id: dateKey, title: "Tracked matchday", datetime: `${dateKey}T12:00:00` };
+    byKey.set(dateKey, { key: dateKey, event, fixtures });
+  });
+  return [...byKey.values()].sort((a, b) => new Date(a.event.datetime) - new Date(b.event.datetime));
+}
+
+function selectedSquadAvailabilityDateKey() {
+  const options = squadAvailabilityDateOptions();
+  if (!options.length) {
+    state.squadAvailabilityDateKey = "";
+    return "";
+  }
+  const selectedEventKey = availabilityKeyForEvent(state.events.find((event) => event.id === state.selectedEventId));
+  const preferred = state.squadAvailabilityDateKey || selectedEventKey;
+  if (options.some((option) => option.key === preferred)) {
+    state.squadAvailabilityDateKey = preferred;
+    return preferred;
+  }
+  const upcoming = options.find((option) => new Date(`${option.key}T23:59:59`) >= startOfToday()) || options[options.length - 1];
+  state.squadAvailabilityDateKey = upcoming.key;
+  return upcoming.key;
+}
+
+function preferredSquadAvailabilityOption(options = squadAvailabilityDateOptions()) {
+  return options.find((option) => dateKeyIsCurrentOrFuture(option.key)) || options[options.length - 1] || null;
+}
+
+function squadFilterMatches(player, dateKey) {
+  const filter = state.squadPlayerFilter || "all";
+  const metrics = coachPlayerMetrics(player);
+  const dateEntry = dateKey ? defaultAvailabilityEntry(state.availability[dateKey]?.[player.id]) : defaultAvailabilityEntry();
+  const pickedOnDate = dateKey ? playerPickedOnDate(player.id, dateKey) : false;
+  if (filter === "available-date") return dateEntry.status === "available";
+  if (filter === "available-unpicked-date") return dateEntry.status === "available" && !pickedOnDate;
+  if (filter === "picked-date") return pickedOnDate;
+  if (filter === "trained-month") return metrics.training.attended > 0;
+  if (filter === "missed-training-month") return metrics.training.total > 0 && metrics.training.attended === 0;
+  if (filter === "waiting-selection") return metrics.match.waiting > 0;
+  return true;
+}
+
+function squadSortPlayers(players, dateKey = selectedSquadAvailabilityDateKey()) {
+  const sortMode = state.squadPlayerSort || "selection-priority";
+  return [...players].sort((a, b) => {
+    const aMetrics = coachPlayerMetrics(a);
+    const bMetrics = coachPlayerMetrics(b);
+    if (sortMode === "selection-priority") {
+      const aPriority = selectionPriorityForPlayer(a, dateKey);
+      const bPriority = selectionPriorityForPlayer(b, dateKey);
+      return bPriority.currentStatusRank - aPriority.currentStatusRank
+        || bPriority.score - aPriority.score
+        || bPriority.match.waiting - aPriority.match.waiting
+        || bMetrics.training.percent - aMetrics.training.percent
+        || a.name.localeCompare(b.name);
+    }
+    if (sortMode === "training-high") return bMetrics.training.percent - aMetrics.training.percent || a.name.localeCompare(b.name);
+    if (sortMode === "training-low") return aMetrics.training.percent - bMetrics.training.percent || a.name.localeCompare(b.name);
+    if (sortMode === "availability-high") return bMetrics.match.availablePercent - aMetrics.match.availablePercent || a.name.localeCompare(b.name);
+    if (sortMode === "picked-low") {
+      const aPicked = aMetrics.match.available ? aMetrics.match.selectedWhenAvailablePercent : 101;
+      const bPicked = bMetrics.match.available ? bMetrics.match.selectedWhenAvailablePercent : 101;
+      return aPicked - bPicked || a.name.localeCompare(b.name);
+    }
+    if (sortMode === "waiting-high") {
+      return bMetrics.match.waiting - aMetrics.match.waiting
+        || aMetrics.match.selectedWhenAvailablePercent - bMetrics.match.selectedWhenAvailablePercent
+        || a.name.localeCompare(b.name);
+    }
+    return a.name.localeCompare(b.name);
+  });
+}
+
+function squadPlayersForTeam(team) {
+  const dateKey = selectedSquadAvailabilityDateKey();
+  const players = activePlayers()
+    .filter((player) => normalizeTeamId(player.teamId) === team.id)
+    .filter((player) => !hasCoachAccess() || squadFilterMatches(player, dateKey));
+  return squadSortPlayers(players, dateKey);
+}
+
+function squadBoardControls() {
+  if (!hasCoachAccess()) return "";
+  const dateOptions = squadAvailabilityDateOptions();
+  const selectedDateKey = selectedSquadAvailabilityDateKey();
+  const filter = state.squadPlayerFilter || "all";
+  const sort = state.squadPlayerSort || "selection-priority";
+  return `
+    <div class="squad-board-controls">
+      <label class="field compact-field">
+        <span>Weekend</span>
+        <select data-action="set-squad-availability-date">
+          ${dateOptions.length ? dateOptions.map((option) => `<option value="${escapeHtml(option.key)}" ${option.key === selectedDateKey ? "selected" : ""}>${escapeHtml(availabilityDateOptionLabel(option))}</option>`).join("") : '<option value="">No matchdays yet</option>'}
+        </select>
+      </label>
+      <label class="field compact-field">
+        <span>Show</span>
+        <select data-action="set-squad-player-filter">
+          <option value="all" ${filter === "all" ? "selected" : ""}>All players</option>
+          <option value="available-date" ${filter === "available-date" ? "selected" : ""}>Available this weekend</option>
+          <option value="available-unpicked-date" ${filter === "available-unpicked-date" ? "selected" : ""}>Available but not picked</option>
+          <option value="picked-date" ${filter === "picked-date" ? "selected" : ""}>Picked this weekend</option>
+          <option value="trained-month" ${filter === "trained-month" ? "selected" : ""}>Trained this season</option>
+          <option value="missed-training-month" ${filter === "missed-training-month" ? "selected" : ""}>No training this season</option>
+          <option value="waiting-selection" ${filter === "waiting-selection" ? "selected" : ""}>Past available unpicked</option>
+        </select>
+      </label>
+      <label class="field compact-field">
+        <span>Sort</span>
+        <select data-action="set-squad-player-sort">
+          <option value="selection-priority" ${sort === "selection-priority" ? "selected" : ""}>Selection priority</option>
+          <option value="name" ${sort === "name" ? "selected" : ""}>Name A-Z</option>
+          <option value="training-high" ${sort === "training-high" ? "selected" : ""}>Training highest first</option>
+          <option value="training-low" ${sort === "training-low" ? "selected" : ""}>Training lowest first</option>
+          <option value="availability-high" ${sort === "availability-high" ? "selected" : ""}>Availability highest first</option>
+          <option value="picked-low" ${sort === "picked-low" ? "selected" : ""}>Picked least often first</option>
+          <option value="waiting-high" ${sort === "waiting-high" ? "selected" : ""}>Most past available unpicked</option>
+        </select>
+      </label>
+    </div>
+  `;
+}
+
+function seasonStatisticsView() {
+  if (!hasCoachAccess()) return "";
+  const scope = ["season", "A", "B"].includes(state.statisticsScope) ? state.statisticsScope : "season";
+  const report = seasonBlocks.seasonReport(state, scope, dateValue(startOfToday()));
+  const verified = scope === "A" && state.seasonReports?.find((item) => item.id === "2026-27-A" && item.status === "verified");
+  const rows = verified?.rows || report.rows;
+  const columns = [["appearances", "Match appearances"], ["selected", "Matches selected"], ["available", "Available matchdays"], ["unavailable", "Unavailable matchdays"], ["omitted", "Omitted matchdays"], ["trainingAttended", "Training attended"], ["trainingMissed", "Training missed"]];
+  const title = scope === "season" ? "Full season" : `Block ${scope}${scope === "A" ? " · Archived" : " · Current"}`;
+  return `
+    <details class="panel season-report-panel" ${state.seasonStatsOpen ? "open" : ""}>
+      <summary>Season 2026/27 · Season & block player statistics</summary>
+      <label class="field compact-field"><span>Reporting period</span><select data-action="set-statistics-scope">${[["season", "Full season 2026/27"], ["A", "Block A — Archived"], ["B", "Block B — Current"]].map(([value, label]) => `<option value="${value}" ${scope === value ? "selected" : ""}>${label}</option>`).join("")}</select></label>
+      <h2>${title}</h2>
+      <p class="muted">${verified ? `Verified recorded figures · ${escapeHtml(verified.verifiedAt || "")}. ${verified.retainedUnknowns ? "Reviewed missing entries remain unknown. " : ""}Later corrections require a new review.` : "Recorded figures · Provisional until historical records are checked. Archiving a block does not reset season totals."}</p>
+      <p class="muted">Appearances require a register marked present or collected; selection alone is not an appearance. Availability is stored once per matchday across the club, so two fixtures on the same day do not double the response. Free weeks are excluded. Omissions require a past matchday with recorded selections. Training missed counts explicit absences only. Unmarked records remain unknown.</p>
+      <p class="muted">${report.fixtureCount} matches · ${report.trainingCount} training sessions · ${rows.length} players (including retained inactive profiles).</p>
+      <div class="season-player-list">${rows.length ? rows.map((row) => `<article class="season-player-stat"><h3>${escapeHtml(row.name || row.playerId)}</h3><dl class="season-numbers">${columns.map(([key, label]) => `<div><dt>${label}</dt><dd>${Number(row[key] || 0)}</dd></div>`).join("")}</dl>${row.appearancesUnknown || row.trainingUnrecorded || row.selectionUnrecorded || row.noReply ? `<p class="report-unknown">Unknown / not recorded: ${Number(row.appearancesUnknown || 0)} selected match appearances; ${Number(row.trainingUnrecorded || 0)} training registers; ${Number(row.selectionUnrecorded || 0)} past matchday selections; ${Number(row.noReply || 0)} availability responses.</p>` : ""}</article>`).join("") : '<p class="muted">No player records loaded.</p>'}</div>
+    </details>
+  `;
+}
+
+function resultsView() {
+  if (!hasCoachAccess()) return homeView();
+  const mode = state.resultsMode === 'statistics' ? 'statistics' : 'results';
+  const modeChoice = '<div class="segmented light results-mode" aria-label="Results or statistics">' +
+    ['results', 'statistics'].map(value => '<button type="button" data-action="set-results-mode" data-mode="' + value + '" class="' + (mode === value ? 'active' : '') + '">' + (value === 'results' ? 'Match results' : 'Player statistics') + '</button>').join('') + '</div>';
+  const fixtures = resultFixtureEvents();
+  if (!fixtures.length) {
+    return `
+      ${seasonStatisticsView()}
+      <section class="panel">
+        <p class="eyebrow">Coach only</p>
+        <h3>No fixtures to score yet</h3>
+        <p class="muted">Add fixtures on the Schedule page, then use Results to record scores, goals and assists.</p>
+        <button class="primary-button" type="button" data-modal="event">Add fixture</button>
+      </section>
+    `;
+  }
+
+  const selected = fixtures.find((event) => event.id === state.selectedResultEventId) || fixtures[0];
+  state.selectedResultEventId = selected.id;
+  const players = resultPlayersForEvent(selected);
+
+  return `
+    ${modeChoice}
+    ${seasonStatisticsView()}
+    <section class="toolbar" ${mode === 'statistics' ? 'hidden' : ''}>
+      <label class="field compact-field">
+        <span>Match</span>
+        <select data-action="select-result-event">
+          ${fixtures.map((event) => `<option value="${escapeHtml(event.id)}" ${event.id === selected.id ? "selected" : ""}>${escapeHtml(`${event.blockId ? `Block ${event.blockId} · ` : ""}${formatDateOnly(event.datetime)} - ${event.title}`)}</option>`).join("")}
+        </select>
+      </label>
+    </section>
+    <section class="results-content">
+      <article class="panel" ${mode === 'statistics' ? 'hidden' : ''}>
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Match result</p>
+            <h3>${escapeHtml(selected.title)}</h3>
+            <p>${escapeHtml(selected.timeTbc ? `${formatDateOnly(selected.datetime)} · Kick-off TBC` : formatDate(selected.datetime))} - ${escapeHtml(teamName(selected.teamId))}</p>
+          </div>
+          <span class="status-pill ${resultSummary(selected) ? "good" : "warn"}">${escapeHtml(resultSummary(selected) || "Score needed")}</span>
+        </div>
+        <form class="stacked-form" data-form="match-stats">
+          <input type="hidden" name="eventId" value="${escapeHtml(selected.id)}">
+          <div class="score-fields">
+            <label class="field">
+              <span>Largs score</span>
+              <input name="homeScore" type="number" min="0" max="99" inputmode="numeric" value="${escapeHtml(resultDraftValue(selected.id, "homeScore", selected.homeScore ?? ""))}" placeholder="0">
+            </label>
+            <label class="field">
+              <span>Opposition score</span>
+              <input name="awayScore" type="number" min="0" max="99" inputmode="numeric" value="${escapeHtml(resultDraftValue(selected.id, "awayScore", selected.awayScore ?? ""))}" placeholder="0">
+            </label>
+          </div>
+          <label class="field">
+            <span>Result notes</span>
+            <input name="resultNotes" value="${escapeHtml(resultDraftValue(selected.id, "resultNotes", selected.resultNotes || ""))}" placeholder="Optional match note">
+          </label>
+          <div class="stats-entry-list">
+            ${players.length ? players.map((player) => resultStatEntryRow(selected, player)).join("") : '<p class="muted">No players are currently available for this fixture.</p>'}
+          </div>
+          <button class="primary-button" type="submit">Save result and stats</button>
+        </form>
+      </article>
+      <article class="panel" ${mode === 'results' ? 'hidden' : ''}>
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Player stats</p>
+            <h3>Goals and assists</h3>
+          </div>
+          <span class="status-pill good">${activePlayers().length} players</span>
+        </div>
+        <details class="stats-explanation"><summary>How these totals are calculated</summary><p class="muted">Appearances count fixture registers marked present or collected. Goals and assists total recorded, non-archived player stats. These totals are independent of the match selected above.</p></details>
+        <div class="stats-table" aria-label="Player stats">
+          <div class="stats-table-header">
+            <span>Player</span>
+            <span>Appearances</span>
+            <span>Goals</span>
+            <span>Assists</span>
+            <span>Goals + assists</span>
+          </div>
+          ${playerStatsRows()}
+        </div>
+      </article>
+    </section>
+  `;
+}
+
+function squadsView() {
+  return `
+    <section class="toolbar squad-toolbar" data-tour="squad-actions">
+      ${squadBoardControls()}
+      ${hasCoachAccess() ? '<button class="primary-button" type="button" data-modal="player">Add player</button>' : ""}
+    </section>
+    ${hasCoachAccess() ? coachMetricKey() : ""}
+    <div class="team-board" data-tour="team-board">
+      ${playerTeamOptions().map(teamColumn).join("")}
+    </div>
+  `;
+}
+
+function teamColumn(team) {
+  const totalPlayers = activePlayers().filter((player) => normalizeTeamId(player.teamId) === team.id).length;
+  const dateKey = selectedSquadAvailabilityDateKey();
+  const players = hasCoachAccess()
+    ? squadPlayersForTeam(team)
+    : activePlayers().filter((player) => normalizeTeamId(player.teamId) === team.id);
+  return `
+    <article class="team-column">
+      <div class="panel-title">
+        <div>
+          <p class="eyebrow">${team.name}</p>
+          <h3>${players.length}${hasCoachAccess() && players.length !== totalPlayers ? ` of ${totalPlayers}` : ""} players</h3>
+        </div>
+        <span class="team-dot ${team.id}"></span>
+      </div>
+      <div class="team-player-list" tabindex="0" aria-label="${escapeHtml(team.name)} player list">
+        ${players.length ? players.map((player) => `
+          <div class="person-row compact">
+            <div>
+              <strong>${escapeHtml(player.name)}</strong>
+              <p>${escapeHtml(player.role)}</p>
+              ${hasCoachAccess() ? `<p>${escapeHtml(player.parentName)} - ${escapeHtml(player.parentPhone)}</p>` : ""}
+              ${coachPlayerMetricTags(player, "squad", dateKey)}
+            </div>
+            ${hasCoachAccess() ? `
+              <div class="inline-actions">
+                <button class="tiny-button" type="button" data-modal="edit-player" data-player-id="${player.id}">Edit</button>
+                <button class="tiny-button" type="button" data-modal="move-player" data-player-id="${player.id}">Move</button>
+              </div>
+            ` : ""}
+          </div>
+        `).join("") : `<p class="muted empty-team-note">${hasCoachAccess() ? "No players match the current filters." : "No players assigned yet."}</p>`}
+      </div>
+    </article>
+  `;
+}
+
+function documentsView() {
+  const docs = visiblePlayerDocuments();
+  const currentChild = currentPlayer();
+  const players = activePlayers();
+  const selectedFilter = state.documentFilter || "all";
+  return `
+    <section class="toolbar documents-toolbar">
+      <div>
+        <p class="eyebrow">${hasCoachAccess() ? "Coach documents" : "Player documents"}</p>
+        <h2 class="section-heading">${hasCoachAccess() ? "Share files with parents" : escapeHtml(currentChild?.name || "Documents")}</h2>
+      </div>
+      ${hasCoachAccess() ? `
+        <div class="document-controls">
+          <label class="field compact-field">
+            <span>Player</span>
+            <select data-action="set-document-filter">
+              <option value="all" ${selectedFilter === "all" ? "selected" : ""}>All players</option>
+              ${players.map((player) => `<option value="${player.id}" ${selectedFilter === player.id ? "selected" : ""}>${escapeHtml(player.name)}</option>`).join("")}
+            </select>
+          </label>
+          <label class="field compact-field">
+            <span>Sort</span>
+            <select data-action="set-document-sort">
+              <option value="newest" ${state.documentSort === "newest" ? "selected" : ""}>Newest first</option>
+              <option value="name" ${state.documentSort === "name" ? "selected" : ""}>Player name</option>
+              <option value="title" ${state.documentSort === "title" ? "selected" : ""}>Document title</option>
+            </select>
+          </label>
+          <button class="primary-button" type="button" data-modal="document">Upload document</button>
+        </div>
+      ` : ""}
+    </section>
+    ${!hasCoachAccess() && !currentChild ? `
+      <article class="panel">
+        <h3>No linked child selected</h3>
+        <p class="muted">A coach needs to approve your child link before documents can be shown.</p>
+      </article>
+    ` : `
+      <section class="document-grid">
+        ${docs.length ? docs.map(playerDocumentCard).join("") : `
+          <article class="panel">
+            <h3>No documents yet</h3>
+            <p class="muted">${hasCoachAccess() ? "Upload a PDF or Word document and attach it to a player profile." : "Documents shared with this child will appear here for download."}</p>
+          </article>
+        `}
+      </section>
+    `}
+  `;
+}
+
+function visiblePlayerDocuments() {
+  const docs = [...(state.playerDocuments || [])];
+  const selectedFilter = state.documentFilter || "all";
+  const currentChild = currentPlayer();
+  const visible = hasCoachAccess()
+    ? docs.filter((doc) => coachDocumentMatchesFilter(doc, selectedFilter))
+    : docs.filter((doc) => parentCanOpenDocument(doc, currentChild));
+
+  return visible.sort((a, b) => {
+    if (state.documentSort === "name") {
+      return documentPlayerName(a).localeCompare(documentPlayerName(b)) || documentTitle(a).localeCompare(documentTitle(b));
+    }
+    if (state.documentSort === "title") {
+      return documentTitle(a).localeCompare(documentTitle(b)) || documentPlayerName(a).localeCompare(documentPlayerName(b));
+    }
+    return createdTime(b) - createdTime(a) || documentTitle(a).localeCompare(documentTitle(b));
+  });
+}
+
+function documentTitle(doc) {
+  return String(doc.title || doc.originalFileName || "Document");
+}
+
+function documentPlayerName(doc) {
+  if (doc.audience === "all") return "All players";
+  if (doc.audience === "team") return doc.teamName || teamName(doc.teamId || doc.playerTeamId);
+  return activePlayers().find((player) => player.id === doc.playerId)?.name || doc.playerName || "Player";
+}
+
+function documentTeamId(doc) {
+  if (doc.audience === "all") return "all";
+  if (doc.audience === "team") return normalizeEventTeamId(doc.teamId || doc.playerTeamId);
+  return normalizeTeamId(activePlayers().find((player) => player.id === doc.playerId)?.teamId || doc.playerTeamId);
+}
+
+function documentRecipientPlayerIds(doc = {}) {
+  return Array.isArray(doc.recipientPlayerIds) ? doc.recipientPlayerIds.filter(Boolean) : [];
+}
+
+function documentRecipientParentUids(doc = {}) {
+  return Array.isArray(doc.recipientParentUids) ? doc.recipientParentUids.filter(Boolean) : [];
+}
+
+function parentCanOpenDocument(doc, currentChild = currentPlayer()) {
+  if (hasCoachAccess()) return true;
+  if (!isApprovedMember() || doc.status === "deleted") return false;
+  const children = approvedPlayers().filter(child => !currentChild || child.id === currentChild.id);
+  if (doc.audience === "all") return children.length > 0;
+  if (doc.audience === "team") return children.some(child => normalizeTeamId(child.teamId) === normalizeTeamId(doc.teamId || doc.playerTeamId));
+  return children.some(child => child.id === doc.playerId);
+}
+
+function coachDocumentMatchesFilter(doc, selectedFilter = "all") {
+  if (selectedFilter === "all") return true;
+  if (doc.playerId === selectedFilter) return true;
+  if (documentRecipientPlayerIds(doc).includes(selectedFilter)) return true;
+  const player = activePlayers().find((item) => item.id === selectedFilter);
+  return Boolean(player && doc.audience === "team" && normalizeTeamId(player.teamId) === normalizeTeamId(doc.teamId || doc.playerTeamId));
+}
+
+function fileTypeLabel(doc) {
+  const contentType = String(doc.contentType || "").toLowerCase();
+  const fileName = String(doc.originalFileName || "").toLowerCase();
+  if (contentType.includes("pdf") || fileName.endsWith(".pdf")) return "PDF";
+  if (contentType.includes("word") || fileName.endsWith(".doc") || fileName.endsWith(".docx")) return "Word";
+  return "Document";
+}
+
+function formatFileSize(size = 0) {
+  const bytes = Number(size || 0);
+  if (!bytes) return "Size unknown";
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${Math.round((bytes / (1024 * 1024)) * 10) / 10} MB`;
+}
+
+function createdTime(item = {}) {
+  return item.createdAt?.seconds || Date.parse(item.createdAt || "") / 1000 || 0;
+}
+
+function playerDocumentCard(doc) {
+  return `
+    <article class="document-card panel">
+      <div class="panel-title">
+        <div>
+          <p class="eyebrow">${escapeHtml(fileTypeLabel(doc))} - ${escapeHtml(formatFileSize(doc.size))}</p>
+          <h3>${escapeHtml(documentTitle(doc))}</h3>
+        </div>
+        <span class="team-pill ${escapeHtml(documentTeamId(doc))}">${escapeHtml(documentPlayerName(doc))}</span>
+      </div>
+      <dl class="info-list compact-info">
+        <div><dt>Audience</dt><dd>${escapeHtml(documentPlayerName(doc))}</dd></div>
+        <div><dt>File</dt><dd>${escapeHtml(doc.originalFileName || "Uploaded file")}</dd></div>
+        <div><dt>Shared</dt><dd>${escapeHtml(displayDate(doc.createdAt))}</dd></div>
+        ${hasCoachAccess() ? `<div><dt>Uploaded by</dt><dd>${escapeHtml(doc.uploadedByName || "Coach")}</dd></div>` : ""}
+      </dl>
+      <div class="choice-row">
+        <button class="secondary-button" type="button" data-action="download-document" data-document-id="${escapeHtml(doc.id)}">Download</button>
+        ${hasCoachAccess() ? `<button class="secondary-button danger-button" type="button" data-action="delete-document" data-document-id="${escapeHtml(doc.id)}">Remove</button>` : ""}
+      </div>
+    </article>
+  `;
+}
+
+function developmentView() {
+  if (!hasCoachAccess()) return homeView();
+  const players = activePlayers().slice().sort((a, b) => teamName(a.teamId).localeCompare(teamName(b.teamId)) || a.name.localeCompare(b.name));
+  const levelCounts = developmentLevels.map((level) => ({
+    level,
+    count: players.filter((player) => developmentFor(player.id).level === level).length,
+  }));
+  return `
+    <section class="toolbar">
+      <div>
+        <p class="eyebrow">Coach only</p>
+        <h2 class="section-heading">Player development</h2>
+      </div>
+      <button class="primary-button" type="button" data-route-target="squad-builder">Open squad whiteboard</button>
+    </section>
+    <section class="metric-grid development-summary">
+      ${levelCounts.map((item) => `<article><strong>${item.count}</strong><span>${escapeHtml(item.level)}</span></article>`).join("")}
+    </section>
+    ${squadPositionList()}
+    <section class="development-grid">
+      ${players.map(developmentCard).join("")}
+    </section>
+  `;
+}
+
+function squadPositionList() {
+  const positionFilter = state.squadListPositionFilter || "all";
+  const sortMode = state.squadListSort || "name";
+  const players = activePlayers()
+    .filter((player) => {
+      const positions = developmentFor(player.id).positions;
+      return positionFilter === "all" || positions.includes(positionFilter);
+    })
+    .sort((a, b) => {
+      if (sortMode === "position") {
+        return primaryPosition(a).localeCompare(primaryPosition(b)) || a.name.localeCompare(b.name);
+      }
+      return a.name.localeCompare(b.name);
+    });
+
+  return `
+    <section class="panel squad-position-panel">
+      <div class="panel-title">
+        <div>
+          <p class="eyebrow">Squad list</p>
+          <h3>Players by position</h3>
+        </div>
+        <span class="status-pill good">${players.length} shown</span>
+      </div>
+      <div class="squad-list-controls">
+        <label class="field compact-field">
+          <span>Filter position</span>
+          <select data-action="set-squad-position-filter">
+            <option value="all" ${positionFilter === "all" ? "selected" : ""}>All positions</option>
+            ${playerPositions.map((position) => `<option value="${escapeHtml(position)}" ${positionFilter === position ? "selected" : ""}>${escapeHtml(position)}</option>`).join("")}
+          </select>
+        </label>
+        <label class="field compact-field">
+          <span>Sort by</span>
+          <select data-action="set-squad-list-sort">
+            <option value="name" ${sortMode === "name" ? "selected" : ""}>Name A-Z</option>
+            <option value="position" ${sortMode === "position" ? "selected" : ""}>Position</option>
+          </select>
+        </label>
+      </div>
+      <div class="squad-position-list">
+        ${players.length ? players.map(squadPositionRow).join("") : '<p class="muted">No players match that position filter yet.</p>'}
+      </div>
+    </section>
+  `;
+}
+
+function primaryPosition(player) {
+  return developmentFor(player.id).positions[0] || "No positions set";
+}
+
+function squadPositionRow(player) {
+  const record = developmentFor(player.id);
+  return `
+    <div class="person-row squad-position-row">
+      <div>
+        <strong>${escapeHtml(player.name)}</strong>
+        <p>${escapeHtml(teamName(player.teamId))} - ${escapeHtml(developmentLabel(record))} - ${escapeHtml(record.foot === "Not set" ? "Foot not set" : `${record.foot} foot`)}</p>
+        <div class="availability-tags">
+          ${record.positions.length ? record.positions.map((position) => `<span>${escapeHtml(position)}</span>`).join("") : "<span>No positions set</span>"}
+        </div>
+      </div>
+      <button class="tiny-button" type="button" data-route-target="squad-builder">Whiteboard</button>
+    </div>
+  `;
+}
+
+function developmentCard(player) {
+  const record = developmentFor(player.id);
+  return `
+    <article class="development-card">
+      <form class="stacked-form" data-form="development-player">
+        <input type="hidden" name="playerId" value="${escapeHtml(player.id)}">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">${teamName(player.teamId)}</p>
+            <h3>${escapeHtml(player.name)}</h3>
+          </div>
+          <span class="level-pill ${developmentClass(record)}">${escapeHtml(developmentLabel(record))}</span>
+        </div>
+        ${coachPlayerMetricTags(player, "development")}
+        <div class="development-fields">
+          <label class="field">
+            <span>Level</span>
+            <select name="level">${developmentLevels.map((level) => `<option value="${level}" ${record.level === level ? "selected" : ""}>${level}</option>`).join("")}</select>
+          </label>
+          <label class="field">
+            <span>Band</span>
+            <select name="band">${developmentBands.map((band) => `<option value="${band}" ${record.band === band ? "selected" : ""}>${band}</option>`).join("")}</select>
+          </label>
+          <label class="field">
+            <span>Strongest foot</span>
+            <select name="foot">${footOptions.map((foot) => `<option value="${foot}" ${record.foot === foot ? "selected" : ""}>${foot}</option>`).join("")}</select>
+          </label>
+        </div>
+        <fieldset class="position-checks">
+          <legend>Positions</legend>
+          ${playerPositions.map((position) => `
+            <label>
+              <input type="checkbox" name="positions" value="${escapeHtml(position)}" ${record.positions.includes(position) ? "checked" : ""}>
+              <span>${escapeHtml(position)}</span>
+            </label>
+          `).join("")}
+        </fieldset>
+        <label class="field">
+          <span>Coach note</span>
+          <textarea name="notes" rows="3" placeholder="Optional private coach note">${escapeHtml(record.notes || "")}</textarea>
+        </label>
+        <button class="primary-button" type="submit">Save development</button>
+      </form>
+    </article>
+  `;
+}
+
+function squadBuilderView() {
+  if (!hasCoachAccess()) return homeView();
+  const format = state.squadBuilder.format || "7";
+  const definition = formationDefinition(format);
+  const selections = builderSelections(format);
+  const pool = builderPlayerPool();
+  const selectedPlayer = activePlayers().find((player) => player.id === state.squadBuilder.selectedPlayerId);
+  const showDevelopmentLabels = state.squadBuilder.showDevelopmentLabels !== false;
+  const canEditBoard = hasWhiteboardControl();
+  const controlDisabled = canEditBoard ? "" : "disabled";
+  return `
+    <section class="toolbar builder-toolbar">
+      <button class="secondary-button player-pool-toggle" type="button" data-action="toggle-player-pool" aria-expanded="${Boolean(state.whiteboardPoolOpen)}" aria-controls="whiteboard-players">${state.whiteboardPoolOpen ? "Hide players" : "Choose a player"}${selectedPlayer ? ` · ${escapeHtml(selectedPlayer.name)}` : ""}</button>
+      <div>
+        <p class="eyebrow">Coach only</p>
+        <h2 class="section-heading">${definition.label} squad whiteboard</h2>
+      </div>
+      <details class="whiteboard-tools" ${state.whiteboardToolsOpen ?? window.innerWidth >= 761 ? "open" : ""}>
+        <summary>Formation & drawing tools</summary>
+        <div class="choice-row">
+        ${Object.keys(formationDefinitions).map((item) => `<button class="secondary-button ${format === item ? "active-filter" : ""}" type="button" data-action="set-builder-format" data-format="${item}" ${controlDisabled}>${formationDefinitions[item].label}</button>`).join("")}
+        <button class="secondary-button" type="button" data-action="auto-fill-builder" ${controlDisabled}>Auto fill</button>
+        <button class="secondary-button ${state.squadBuilder.arrowMode ? "active-filter" : ""}" type="button" data-action="toggle-whiteboard-arrows" ${controlDisabled}>${state.squadBuilder.arrowMode ? "Stop arrows" : "Draw arrows"}</button>
+        <button class="secondary-button" type="button" data-action="undo-whiteboard-arrow" ${controlDisabled}>Undo arrow</button>
+        <button class="secondary-button" type="button" data-action="clear-whiteboard-arrows" ${controlDisabled}>Clear arrows</button>
+        <button class="secondary-button ${showDevelopmentLabels ? "" : "active-filter"}" type="button" data-action="toggle-whiteboard-ratings" ${controlDisabled}>${showDevelopmentLabels ? "Hide ratings" : "Show ratings"}</button>
+        <button class="secondary-button" type="button" data-action="reset-builder-layout" ${controlDisabled}>Reset positions</button>
+        <button class="secondary-button danger-button" type="button" data-action="reset-builder" ${controlDisabled}>Reset</button>
+        </div>
+      </details>
+    </section>
+    <details class="whiteboard-options" ${state.whiteboardOptionsOpen ?? window.innerWidth >= 761 ? "open" : ""}>
+      <summary>${liveWhiteboardState().active ? "Live session & player filters" : "Player filters & live session"}</summary>
+    ${liveWhiteboardControls()}
+    <section class="builder-filters">
+      <div class="segmented light">
+        <button type="button" class="${state.squadBuilder.teamFilter === "all" ? "active" : ""}" data-action="set-builder-team" data-team-id="all" ${controlDisabled}>All</button>
+        ${filterTeamOptions().map((team) => `<button type="button" class="${state.squadBuilder.teamFilter === team.id ? "active" : ""}" data-action="set-builder-team" data-team-id="${team.id}" ${controlDisabled}>${team.name}</button>`).join("")}
+      </div>
+      ${showDevelopmentLabels ? `<div class="segmented light">
+        <button type="button" class="${state.squadBuilder.levelFilter === "all" ? "active" : ""}" data-action="set-builder-level" data-level="all" ${controlDisabled}>All levels</button>
+        ${developmentLevels.map((level) => `<button type="button" class="${state.squadBuilder.levelFilter === level ? "active" : ""}" data-action="set-builder-level" data-level="${level}" ${controlDisabled}>${level}</button>`).join("")}
+      </div>` : ""}
+    </section>
+    </details>
+    <section class="squad-builder-layout">
+      <article class="panel formation-panel shape-live">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">${definition.slots.length} starters and 2 subs</p>
+            <h3>Formation board</h3>
+          </div>
+          <div class="builder-board-status">
+            ${selectedPlayer ? `<span class="status-pill good">Selected: ${escapeHtml(selectedPlayer.name)}</span>` : ""}
+            <span class="status-pill warn">Drag markers to change roles</span>
+            ${isLiveWhiteboardPresenter() ? '<span class="status-pill good">Live presenter</span>' : ""}
+            ${isLiveWhiteboardViewerOnly() ? '<span class="status-pill good">Watching live</span>' : ""}
+            ${showDevelopmentLabels ? "" : '<span class="status-pill good">Parent-safe view</span>'}
+            ${state.squadBuilder.arrowMode ? '<span class="status-pill good">Arrow drawing on</span>' : ""}
+          </div>
+        </div>
+        <p class="muted builder-hint">${canEditBoard ? "Drag any marker to reshape the team. Turn on Draw arrows to sketch player movement for a quick whiteboard plan." : "You are watching the presenter's live board. Leave live mode if you need to work on a private version."}</p>
+        <div class="formation-pitch formation-${format}" data-builder-pitch>
+          ${formationArrowLayer(format)}
+          ${starterSlots(format).map((slot) => formationSlot(slot, selections[slot.id], { editable: true })).join("")}
+        </div>
+        ${canEditBoard ? '<div class="marker-actions"><label class="field"><span>Position actions</span><select data-action="select-marker-actions">' + starterSlots(format).map(slot => '<option value="' + escapeHtml(slot.id) + '" ' + ((state.markerActionSlot || 'gk') === slot.id ? 'selected' : '') + '>' + escapeHtml(slot.label + (selections[slot.id] ? ' · ' + (activePlayers().find(p => p.id === selections[slot.id])?.name || '') : ' · Empty')) + '</option>').join('') + '</select></label><button class="secondary-button" type="button" data-action="edit-builder-slot" data-slot-id="' + escapeHtml(state.markerActionSlot || 'gk') + '">Edit position</button><button class="secondary-button" type="button" data-action="clear-builder-slot" data-slot-id="' + escapeHtml(state.markerActionSlot || 'gk') + '">Clear player</button></div>' : ''}
+        <div class="formation-bench" data-builder-bench>
+          <div>
+            <p class="eyebrow">Bench</p>
+            <h4>Substitutes</h4>
+          </div>
+          ${substituteSlots().map((slot) => formationSlot(slot, selections[slot.id])).join("")}
+        </div>
+      </article>
+      <article class="panel player-pool-panel ${state.whiteboardPoolOpen ? "pool-open" : ""}" id="whiteboard-players">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Player pool</p>
+            <h3>${pool.length} available</h3>
+          </div>
+        </div>
+        <div class="builder-player-pool" data-scroll-key="builder-pool-${format}-${state.squadBuilder.teamFilter}-${state.squadBuilder.levelFilter}-${showDevelopmentLabels ? "ratings" : "plain"}" data-touch-scroll-guard>
+          ${pool.length ? pool.map(builderPlayerCard).join("") : '<p class="muted">No players match the selected filters.</p>'}
+        </div>
+      </article>
+    </section>
+  `;
+}
+
+function liveWhiteboardControls() {
+  const live = liveWhiteboardState();
+  const active = Boolean(live.active);
+  const joined = Boolean(live.joined);
+  const isHost = active && live.hostUid === state.session.userId;
+  const hostName = live.hostName || "Coach";
+
+  if (!active) {
+    return `
+      <section class="panel live-whiteboard-panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Live collaboration</p>
+            <h3>Share this board with coaches</h3>
+          </div>
+          <span class="status-pill warn">Off</span>
+        </div>
+        <p class="muted">Start a live whiteboard during a call so other coaches can join and watch this formation update in real time.</p>
+        <div class="choice-row">
+          <button class="primary-button" type="button" data-action="start-live-whiteboard">Go live</button>
+        </div>
+      </section>
+    `;
+  }
+
+  return `
+    <section class="panel live-whiteboard-panel ${joined ? "is-live" : ""}">
+      <div class="panel-title">
+        <div>
+          <p class="eyebrow">Live collaboration</p>
+          <h3>${isHost ? "You are presenting" : `${escapeHtml(hostName)} is presenting`}</h3>
+        </div>
+        <span class="status-pill good">${joined ? "Live" : "Available"}</span>
+      </div>
+      <p class="muted">${joined ? "This board is linked to the active coach session. Presenter changes sync through Firebase." : "A coach is presenting a live whiteboard. Join to watch the shared board."}</p>
+      <div class="choice-row">
+        ${joined && !isHost ? '<button class="secondary-button" type="button" data-action="leave-live-whiteboard">Leave live view</button>' : ""}
+        ${!joined ? '<button class="primary-button" type="button" data-action="join-live-whiteboard">Join live board</button>' : ""}
+        ${isHost ? '<button class="secondary-button danger-button" type="button" data-action="end-live-whiteboard">End live session</button>' : ""}
+      </div>
+    </section>
+  `;
+}
+
+function builderPlayerPool() {
+  const selected = new Set(Object.values(builderSelections()).filter(Boolean));
+  return activePlayers()
+    .filter((player) => state.squadBuilder.teamFilter === "all" || normalizeTeamId(player.teamId) === normalizeTeamId(state.squadBuilder.teamFilter))
+    .filter((player) => {
+      const record = developmentFor(player.id);
+      return state.squadBuilder.levelFilter === "all" || record.level === state.squadBuilder.levelFilter;
+    })
+    .sort((a, b) => developmentScore(developmentFor(b.id)) - developmentScore(developmentFor(a.id)) || a.name.localeCompare(b.name))
+    .map((player) => ({ ...player, alreadyPicked: selected.has(player.id) }));
+}
+
+function builderPlayerCard(player) {
+  const record = developmentFor(player.id);
+  const selected = state.squadBuilder.selectedPlayerId === player.id;
+  const showDevelopmentLabels = state.squadBuilder.showDevelopmentLabels !== false;
+  const meta = showDevelopmentLabels ? `${teamName(player.teamId)} - ${developmentLabel(record)}` : teamName(player.teamId);
+  const canEditBoard = hasWhiteboardControl();
+  const draggable = canEditBoard && useNativeDrag();
+  return `
+    <button class="builder-player-card ${selected ? "selected" : ""} ${player.alreadyPicked ? "picked" : ""}" type="button" draggable="${draggable ? "true" : "false"}" data-action="select-builder-player" data-player-id="${escapeHtml(player.id)}" data-player-drag="${escapeHtml(player.id)}" ${canEditBoard ? "" : "disabled"}>
+      <strong>${escapeHtml(player.name)}</strong>
+      ${player.alreadyPicked ? '<span class="assigned-badge">Assigned</span>' : ''}
+      <span>${escapeHtml(meta)}</span>
+      <small>${escapeHtml(record.foot === "Not set" ? "Foot not set" : `${record.foot} foot`)}</small>
+      <em>${record.positions.length ? escapeHtml(record.positions.join(", ")) : "No positions set"}</em>
+    </button>
+  `;
+}
+
+function formationSlot(slot, playerId, options = {}) {
+  const player = activePlayers().find((item) => item.id === playerId);
+  const record = player ? developmentFor(player.id) : null;
+  const match = !player || slot.isSub || record.positions.includes(slot.position);
+  const canEditBoard = hasWhiteboardControl();
+  const editable = Boolean(options.editable && !slot.isSub && canEditBoard);
+  const style = slot.isSub ? "" : `style="left:${slot.x}%; top:${slot.y}%;"`;
+  const dragMarker = editable ? `data-formation-drag="${escapeHtml(slot.id)}"` : "";
+  const showDevelopmentLabels = state.squadBuilder.showDevelopmentLabels !== false;
+  return `
+    <div class="formation-slot ${slot.isSub ? "sub-slot" : ""} ${editable ? "editable-slot" : ""} ${player ? "filled" : ""} ${match ? "" : "position-warning"}" ${style} data-builder-slot="${escapeHtml(slot.id)}" data-slot-player-id="${escapeHtml(player?.id || "")}" data-position="${escapeHtml(slot.position)}" data-action="assign-builder-slot" ${dragMarker}>
+      <span class="slot-label">${escapeHtml(slot.label)}</span>
+      <strong title="${escapeHtml(player?.name || slot.position)}">${player ? escapeHtml(player.name) : escapeHtml(slot.position)}</strong>
+      ${player && showDevelopmentLabels ? `<small>${escapeHtml(developmentLabel(record))}</small>` : !player && editable ? '<small>Drag to move</small>' : ""}
+      <div class="slot-actions">
+
+        ${slot.isSub && player && canEditBoard ? '<button class="slot-clear" type="button" data-action="clear-builder-slot" data-slot-id="' + escapeHtml(slot.id) + '" aria-label="Clear substitute">Clear</button>' : ''}
+      </div>
+    </div>
+  `;
+}
+
+function formationArrowLayer(format) {
+  const arrows = builderArrows(format);
+  return `
+    <svg class="formation-arrows" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+      <defs>
+        <marker id="whiteboard-arrow-head" markerWidth="5" markerHeight="5" refX="4.2" refY="2.5" orient="auto" markerUnits="strokeWidth">
+          <path d="M0,0 L5,2.5 L0,5 Z"></path>
+        </marker>
+      </defs>
+      ${arrows.map((arrow) => `
+        <line
+          x1="${Number(arrow.x1) || 0}"
+          y1="${Number(arrow.y1) || 0}"
+          x2="${Number(arrow.x2) || 0}"
+          y2="${Number(arrow.y2) || 0}"
+          marker-end="url(#whiteboard-arrow-head)"
+        ></line>
+      `).join("")}
+      <line data-draft-arrow hidden marker-end="url(#whiteboard-arrow-head)"></line>
+    </svg>
+  `;
+}
+
+function messagesView() {
+  const visible = visibleMessagesForUser();
+  const parentNotifications = visibleParentNotificationsForUser();
+
+  return `
+    <section class="toolbar" data-tour="message-actions">
+      <div></div>
+      ${hasCoachAccess() ? '<button class="primary-button" type="button" data-modal="message">New message</button>' : ""}
+    </section>
+    <div class="message-list" data-tour="messages-panel">
+      ${!visible.length && !parentNotifications.length ? '<section class="panel"><h2>No messages yet</h2><p class="muted">Club updates and register notifications will appear here.</p></section>' : ""}
+      ${parentNotifications.map((alert) => `
+        <article class="message-card parent-alert-message">
+          <div class="panel-title">
+            <div>
+              <p class="eyebrow">Register alert - ${escapeHtml(displayDate(alert.createdAt || alert.sentAt))}</p>
+              <h3>${escapeHtml(alert.title)}</h3>
+            </div>
+          </div>
+          <p>${escapeHtml(alert.body)}</p>
+        </article>
+      `).join("")}
+      ${visible.map((message) => `
+        <article class="message-card">
+          <div class="panel-title">
+            <div>
+              <p class="eyebrow">${escapeHtml(displayDate(message.createdAt))} - ${teamName(message.teamId)}</p>
+              <h3>${escapeHtml(message.title)}</h3>
+            </div>
+          </div>
+          <p>${escapeHtml(message.body)}</p>
+        </article>
+      `).join("")}
+    </div>
+  `;
+}
+
+function contactCoachesView() {
+  const queries = state.coachQueries
+    .filter((query) => query.parentUid === state.session.userId)
+    .sort(sortByCreatedAtDesc);
+  return `
+    <section class="content-grid two-col">
+      <article class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Parent message</p>
+            <h3>Contact the coaches</h3>
+          </div>
+          <span class="status-pill good">Private</span>
+        </div>
+        <p class="muted">Use this for queries, concerns or complaints that should go to the coaches rather than the team-wide message feed.</p>
+        <form class="stacked-form" data-form="coach-query">
+          <label class="field">
+            <span>Subject</span>
+            <input name="subject" required maxlength="90" placeholder="Short subject">
+          </label>
+          <label class="field">
+            <span>Message</span>
+            <textarea name="body" rows="7" required maxlength="1800" placeholder="Write your message for the coaches"></textarea>
+          </label>
+          <button class="primary-button" type="submit">Send to coaches</button>
+        </form>
+      </article>
+      <article class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Sent messages</p>
+            <h3>Your coach contact history</h3>
+          </div>
+        </div>
+        <div class="request-list">
+          ${queries.length ? queries.map(coachQueryRow).join("") : '<p class="muted">No coach messages sent yet.</p>'}
+        </div>
+      </article>
+    </section>
+  `;
+}
+
+function coachInboxView() {
+  const queries = state.coachQueries.slice().sort((a, b) => {
+    if ((a.status || "open") !== (b.status || "open")) return (a.status || "open") === "open" ? -1 : 1;
+    return sortByCreatedAtDesc(a, b);
+  });
+  const openCount = queries.filter((query) => (query.status || "open") === "open").length;
+  return `
+    <section class="toolbar">
+      <div>
+        <p class="eyebrow">Parent contact inbox</p>
+        <h2 class="section-heading">${openCount} open message${openCount === 1 ? "" : "s"}</h2>
+      </div>
+    </section>
+    <section class="message-list">
+      ${queries.length ? queries.map(coachQueryRow).join("") : `
+        <article class="panel">
+          <p class="eyebrow">Inbox clear</p>
+          <h3>No parent messages yet</h3>
+          <p class="muted">Messages sent from the parent Contact page will appear here.</p>
+        </article>
+      `}
+    </section>
+  `;
+}
+
+function coachQueryRow(query) {
+  const status = query.status || "open";
+  const created = displayDate(query.createdAt || query.updatedAt);
+  const parentLine = [query.parentName || "Parent", query.email].filter(Boolean).join(" - ");
+  return `
+    <article class="message-card coach-query-card">
+      <div class="panel-title">
+        <div>
+          <p class="eyebrow">${escapeHtml(created)}${parentLine ? ` - ${escapeHtml(parentLine)}` : ""}</p>
+          <h3>${escapeHtml(query.subject || "Parent message")}</h3>
+        </div>
+        <span class="status-pill ${statusClass(status)}">${statusText(status)}</span>
+      </div>
+      <p>${escapeHtml(query.body || "")}</p>
+      ${hasCoachAccess() ? `
+        <div class="inline-actions">
+          ${status !== "handled" ? `<button class="tiny-button approve" type="button" data-action="resolve-coach-query" data-query-id="${escapeHtml(query.id)}">Mark handled</button>` : ""}
+          <button class="tiny-button reject" type="button" data-action="delete-coach-query" data-query-id="${escapeHtml(query.id)}">Delete</button>
+        </div>
+      ` : ""}
+    </article>
+  `;
+}
+
+function coachesView() {
+  const contacts = appCoachContacts();
+  const tab = hasCoachAccess() ? state.coachSectionTab || "contacts" : "contacts";
+  return `
+    ${hasCoachAccess() ? `
+      <section class="toolbar">
+        <div>
+          <p class="eyebrow">Coach area</p>
+          <h2 class="section-heading">Contacts and library</h2>
+        </div>
+        <div class="segmented light">
+          <button type="button" class="${tab === "contacts" ? "active" : ""}" data-action="set-coach-section-tab" data-tab="contacts">Contacts</button>
+          <button type="button" class="${tab === "library" ? "active" : ""}" data-action="set-coach-section-tab" data-tab="library">Coach Library</button>
+        </div>
+      </section>
+    ` : ""}
+    ${tab === "library" ? coachLibraryView() : `
+    <section class="content-grid two-col">
+      <article class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Team contacts</p>
+            <h3>Coaches</h3>
+          </div>
+        </div>
+        <div class="coach-grid" data-tour="coach-contacts">
+          ${contacts.map(coachCard).join("")}
+        </div>
+      </article>
+      <article class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Contact guidance</p>
+            <h3>Parent contact rules</h3>
+          </div>
+        </div>
+        <div class="check-list">
+          <span>Use app messages for normal team updates.</span>
+          <span>Use Contact Coaches for private queries, concerns or complaints.</span>
+          <span>Use call or text for urgent fixture or pickup issues.</span>
+          <span>Coach numbers are visible only inside verified parent/coach access.</span>
+          <span>Email fields are left blank until the club confirms official addresses.</span>
+        </div>
+        ${!hasCoachAccess() ? '<button class="primary-button panel-action" type="button" data-route-target="contact">Contact coaches</button>' : ""}
+      </article>
+    </section>
+    `}
+  `;
+}
+
+function coachLibraryView() {
+  const category = state.coachDocumentCategory || "handbooks";
+  const docs = visibleCoachDocuments(category);
+  return `
+    <section class="toolbar documents-toolbar">
+      <div>
+        <p class="eyebrow">Coach only</p>
+        <h2 class="section-heading">Document library</h2>
+      </div>
+      <div class="document-controls">
+        <label class="field compact-field">
+          <span>Section</span>
+          <select data-action="set-coach-document-category">
+            ${coachDocumentCategories.map((item) => `<option value="${item.id}" ${item.id === category ? "selected" : ""}>${escapeHtml(item.label)}</option>`).join("")}
+          </select>
+        </label>
+        <button class="primary-button" type="button" data-modal="coach-document">Upload document</button>
+      </div>
+    </section>
+    <section class="document-grid">
+      ${docs.length ? docs.map(coachDocumentCard).join("") : `
+        <article class="panel">
+          <h3>No ${escapeHtml(coachDocumentCategoryLabel(category).toLowerCase())} yet</h3>
+          <p class="muted">Upload PDFs or Word files for coaches to use later.</p>
+        </article>
+      `}
+    </section>
+  `;
+}
+
+function coachDocumentCategoryLabel(category) {
+  return coachDocumentCategories.find((item) => item.id === category)?.label || "Coach Documents";
+}
+
+function visibleCoachDocuments(category = state.coachDocumentCategory || "handbooks") {
+  return (state.coachDocuments || [])
+    .filter((doc) => doc.status !== "deleted" && doc.category === category)
+    .sort((a, b) => createdTime(b) - createdTime(a) || documentTitle(a).localeCompare(documentTitle(b)));
+}
+
+function coachDocumentCard(doc) {
+  return `
+    <article class="document-card panel">
+      <div class="panel-title">
+        <div>
+          <p class="eyebrow">${escapeHtml(coachDocumentCategoryLabel(doc.category))} - ${escapeHtml(fileTypeLabel(doc))} - ${escapeHtml(formatFileSize(doc.size))}</p>
+          <h3>${escapeHtml(documentTitle(doc))}</h3>
+        </div>
+        <span class="status-pill good">Coach only</span>
+      </div>
+      <dl class="info-list compact-info">
+        <div><dt>File</dt><dd>${escapeHtml(doc.originalFileName || "Uploaded file")}</dd></div>
+        <div><dt>Shared</dt><dd>${escapeHtml(displayDate(doc.createdAt))}</dd></div>
+        <div><dt>Uploaded by</dt><dd>${escapeHtml(doc.uploadedByName || "Coach")}</dd></div>
+      </dl>
+      <div class="choice-row">
+        <button class="secondary-button" type="button" data-action="download-coach-document" data-document-id="${escapeHtml(doc.id)}">Download</button>
+        <button class="secondary-button danger-button" type="button" data-action="delete-coach-document" data-document-id="${escapeHtml(doc.id)}">Remove</button>
+      </div>
+    </article>
+  `;
+}
+
+function venuesView() {
+  const fixedVenues = appVenues().filter((venue) => venue.id !== "away-custom");
+  return `
+    <section class="toolbar">
+      <div>
+        <p class="eyebrow">Matchday places</p>
+        <h2 class="section-heading">Venues and parking</h2>
+      </div>
+      <button class="secondary-button" type="button" data-route-target="schedule">View fixtures</button>
+    </section>
+    <section class="venue-grid" data-tour="venue-list">
+      ${fixedVenues.map(venueCard).join("")}
+    </section>
+    <article class="panel">
+      <div class="panel-title">
+        <div>
+          <p class="eyebrow">Away games</p>
+          <h3>Typed away destination</h3>
+        </div>
+      </div>
+      <p class="muted">For one-off away fixtures, coaches can type the pitch name and address when creating or editing the fixture. The schedule will still show map buttons for parents.</p>
+    </article>
+  `;
+}
+
+function venueCard(venue) {
+  return `
+    <article class="venue-card">
+      <div class="panel-title">
+        <div>
+          <p class="eyebrow">${escapeHtml(venue.surface || "Venue")}</p>
+          <h3>${escapeHtml(venue.name)}</h3>
+        </div>
+      </div>
+      <p class="muted">${escapeHtml(venue.notes || "")}</p>
+      <div class="venue-location">
+        <strong>Pitch</strong>
+        <span>${escapeHtml(venue.address)}</span>
+      </div>
+      ${venue.parkingAddress ? `
+        <div class="venue-location">
+          <strong>Parking</strong>
+          <span>${escapeHtml(venue.parkingAddress)}</span>
+        </div>
+      ` : ""}
+      <div class="venue-media-grid">
+        ${venuePhoto("Pitch", venue.pitchImage)}
+        ${venuePhoto("Parking", venue.parkingImage)}
+      </div>
+      <div class="choice-row venue-actions">
+        ${venueMapActions(venue)}
+        ${hasCoachAccess() ? `<button class="secondary-button" type="button" data-modal="edit-venue" data-venue-id="${escapeHtml(venue.id)}">Edit venue</button>` : ""}
+      </div>
+    </article>
+  `;
+}
+
+function venuePhoto(label, imagePath) {
+  if (imagePath) {
+    return `
+      <figure class="venue-photo">
+        <img src="${escapeHtml(imagePath)}" alt="${escapeHtml(label)} photo">
+        <figcaption>${escapeHtml(label)}</figcaption>
+      </figure>
+    `;
+  }
+
+  return `
+    <figure class="venue-photo empty">
+      <img src="${crestPath}" alt="">
+      <figcaption>${escapeHtml(label)}</figcaption>
+    </figure>
+  `;
+}
+
+function coachCard(coach) {
+  const displayPhone = formatPhone(coach.phone);
+  const tel = phoneHref(coach.phone);
+  return `
+    <article class="coach-card">
+      <div class="coach-avatar">${escapeHtml(coach.name.slice(0, 1))}</div>
+      <div class="coach-copy">
+        <div class="panel-title">
+          <div>
+            <h3>${escapeHtml(coach.name)}</h3>
+            <p>${escapeHtml(coach.role)} - ${teamName(coach.teamId)}</p>
+          </div>
+          <span class="team-pill all">All teams</span>
+        </div>
+        <p class="phone-line">${escapeHtml(displayPhone)}</p>
+        <div class="contact-actions">
+          <a class="primary-button" href="tel:${tel}">Call</a>
+          <a class="secondary-link" href="sms:${tel}">Text</a>
+          ${hasCoachAccess() ? `<button class="secondary-button" type="button" data-modal="edit-coach" data-coach-id="${escapeHtml(coach.id)}">Edit</button>` : ""}
+        </div>
+      </div>
+    </article>
+  `;
+}
+
+function formatPhone(phone) {
+  const digits = String(phone || "").replace(/\D/g, "");
+  return digits.length === 11 ? digits.replace(/^(\d{5})(\d{3})(\d{3})$/, "$1 $2 $3") : phone;
+}
+
+function phoneHref(phone) {
+  const digits = String(phone || "").replace(/\D/g, "");
+  return digits.startsWith("0") ? `+44${digits.slice(1)}` : digits;
+}
+
+function accessView() {
+  return hasCoachAccess() ? coachAccessView() : parentAccessView();
+}
+
+function parentAccessView() {
+  const approved = approvedLinks();
+  const pending = pendingRequests();
+  return `
+    <section class="content-grid two-col">
+      <article class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Verified children</p>
+            <h3>${state.session.parentName || "Parent account"}</h3>
+          </div>
+        </div>
+        ${approved.length ? approved.map((link) => accessLinkRow(link)).join("") : '<p class="muted">No verified child links yet. Add your contact details, then send a child access request for a coach to approve.</p>'}
+        ${pending.length ? `<div class="divider"></div>${pending.map((request) => accessRequestRow(request)).join("")}` : ""}
+      </article>
+      ${parentProfileCard()}
+      <article class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Account security</p>
+            <h3>Change password</h3>
+          </div>
+          <span class="status-pill good">Firebase Auth</span>
+        </div>
+        <form class="stacked-form" data-form="change-password">
+          <label class="field">
+            <span>New password</span>
+            <input name="newPassword" type="password" minlength="6" required placeholder="Choose a new password">
+          </label>
+          <label class="field">
+            <span>Confirm password</span>
+            <input name="confirmPassword" type="password" minlength="6" required placeholder="Repeat password">
+          </label>
+          <button class="primary-button" type="submit">Update password</button>
+        </form>
+      </article>
+      <article class="panel danger-panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Account deletion</p>
+            <h3>Remove login account</h3>
+          </div>
+          <span class="status-pill warn">Review required</span>
+        </div>
+        <p class="muted">This asks the club to remove your app login and parent access. Historical player records are handled separately under the club data-retention policy.</p>
+        <button class="secondary-button danger-button" type="button" data-modal="account-deletion">Request account deletion</button>
+      </article>
+      <article class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Request access</p>
+            <h3>Link another child</h3>
+          </div>
+        </div>
+        <form class="stacked-form" data-form="request-access">
+          <label class="field">
+            <span>Child name</span>
+            <input name="childName" required placeholder="Child name">
+          </label>
+          <label class="field">
+            <span>Relationship</span>
+            <select name="relation"><option>Parent</option><option>Guardian</option><option>Carer</option></select>
+          </label>
+          <label class="check-row">
+            <input type="checkbox" name="consent" required>
+            <span>I have permission to request access to this child profile.</span>
+          </label>
+          <button class="primary-button" type="submit">Send request</button>
+        </form>
+      </article>
+    </section>
+  `;
+}
+
+function parentProfileCard() {
+  return `
+    <article class="panel">
+      <div class="panel-title">
+        <div>
+          <p class="eyebrow">Your contact details</p>
+          <h3>Parent profile</h3>
+        </div>
+        <span class="status-pill good">Self-edit</span>
+      </div>
+      <p class="muted">Keep your phone number current so coaches can contact you if plans change.</p>
+      <form class="stacked-form" data-form="parent-profile">
+        <label class="field">
+          <span>Name</span>
+          <input name="parentName" autocomplete="name" required value="${escapeHtml(state.session.parentName || "")}">
+        </label>
+        <label class="field">
+          <span>Phone number</span>
+          <input name="phone" type="tel" autocomplete="tel" value="${escapeHtml(formatPhone(state.session.phone || ""))}" placeholder="07123 456 789">
+        </label>
+        <label class="field">
+          <span>Email</span>
+          <input value="${escapeHtml(state.session.email || "")}" disabled>
+        </label>
+        <button class="primary-button" type="submit">Save contact details</button>
+      </form>
+    </article>
+  `;
+}
+
+function accessLinkRow(link) {
+  const player = activePlayers().find((item) => item.id === link.playerId);
+  return `
+    <div class="person-row">
+      <div>
+        <strong>${escapeHtml(player?.name || "Unknown child")}</strong>
+        <p>${escapeHtml(link.relation)} - ${player ? teamName(player.teamId) : "Team to confirm"}</p>
+      </div>
+      <span class="status-pill ${link.status === "approved" ? "good" : "warn"}">${escapeHtml(link.status || "unknown")}</span>
+      ${hasCoachAccess() && link.status === "approved" ? `<button type="button" class="tiny-button reject" data-action="revoke-parent-link" data-link-id="${escapeHtml(link.id)}">Revoke access</button>` : ""}
+    </div>
+  `;
+}
+
+function accessRequestRow(request) {
+  const player = activePlayers().find((item) => item.id === request.playerId);
+  return `
+    <div class="person-row">
+      <div>
+        <strong>${escapeHtml(player?.name || request.childName || "Child requested")}</strong>
+        <p>${escapeHtml(request.relation)}</p>
+      </div>
+      <span class="status-pill warn">Pending</span>
+    </div>
+  `;
+}
+
+function coachAccessView() {
+  const requests = state.accessRequests;
+  const appUsers = (state.session.isAdmin ? state.users : []).slice().sort((a, b) => (a.name || a.email || "").localeCompare(b.name || b.email || ""));
+  return `
+    <section class="content-grid two-col">
+      <article class="panel" data-tour="access-queue">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Parent verification</p>
+            <h3>${requests.filter((request) => request.status === "pending").length} pending</h3>
+          </div>
+        </div>
+        <div class="request-list">
+          ${requests.map((request) => coachRequestRow(request)).join("")}
+        </div>
+      </article>
+      <article class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Dual account switch</p>
+            <h3>Parent and coach accounts</h3>
+          </div>
+        </div>
+        <p class="muted">Turn this on only for known coaches who also need a parent account shortcut. Normal parents will only see Log out.</p>
+        <div class="request-list">
+          ${appUsers.length ? appUsers.map(userSwitchRow).join("") : '<p class="muted">No user accounts loaded yet.</p>'}
+        </div>
+      </article>
+      <article class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Approved links</p>
+            <h3>${state.parentLinks.length} active</h3>
+          </div>
+        </div>
+        ${state.parentLinks.map((link) => accessLinkRow(link)).join("")}
+      </article>
+      <article class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Verification flow</p>
+            <h3>How parents get access</h3>
+          </div>
+        </div>
+        <div class="check-list">
+          <span>Parent requests access to their child.</span>
+          <span>Coach checks the parent is known to the team.</span>
+          <span>Coach chooses the matching player and approves the link.</span>
+          <span>Parent uses their own Firebase email and password.</span>
+          <span>Once approved, the parent only sees their linked child.</span>
+        </div>
+      </article>
+    </section>
+  `;
+}
+
+function userSwitchRow(user) {
+  return `
+    <div class="person-row compact">
+      <div>
+        <strong>${escapeHtml(user.name || user.email || "Unnamed account")}</strong>
+        <p>${escapeHtml(user.email || "")} - ${escapeHtml(user.role || "no role")}</p>
+      </div>
+      <div class="inline-actions">
+        <span class="status-pill ${user.canSwitchPortal ? "good" : "warn"}">${user.canSwitchPortal ? "Switch on" : "Switch off"}</span>
+        <button class="tiny-button" type="button" data-action="toggle-dual-user" data-user-id="${escapeHtml(user.id)}" data-enabled="${user.canSwitchPortal ? "false" : "true"}">
+          ${user.canSwitchPortal ? "Disable" : "Enable"}
+        </button>
+        ${user.id !== state.session.userId && activeAccount(user) ? `<button class="tiny-button reject" type="button" data-action="revoke-user-access" data-user-id="${escapeHtml(user.id)}">Revoke access</button>` : ""}
+      </div>
+    </div>
+  `;
+}
+
+function coachRequestRow(request) {
+  const player = activePlayers().find((item) => item.id === request.playerId);
+  return `
+    <div class="person-row">
+      <div>
+        <strong>${escapeHtml(request.parentName)}</strong>
+        <p>${escapeHtml(player?.name || request.childName || "Child requested")} - ${escapeHtml(request.relation)}</p>
+        ${request.email ? `<p>${escapeHtml(request.email)}</p>` : ""}
+      </div>
+      <div class="inline-actions">
+        <span class="status-pill ${statusClass(request.status)}">${statusText(request.status)}</span>
+        ${request.status === "pending" ? `
+          <select class="tiny-select" data-request-player="${escapeHtml(request.id)}">
+            <option value="">Choose child</option>
+            ${activePlayers().map((item) => `<option value="${item.id}" ${item.id === request.playerId ? "selected" : ""}>${escapeHtml(item.name)} - ${teamName(item.teamId)}</option>`).join("")}
+          </select>
+          <button class="tiny-button approve" type="button" data-action="review-request" data-request-id="${request.id}" data-status="approved">Approve</button>
+          <button class="tiny-button reject" type="button" data-action="review-request" data-request-id="${request.id}" data-status="rejected">Reject</button>
+        ` : ""}
+        <button class="tiny-button reject" type="button" data-action="delete-access-request" data-request-id="${escapeHtml(request.id)}">Delete</button>
+      </div>
+    </div>
+  `;
+}
+
+function privacyView() {
+  return `
+    <section class="content-grid two-col">
+      <article class="panel privacy-panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Privacy notice</p>
+            <h3>Largs Colts 2016</h3>
+          </div>
+          <span class="status-pill good">Live</span>
+        </div>
+        ${privacyNoticeContent()}
+      </article>
+      ${hasCoachAccess() ? coachDataRequestsPanel() : parentDataRequestPanel()}
+    </section>
+  `;
+}
+
+function privacyNoticeContent() {
+  return `
+    <div class="privacy-copy">
+      <h4>Introduction</h4>
+      <p>Largs Colts 2016 uses a team management app to help organise training, matches, player availability, attendance, and team communication.</p>
+      <p>We are committed to protecting the privacy and security of players' and parents' personal information and handling data responsibly in line with UK data protection legislation.</p>
+
+      <h4>What Information We Collect</h4>
+      <p>Player information may include player name, date of birth or age group, team/squad information, attendance records, match and training availability, parent/guardian contact details, and app notification preferences.</p>
+      <p>Parent/guardian information may include name, email address, telephone number, and relationship to the player.</p>
+      <p>We aim to minimise the information collected and only request information necessary for running the team safely and effectively.</p>
+
+      <h4>Why We Use This Information</h4>
+      <ul>
+        <li>Organising training sessions and matches</li>
+        <li>Managing player availability and attendance</li>
+        <li>Communicating important team updates</li>
+        <li>Supporting player welfare and safeguarding</li>
+        <li>Managing team operations and administration</li>
+      </ul>
+
+      <h4>Lawful Basis</h4>
+      <p>Our lawful basis for processing this information is legitimate interests, as the data is necessary for the safe and effective management of the football team.</p>
+      <p>Where required, we may also rely on parental consent for certain communications or optional features.</p>
+
+      <h4>Who Can Access the Information</h4>
+      <p>Information is only accessible to authorised coaches and team administrators who require access for team management purposes.</p>
+      <p>We do not sell or share personal information with third parties for marketing purposes.</p>
+      <p>Information may be shared where necessary for football administration, fixture organisation, player registration, safeguarding, or legal obligations.</p>
+
+      <h4>Data Security</h4>
+      <p>We take reasonable steps to protect information held within the app, including restricted administrator access, password-protected accounts, and limiting access to relevant team officials only.</p>
+
+      <h4>How Long We Keep Information</h4>
+      <p>Information will only be retained for as long as reasonably necessary for team administration and safeguarding purposes.</p>
+      <p>Data relating to players who leave the club will be periodically reviewed and removed where no longer required.</p>
+
+      <h4>Your Rights</h4>
+      <ul>
+        <li>Request access to the information held about their child</li>
+        <li>Correct inaccurate information</li>
+        <li>Request deletion of information where appropriate</li>
+        <li>Raise concerns regarding how information is being used</li>
+      </ul>
+
+      <h4>Contact</h4>
+      <p>For questions, support, or data-related requests, please contact ${supportEmail ? `<a href="mailto:${escapeHtml(supportEmail)}">${escapeHtml(supportEmail)}</a>` : "your club coach using your usual club contact details"}.</p>
+    </div>
+  `;
+}
+
+function parentDataRequestPanel() {
+  const players = approvedPlayers();
+  const requests = state.dataRequests.filter((request) => request.parentUid === state.session.userId);
+  return `
+    <article class="panel">
+      <div class="panel-title">
+        <div>
+          <p class="eyebrow">Data request</p>
+          <h3>Remove or correct data</h3>
+        </div>
+      </div>
+      <p class="muted">Use this form for requests such as removing your child's data, checking what is held, correcting details, or raising a privacy concern.</p>
+      <form class="stacked-form" data-form="data-request">
+        <label class="field">
+          <span>Request type</span>
+          <select name="requestType">
+            <option value="delete">Remove my child's data</option>
+            <option value="access">Access information held</option>
+            <option value="correct">Correct inaccurate information</option>
+            <option value="concern">Raise a data concern</option>
+          </select>
+        </label>
+        ${players.length ? `
+          <label class="field">
+            <span>Child</span>
+            <select name="playerId">
+              <option value="">Choose child</option>
+              ${players.map((player) => `<option value="${player.id}">${escapeHtml(player.name)} - ${teamName(player.teamId)}</option>`).join("")}
+            </select>
+          </label>
+        ` : ""}
+        <label class="field">
+          <span>Child name</span>
+          <input name="childName" ${players.length ? "" : "required"} placeholder="Child name if not listed above">
+        </label>
+        <label class="field">
+          <span>Details</span>
+          <textarea name="details" rows="5" placeholder="Add any detail that will help coaches deal with the request"></textarea>
+        </label>
+        <button class="primary-button" type="submit">Send data request</button>
+      </form>
+      <div class="divider"></div>
+      <div class="request-list">
+        ${requests.length ? requests.map(dataRequestRow).join("") : '<p class="muted">No data requests submitted yet.</p>'}
+      </div>
+    </article>
+  `;
+}
+
+function coachDataRequestsPanel() {
+  const requests = state.dataRequests.slice().sort(sortByCreatedAtDesc);
+  return `
+    <article class="panel">
+      <div class="panel-title">
+        <div>
+          <p class="eyebrow">Parent data requests</p>
+          <h3>${requests.filter((request) => request.status === "pending").length} pending</h3>
+        </div>
+      </div>
+      <p class="muted">Review requests with the coaches/admins before deleting or changing any child record, especially where safeguarding or football administration records may need to be retained.</p>
+      <div class="request-list">
+        ${requests.length ? requests.map(dataRequestRow).join("") : '<p class="muted">No parent data requests yet.</p>'}
+      </div>
+    </article>
+  `;
+}
+
+function dataRequestRow(request) {
+  const player = activePlayers().find((item) => item.id === request.playerId);
+  const typeText = {
+    delete: "Remove data",
+    access: "Access data",
+    correct: "Correct data",
+    concern: "Data concern",
+  }[request.requestType] || request.requestType || "Data request";
+  return `
+    <div class="person-row">
+      <div>
+        <strong>${escapeHtml(typeText)} - ${escapeHtml(player?.name || request.childName || "Child")}</strong>
+        <p>${escapeHtml(request.parentName || "Parent")} - ${escapeHtml(request.email || "")}</p>
+        ${request.details ? `<p>${escapeHtml(request.details)}</p>` : ""}
+      </div>
+      <div class="inline-actions">
+        <span class="status-pill ${request.status === "resolved" ? "good" : "warn"}">${request.status === "resolved" ? "Resolved" : "Pending"}</span>
+        ${hasCoachAccess() && request.status !== "resolved" ? `<button class="tiny-button approve" type="button" data-action="resolve-data-request" data-request-id="${escapeHtml(request.id)}">Mark resolved</button>` : ""}
+        ${hasCoachAccess() ? `<button class="tiny-button reject" type="button" data-action="delete-data-request" data-request-id="${escapeHtml(request.id)}">Delete</button>` : ""}
+      </div>
+    </div>
+  `;
+}
+
+function guideView() {
+  return `
+    <section class="content-grid two-col">
+      <article class="panel parent-guide-panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">How to use the app</p>
+            <h3>Parent quick start</h3>
+          </div>
+          <span class="status-pill good">Parent guide</span>
+        </div>
+        <div class="guide-steps">
+          <div><strong>1. Sign in</strong><p>Use your own email and password. If you forget it, use the Forgot password button on the sign-in screen.</p></div>
+          <div><strong>2. Request your child</strong><p>Ask for access to your child once. A coach checks the request before player details appear.</p></div>
+          <div><strong>3. Mark availability</strong><p>Open Availability, choose the event, then tap Available or Unavailable. For fixtures you can also offer lifts.</p></div>
+          <div><strong>4. Check venues</strong><p>Use Schedule or Venues for pitch, parking, Google Maps and Apple Maps links.</p></div>
+          <div><strong>5. Read messages</strong><p>The message badge clears after you open Messages. Parent alerts for register updates and collection also appear there.</p></div>
+          <div><strong>6. Contact coaches</strong><p>Use Contact for private queries, concerns or complaints that should go to the coach inbox.</p></div>
+          <div><strong>7. Keep details current</strong><p>Use Access to update your own name and phone number, or Privacy to request a correction or removal of data.</p></div>
+        </div>
+      </article>
+      <article class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Need help?</p>
+            <h3>Support and privacy</h3>
+          </div>
+        </div>
+        <div class="check-list">
+          <span>For app support, contact ${escapeHtml(supportEmail || "your club coach")}.</span>
+          <span>Only approved coaches and team admins can see child records.</span>
+          <span>Parents only see linked children approved by a coach.</span>
+          <span>You can request data removal or corrections from the Privacy page.</span>
+        </div>
+      </article>
+    </section>
+  `;
+}
+
+function installView() {
+  const appUrl = `${window.location.origin}${window.location.pathname}`;
+  const backendEnabled = Boolean(backendConfig.enabled);
+  return `
+    <section class="content-grid two-col">
+      <article class="panel install-panel" data-tour="install-panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Mobile test link</p>
+            <h3>Install on phone</h3>
+          </div>
+        </div>
+        <div class="link-box">${escapeHtml(appUrl)}</div>
+        <div class="choice-row">
+          <button class="primary-button" type="button" data-action="copy-link" data-copy="${escapeHtml(appUrl)}">Copy link</button>
+          <a class="secondary-link" href="dist/largs-colts-2016s-pwa.zip" download>Download package</a>
+        </div>
+      </article>
+      <article class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Live backend</p>
+            <h3>${backendEnabled ? "Firebase connected" : "Firebase config needed"}</h3>
+          </div>
+          <span class="status-pill ${backendEnabled ? "good" : "warn"}">${backendEnabled ? "Ready" : "Setup"}</span>
+        </div>
+        <p class="muted">Support contact: ${escapeHtml(supportEmail || "your club coach")}</p>
+        <p class="muted">${backendEnabled ? "You can request push permission on this device." : "Add your Firebase web config and VAPID key in firebase-config.js before real login and push testing."}</p>
+        <div class="choice-row">
+          <button class="primary-button" type="button" data-action="enable-push">Enable push on this device</button>
+          <a class="secondary-link" href="FIREBASE-SETUP.md" target="_blank" rel="noreferrer">Firebase setup guide</a>
+        </div>
+      </article>
+      <article class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Before parent rollout</p>
+            <h3>Firebase hardening</h3>
+          </div>
+          <span class="status-pill warn">Owner checks</span>
+        </div>
+        <div class="check-list">
+          <span>Budget alerts set in Google Cloud Billing</span>
+          <span>Latest Firestore rules deployed</span>
+          <span>Only coaches/admins can write players, fixtures, venues and protected records</span>
+          <span>Old test access requests and data requests cleared</span>
+          <span>App Check reviewed before wide parent rollout</span>
+          <span>Service account files kept off GitHub</span>
+        </div>
+      </article>
+      <article class="panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Release status</p>
+            <h3>Parent test build</h3>
+          </div>
+        </div>
+        <div class="check-list">
+          <span>Exact club crest loaded</span>
+          <span>Firebase email and password login active</span>
+          <span>Coach and parent routes separated by Firestore role</span>
+          <span>Coach parent verification queue writes to Firestore</span>
+          <span>Parents can change their Firebase password</span>
+          <span>Full roster and teams seeded into Firestore</span>
+          <span>Fixtures and training stored in Firestore</span>
+          <span>Availability and register data stored per event in Firestore</span>
+          <span>Announcements trigger parent push notifications</span>
+          <span>Home, 3G, Barrfields and typed away venues loaded</span>
+          <span>Google Maps and Apple Maps buttons added</span>
+          <span>Venue page includes pitch, parking and photo spaces</span>
+          <span>Upcoming and past event archive added</span>
+          <span>Fixture result fields added for completed matches</span>
+          <span>Cleaner fixture cards with directions tucked into one button</span>
+          <span>Parents can offer lifts on fixture availability</span>
+          <span>Privacy notice and parent data request process added</span>
+          <span>Parent self-edit added for name and phone number</span>
+          <span>Forgot password reset added to coach and parent sign-in</span>
+          <span>Parent how-to-use guide added</span>
+          <span>Coach contacts can now be updated in the app</span>
+          <span>Venues, pitch pins, parking pins and photo paths can now be updated in the app</span>
+          <span>Coach-only player development ratings added</span>
+          <span>Coach-only 7-a-side and 9-a-side squad whiteboard added</span>
+          <span>Coach-only live whiteboard collaboration added</span>
+          <span>Coach-only Player of the Week trophy tracker added</span>
+          <span>Coach-only match results and player stats added</span>
+          <span>Register page live attendance count added</span>
+          <span>Firestore rules tightened for parent-safe writes</span>
+          <span>Coach contacts added with call and text links</span>
+          <span>App icons and red splash screen ready for mobile wrapping</span>
+          <span>Capacitor config ready for iOS and Android wrapping</span>
+        </div>
+      </article>
+    </section>
+  `;
+}
+
+function modalView() {
+  if (!state.modal) return "";
+  const type = state.modal.type;
+  return `
+    <div class="modal-backdrop ${type === "mobile-nav" ? "mobile-nav-backdrop" : ""}" data-action="close-modal">
+      <section class="modal ${type === "mobile-nav" ? "mobile-nav-modal" : ""}" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <button class="modal-close" type="button" data-action="close-modal" aria-label="Close">x</button>
+        ${state.error ? errorBanner() : ""}
+        ${modalContent(type)}
+      </section>
+    </div>
+  `;
+}
+
+function modalContent(type) {
+  if (type === "event") return eventModal();
+  if (type === "edit-event") return eventModal(state.modal.eventId);
+  if (type === "directions") return directionsModal(state.modal.eventId, state.modal.mode);
+  if (type === "message") return messageModal();
+  if (type === "document") return documentModal();
+  if (type === "coach-document") return coachDocumentModal();
+  if (type === "player") return playerModal();
+  if (type === "move-player") return movePlayerModal(state.modal.playerId);
+  if (type === "edit-player") return editPlayerModal(state.modal.playerId);
+  if (type === "edit-coach") return editCoachModal(state.modal.coachId);
+  if (type === "edit-venue") return editVenueModal(state.modal.venueId);
+  if (type === "edit-builder-slot") return editBuilderSlotModal(state.modal.slotId);
+  if (type === "mobile-nav") return mobileNavModal();
+  if (type === "account-deletion") return accountDeletionModal();
+  return "";
+}
+
+function accountDeletionModal() {
+  return `
+    <p class="eyebrow">Account deletion</p>
+    <h2 id="modal-title">Request login account deletion</h2>
+    <p class="muted">This sends a deletion request to the coaches/admins. It covers your app login and parent access links. It does not automatically erase historical club records that may need to be retained for safeguarding or administration.</p>
+    <form class="stacked-form" data-form="account-deletion">
+      <label class="field">
+        <span>Reason or details</span>
+        <textarea name="details" rows="4" placeholder="Optional details for the club admin"></textarea>
+      </label>
+      <label class="field">
+        <span>Type DELETE to confirm</span>
+        <input name="confirmText" autocomplete="off" autocapitalize="characters" required placeholder="DELETE">
+      </label>
+      <button class="danger-button" type="submit">Send deletion request</button>
+    </form>
+  `;
+}
+
+function mobileNavModal() {
+  const pendingOnly = state.session.role === "parent" && !approvedPlayers().length;
+  const hidden = mobileMenuRoutes(navRoutes(pendingOnly));
+  return `
+    <p class="eyebrow">Navigation</p>
+    <h2 id="modal-title">More sections</h2>
+    ${navigationGroups(hidden).map((group) => `<section class="navigation-group"><h3>${group.title}</h3><div class="mobile-menu-grid">
+      ${group.items.map((item) => `
+        <button class="mobile-menu-link ${state.route === item.id ? "active" : ""}" type="button" data-route-target="${item.id}">
+          <span class="nav-mark">${escapeHtml(item.mark || item.label.slice(0, 1))}</span>
+          <span>${escapeHtml(item.label)}</span>
+        </button>
+      `).join("")}
+    </div></section>`).join("")}
+  `;
+}
+
+function editBuilderSlotModal(slotId = "") {
+  const slot = starterSlots().find((item) => item.id === slotId);
+  if (!slot) {
+    return `
+      <p class="eyebrow">Formation marker</p>
+      <h2 id="modal-title">Position not found</h2>
+      <p class="muted">Close this and try the formation board again.</p>
+    `;
+  }
+  return `
+    <p class="eyebrow">Formation marker</p>
+    <h2 id="modal-title">Edit ${escapeHtml(slot.label)}</h2>
+    <form class="stacked-form" data-form="edit-builder-slot">
+      <input type="hidden" name="slotId" value="${escapeHtml(slot.id)}">
+      <label class="field">
+        <span>Role</span>
+        <select name="position">${playerPositions.map((position) => `<option value="${escapeHtml(position)}" ${position === slot.position ? "selected" : ""}>${escapeHtml(position)}</option>`).join("")}</select>
+      </label>
+      <label class="field">
+        <span>Short label</span>
+        <input name="label" maxlength="8" value="${escapeHtml(slot.label)}" placeholder="${escapeHtml(shortLabelForPosition(slot.position))}">
+      </label>
+      <p class="muted">The role is used by Auto fill to match suitable players. The short label is what appears on the pitch marker.</p>
+      <button class="primary-button" type="submit">Save position</button>
+      <button class="secondary-button" type="button" data-action="clear-builder-slot" data-slot-id="${escapeHtml(slot.id)}">Clear player from ${escapeHtml(slot.label)}</button>
+    </form>
+  `;
+}
+
+function directionsModal(eventId = "", mode = "single") {
+  const event = state.events.find((item) => item.id === eventId);
+  const items = directionsEventsForModal(event, mode);
+  const fallbackVenue = event ? eventVenue(event) : venueById("bowencraig");
+  const title = items.length > 1
+    ? `${formatDateOnly(event.datetime)} fixtures`
+    : items[0]?.title || fallbackVenue.name;
+  return `
+    <p class="eyebrow">Matchday directions</p>
+    <h2 id="modal-title">${escapeHtml(title)}</h2>
+    ${items.map((item) => {
+      const venue = eventVenue(item);
+      return `
+      <div class="directions-panel">
+        <div class="venue-location">
+          <strong>${escapeHtml(item.title || venue.name)}</strong>
+          <span>${eventDateLine(item, venue)}</span>
+        </div>
+        <div class="venue-location">
+          <strong>Pitch</strong>
+          <span>${escapeHtml(venue.address)}</span>
+        </div>
+        ${venue.parkingAddress ? `
+          <div class="venue-location">
+            <strong>Parking</strong>
+            <span>${escapeHtml(venue.parkingAddress)}</span>
+          </div>
+        ` : ""}
+        <div class="direction-actions">
+          ${venueMapActions(venue)}
+        </div>
+      </div>
+    `;
+    }).join("")}
+  `;
+}
+
+function directionsEventsForModal(event, mode = "single") {
+  if (!event) return [];
+  if (mode === "availability" && !hasCoachAccess()) {
+    const child = currentPlayer();
+    const selectedFixture = child ? selectedFixtureForPlayer(event, child.id) : null;
+    if (selectedFixture) return [selectedFixture];
+    const fixtures = eventsForAvailabilityDate(event);
+    return fixtures.length ? fixtures : [event];
+  }
+  return [event];
+}
+
+function eventModal(eventId = "") {
+  const event = state.events.find((item) => item.id === eventId);
+  const editing = Boolean(event);
+  const venueChoices = appVenues();
+  const venue = event ? eventVenue(event) : venueChoices[0];
+  const selectedVenueId = event?.venueId || venue.id;
+  const isAway = selectedVenueId === "away-custom";
+  const type = event?.type || "Fixture";
+  const teamId = normalizeEventTeamId(event?.teamId || "all");
+  const opponent = type === "Fixture" ? event?.opponent || "" : event?.title || "";
+  const date = dateValue(event?.datetime);
+  const startTime = event?.timeTbc ? "" : timeValue(event?.datetime) || "";
+  const finishTime = event?.finishTime || "";
+  const meetTime = event?.meetTime || "";
+  const kit = event?.kit || "TBC";
+  const homeScore = event?.homeScore ?? "";
+  const awayScore = event?.awayScore ?? "";
+  const resultNotes = event?.resultNotes || "";
+  return `
+    <p class="eyebrow">Coach action</p>
+    <h2 id="modal-title">${editing ? "Edit fixture/training" : "Add fixture/training"}</h2>
+    <form class="stacked-form" data-form="${editing ? "edit-event" : "event"}">
+      ${editing ? `<input type="hidden" name="eventId" value="${escapeHtml(event.id)}">` : ""}
+      <label class="field"><span>Type</span><select name="type" data-action="event-type-choice"><option value="Fixture" ${type === "Fixture" ? "selected" : ""}>Match</option><option ${type === "Training" ? "selected" : ""}>Training</option><option ${type === "Free Week" ? "selected" : ""}>Free Week</option></select></label>
+      <label class="field"><span>Team</span><select name="teamId"><option value="all" ${teamId === "all" ? "selected" : ""}>All teams</option>${eventTeamOptions().map((team) => `<option value="${team.id}" ${team.id === normalizeTeamId(teamId) ? "selected" : ""}>${team.name}</option>`).join("")}</select></label>
+      <label class="field" data-event-opponent><span>Opponent</span><input name="opponent" required value="${escapeHtml(type === 'Training' ? '' : opponent)}" placeholder="Kilwinning Rangers"></label>
+      <label class="field" data-training-title hidden><span>Session title (optional)</span><input name="trainingTitle" value="${escapeHtml(type === 'Training' ? event?.title || '' : '')}" placeholder="Training"></label>
+      <label class="field"><span>Date</span><input name="date" type="date" required value="${escapeHtml(date)}"></label>
+      <label class="field"><span>Start time</span><select name="startTime">${timeOptions(startTime, true)}</select></label>
+      <label class="field" data-match-field><span>Finish time</span><select name="finishTime">${timeOptions(finishTime, true)}</select></label>
+      <label class="field" data-match-field><span>Report time</span><select name="meetTime">${timeOptions(meetTime, true)}</select></label>
+      <label class="field" data-match-field><span>Kit</span><select name="kit">${kitOptions.map((option) => `<option value="${option}" ${option === kit ? "selected" : ""}>${option}</option>`).join("")}</select></label>
+      <label class="field" data-match-field><span>Fixture location</span><select name="homeAway"><option value="home" ${event?.homeAway === "home" || (!event?.homeAway && !isAway) ? "selected" : ""}>Home</option><option value="away" ${event?.homeAway === "away" || (!event?.homeAway && isAway) ? "selected" : ""}>Away</option></select></label>
+      <label class="field"><span>Venue</span><select name="venueId" data-action="venue-choice"><option value="tbc" ${event?.venueTbc ? "selected" : ""}>Venue TBC</option>${venueChoices.map((item) => `<option value="${item.id}" ${!event?.venueTbc && item.id === selectedVenueId ? "selected" : ""}>${item.name}</option>`).join("")}</select></label>
+      <div class="away-fields" data-away-fields ${isAway ? "" : "hidden"}>
+        <label class="field"><span>Away venue name</span><input name="customVenue" value="${escapeHtml(isAway ? venue.name : "")}" placeholder="Bellfield Estate"></label>
+        <label class="field"><span>Away address</span><input name="customAddress" value="${escapeHtml(isAway ? venue.address : "")}" placeholder="Bellfield Estate, Kilmarnock KA1 3XG"></label>
+      </div>
+      <div class="result-fields" data-result-fields ${type === "Fixture" ? "" : "hidden"}>
+        <p class="eyebrow">Result after match</p>
+        <div class="score-fields">
+          <label class="field"><span>Largs score</span><input name="homeScore" type="number" min="0" inputmode="numeric" value="${escapeHtml(homeScore)}" placeholder="0"></label>
+          <label class="field"><span>Opposition score</span><input name="awayScore" type="number" min="0" inputmode="numeric" value="${escapeHtml(awayScore)}" placeholder="0"></label>
+        </div>
+        <label class="field"><span>Result notes</span><input name="resultNotes" value="${escapeHtml(resultNotes)}" placeholder="Optional match note"></label>
+      </div>
+      <label class="field"><span>Notes</span><input name="notes" value="${escapeHtml(event?.notes || "")}" placeholder="Home kit, bring water"></label>
+      <label class="check-row">
+        <input name="notifyParents" type="checkbox" checked>
+        <span>${editing ? "Notify parents about this schedule change" : "Notify parents about this new schedule item"}</span>
+      </label>
+      <button class="primary-button" type="submit">${editing ? "Save changes" : "Add fixture/training"}</button>
+    </form>
+  `;
+}
+
+function messageModal() {
+  return `
+    <p class="eyebrow">Coach action</p>
+    <h2 id="modal-title">Send message</h2>
+    <form class="stacked-form" data-form="message">
+      <label class="field"><span>Send to</span><select name="teamId"><option value="all">All teams</option>${eventTeamOptions().map((team) => `<option value="${team.id}">${team.name}</option>`).join("")}</select></label>
+      <label class="field"><span>Title</span><input name="title" required placeholder="Training update"></label>
+      <label class="field"><span>Message</span><textarea name="body" rows="5" required placeholder="Message for parents"></textarea></label>
+      <button class="primary-button" type="submit">Send message</button>
+    </form>
+  `;
+}
+
+function documentModal() {
+  const players = activePlayers();
+  return `
+    <p class="eyebrow">Coach documents</p>
+    <h2 id="modal-title">Upload player document</h2>
+    <form class="stacked-form" data-form="player-document">
+      <label class="field">
+        <span>Audience</span>
+        <select name="audience" data-action="document-audience-choice">
+          <option value="player">Specific child</option>
+          <option value="team">One team</option>
+          <option value="all">All players and parents</option>
+        </select>
+      </label>
+      <label class="field" data-document-player-field>
+        <span>Player profile</span>
+        <select name="playerId">
+          <option value="">Choose player</option>
+          ${players.map((player) => `<option value="${player.id}">${escapeHtml(player.name)} - ${teamName(player.teamId)}</option>`).join("")}
+        </select>
+      </label>
+      <label class="field document-audience-fields" data-document-team-field hidden>
+        <span>Team</span>
+        <select name="teamId">
+          ${eventTeamOptions().map((team) => `<option value="${team.id}">${escapeHtml(team.name)}</option>`).join("")}
+        </select>
+      </label>
+      <label class="field">
+        <span>Document title</span>
+        <input name="title" required placeholder="Right Back Handbook">
+      </label>
+      <label class="field">
+        <span>PDF or Word file</span>
+        <input name="documentFile" type="file" accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" required>
+      </label>
+      <p class="muted">Parents can only see documents linked to an approved child account. Shared documents are sent to the approved parents in the chosen audience.</p>
+      <button class="primary-button" type="submit">Upload and share</button>
+    </form>
+  `;
+}
+
+function coachDocumentModal() {
+  const category = state.coachDocumentCategory || "handbooks";
+  return `
+    <p class="eyebrow">Coach library</p>
+    <h2 id="modal-title">Upload coach document</h2>
+    <form class="stacked-form" data-form="coach-document">
+      <label class="field">
+        <span>Section</span>
+        <select name="category" required>
+          ${coachDocumentCategories.map((item) => `<option value="${item.id}" ${item.id === category ? "selected" : ""}>${escapeHtml(item.label)}</option>`).join("")}
+        </select>
+      </label>
+      <label class="field">
+        <span>Document title</span>
+        <input name="title" required placeholder="Pressing drill plan">
+      </label>
+      <label class="field">
+        <span>PDF or Word file</span>
+        <input name="documentFile" type="file" accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" required>
+      </label>
+      <p class="muted">Coach library documents are visible only to coach/admin accounts.</p>
+      <button class="primary-button" type="submit">Upload to coach library</button>
+    </form>
+  `;
+}
+
+function playerModal() {
+  return `
+    <p class="eyebrow">Coach action</p>
+    <h2 id="modal-title">Add player</h2>
+    <form class="stacked-form" data-form="player">
+      <label class="field"><span>Name</span><input name="name" required placeholder="Player name"></label>
+      <label class="field"><span>Team</span><select name="teamId">${playerTeamOptions().map((team) => `<option value="${team.id}" ${team.id === "unassigned" ? "selected" : ""}>${team.name}</option>`).join("")}</select></label>
+      <label class="field"><span>Position</span><input name="role" placeholder="Unassigned"></label>
+      <label class="field"><span>Parent name</span><input name="parentName" placeholder="Can be added later"></label>
+      <label class="field"><span>Parent phone</span><input name="parentPhone" placeholder="Can be added later"></label>
+      <button class="primary-button" type="submit">Add player</button>
+    </form>
+  `;
+}
+
+function movePlayerModal(playerId) {
+  const player = activePlayers().find((item) => item.id === playerId);
+  return `
+    <p class="eyebrow">Coach action</p>
+    <h2 id="modal-title">Move ${escapeHtml(player?.name || "player")}</h2>
+    <form class="stacked-form" data-form="move-player">
+      <input type="hidden" name="playerId" value="${escapeHtml(playerId)}">
+      <label class="field"><span>Team</span><select name="teamId">${playerTeamOptions().map((team) => `<option value="${team.id}" ${team.id === normalizeTeamId(player?.teamId) ? "selected" : ""}>${team.name}</option>`).join("")}</select></label>
+      <button class="primary-button" type="submit">Move player</button>
+    </form>
+  `;
+}
+
+function editPlayerModal(playerId) {
+  const player = activePlayers().find((item) => item.id === playerId);
+  return `
+    <p class="eyebrow">Coach action</p>
+    <h2 id="modal-title">Edit ${escapeHtml(player?.name || "player")}</h2>
+    <form class="stacked-form" data-form="edit-player">
+      <input type="hidden" name="playerId" value="${escapeHtml(playerId)}">
+      <label class="field"><span>Name</span><input name="name" required value="${escapeHtml(player?.name || "")}"></label>
+      <label class="field"><span>Team</span><select name="teamId">${playerTeamOptions().map((team) => `<option value="${team.id}" ${team.id === normalizeTeamId(player?.teamId) ? "selected" : ""}>${team.name}</option>`).join("")}</select></label>
+      <label class="field"><span>Position</span><input name="role" value="${escapeHtml(player?.role || "Unassigned")}"></label>
+      <label class="field"><span>Parent name</span><input name="parentName" value="${escapeHtml(player?.parentName || placeholderParent)}"></label>
+      <label class="field"><span>Parent phone</span><input name="parentPhone" value="${escapeHtml(player?.parentPhone || placeholderPhone)}"></label>
+      ${coachPlayerProfileMetrics(player)}
+      <button class="primary-button" type="submit">Save player</button>
+    </form>
+  `;
+}
+
+function editCoachModal(coachId) {
+  const coach = appCoachContacts().find((item) => item.id === coachId) || appCoachContacts()[0] || {};
+  return `
+    <p class="eyebrow">Coach admin</p>
+    <h2 id="modal-title">Edit coach contact</h2>
+    <form class="stacked-form" data-form="edit-coach">
+      <input type="hidden" name="coachId" value="${escapeHtml(coach.id || coachId || "")}">
+      <label class="field"><span>Name</span><input name="name" required value="${escapeHtml(coach.name || "")}"></label>
+      <label class="field"><span>Team</span><select name="teamId"><option value="all" ${coach.teamId === "all" ? "selected" : ""}>All teams</option>${eventTeamOptions().map((team) => `<option value="${team.id}" ${team.id === normalizeTeamId(coach.teamId) ? "selected" : ""}>${team.name}</option>`).join("")}</select></label>
+      <label class="field"><span>Role</span><input name="role" required value="${escapeHtml(coach.role || "Coach")}"></label>
+      <label class="field"><span>Phone</span><input name="phone" type="tel" value="${escapeHtml(formatPhone(coach.phone || ""))}" placeholder="07123 456 789"></label>
+      <label class="field"><span>Email</span><input name="email" type="email" value="${escapeHtml(coach.email || "")}" placeholder="Optional"></label>
+      <button class="primary-button" type="submit">Save coach contact</button>
+    </form>
+  `;
+}
+
+function editVenueModal(venueId) {
+  const venue = venueById(venueId);
+  return `
+    <p class="eyebrow">Venue admin</p>
+    <h2 id="modal-title">Edit venue</h2>
+    <form class="stacked-form" data-form="edit-venue">
+      <input type="hidden" name="venueId" value="${escapeHtml(venue.id || venueId || "")}">
+      <label class="field"><span>Name</span><input name="name" required value="${escapeHtml(venue.name || "")}"></label>
+      <label class="field"><span>Pitch address or map pin</span><input name="address" required value="${escapeHtml(venue.address || "")}"></label>
+      <label class="field"><span>Parking address or map pin</span><input name="parkingAddress" value="${escapeHtml(venue.parkingAddress || "")}"></label>
+      <label class="field"><span>Surface</span><input name="surface" value="${escapeHtml(venue.surface || "")}" placeholder="Grass pitch"></label>
+      <label class="field"><span>Notes</span><textarea name="notes" rows="3" placeholder="Useful parent information">${escapeHtml(venue.notes || "")}</textarea></label>
+      <label class="field"><span>Pitch photo path or URL</span><input name="pitchImage" value="${escapeHtml(venue.pitchImage || "")}" placeholder="assets/venues/bowencraig-pitch.jpg"></label>
+      <label class="field"><span>Parking photo path or URL</span><input name="parkingImage" value="${escapeHtml(venue.parkingImage || "")}" placeholder="assets/venues/bowencraig-parking.jpg"></label>
+      <button class="primary-button" type="submit">Save venue</button>
+    </form>
+  `;
+}
+
+function bindFormDefaults() {
+  toggleAwayFields();
+  toggleResultFields();
+  toggleDocumentAudienceFields();
+}
+
+function toggleAwayFields() {
+  const venueChoice = $('[data-action="venue-choice"]');
+  const awayFields = $('[data-away-fields]');
+  if (!venueChoice || !awayFields) return;
+  const form = venueChoice.form;
+  const training = form?.elements.type?.value === 'Training';
+  const custom = venueChoice.value === 'away-custom' && form?.elements.type?.value !== 'Free Week';
+  awayFields.hidden = !custom;
+  awayFields.querySelectorAll('input').forEach(input => {
+    input.disabled = !custom;
+    input.required = custom && training && input.name === "customVenue";
+    input.closest('label').querySelector('span').textContent = input.name === 'customVenue' ? (training ? 'Venue name' : 'Away venue name') : (training ? 'Venue address (optional)' : 'Away address');
+  });
+}
+
+function toggleResultFields() {
+  const typeChoice = $('[data-action="event-type-choice"]');
+  const resultFields = $('[data-result-fields]');
+  if (!typeChoice || !resultFields) return;
+  const form = typeChoice.form;
+  const training = typeChoice.value === 'Training';
+  const match = typeChoice.value === 'Fixture';
+  const showFields = (node, visible) => {
+    node.hidden = !visible;
+    node.querySelectorAll('input,select,textarea').forEach(input => input.disabled = !visible);
+  };
+  showFields(form.querySelector('[data-event-opponent]'), !training);
+  form.elements.opponent.required = !training;
+  form.querySelector('[data-event-opponent] span').textContent = match ? 'Opponent' : 'Title';
+  showFields(form.querySelector('[data-training-title]'), training);
+  form.querySelectorAll('[data-match-field]').forEach(node => showFields(node, match));
+  showFields(resultFields, match);
+  form.elements.startTime.required = training;
+  form.elements.startTime.options[0].textContent = training ? 'Select start time' : 'TBC / not set';
+  form.elements.venueId.required = training;
+  const customOption = form.elements.venueId.querySelector('[value="away-custom"]');
+  if (customOption) customOption.textContent = training ? 'Other venue' : 'Away destination';
+  form.elements.venueId.querySelector('[value="tbc"]').disabled = training;
+  form.elements.venueId.setCustomValidity(training && form.elements.venueId.value === 'tbc' ? 'Choose a training venue.' : '');
+  toggleAwayFields();
+}
+
+function toggleDocumentAudienceFields() {
+  const audienceChoice = $('[data-action="document-audience-choice"]');
+  if (!audienceChoice) return;
+  const form = audienceChoice.closest("form");
+  const playerField = $('[data-document-player-field]', form);
+  const teamField = $('[data-document-team-field]', form);
+  if (playerField) playerField.hidden = audienceChoice.value !== "player";
+  if (teamField) teamField.hidden = audienceChoice.value !== "team";
+}
+
+document.addEventListener("click", async (event) => {
+  const target = event.target.closest("[data-action], [data-route], [data-route-target], [data-modal]");
+  if (!target) return;
+
+  const backdropClick = event.target.classList.contains("modal-backdrop");
+  const action = target.dataset.action;
+
+  if (action === 'set-results-mode') {
+    state.resultsMode = target.dataset.mode;
+    render();
+    document.querySelector('.results-mode')?.scrollIntoView({ block: 'nearest' });
+    return;
+  }
+  if (action === "toggle-player-pool") {
+    state.whiteboardPoolOpen = !state.whiteboardPoolOpen;
+    render();
+    document.querySelector('[data-action="toggle-player-pool"]')?.focus({ preventScroll: true });
+    return;
+  }
+
+  if (target.dataset.route) {
+    event.preventDefault();
+    navigateToRoute(target.dataset.route);
+    delete state.modal;
+    if (state.route === "messages") await markMessagesRead();
+    saveState();
+    render();
+    return;
+  }
+
+  if (target.dataset.routeTarget) {
+    navigateToRoute(target.dataset.routeTarget);
+    delete state.modal;
+    if (state.route === "messages") await markMessagesRead();
+    saveState();
+    render();
+    return;
+  }
+
+  if (target.dataset.modal) {
+    state.error = "";
+    modalReturnSelector = `[data-modal="${CSS.escape(target.dataset.modal)}"]`;
+    state.modal = {
+      type: target.dataset.modal,
+      playerId: target.dataset.playerId,
+      eventId: target.dataset.eventId,
+      coachId: target.dataset.coachId,
+      venueId: target.dataset.venueId,
+      mode: target.dataset.mode,
+    };
+    render();
+    return;
+  }
+
+  if (action === "close-modal" && (backdropClick || target.classList.contains("modal-close"))) {
+    delete state.modal;
+    render();
+    return;
+  }
+
+  if (action === "set-auth-role") {
+    state.authRole = target.dataset.role;
+    render();
+    return;
+  }
+
+  if (action === "sign-out") {
+    await signOutLive();
+    return;
+  }
+
+  if (action === "reset-password") {
+    await sendPasswordReset(target);
+    return;
+  }
+
+  if (action === "switch-account") {
+    await signOutLive(target.dataset.role || "parent");
+    return;
+  }
+
+  if (action === "coach-guide-next") {
+    updateCoachGuide(1);
+    return;
+  }
+
+  if (action === "coach-guide-back") {
+    updateCoachGuide(-1);
+    return;
+  }
+
+  if (action === "coach-guide-stop") {
+    stopCoachGuide();
+    return;
+  }
+
+  if (action === "coach-guide-restart") {
+    restartCoachGuide();
+    return;
+  }
+
+  if (action === "set-schedule-filter") {
+    state.scheduleFilter = target.dataset.teamId;
+    saveState();
+    render();
+    return;
+  }
+
+  if (action === "set-schedule-type") {
+    state.scheduleType = target.dataset.type || "matches";
+    saveState();
+    render();
+    return;
+  }
+
+  if (action === "set-schedule-period") {
+    state.schedulePeriod = target.dataset.period || "upcoming";
+    saveState();
+    render();
+    return;
+  }
+
+  if (action === "set-attendance-period") {
+    state.attendancePeriod = target.dataset.period === "past" ? "past" : "upcoming";
+    const options = registerEventsForSession()
+      .filter((item) => state.attendancePeriod === "past" ? isRegisterHistoryEvent(item) : !isPastEvent(item))
+      .sort((a, b) => state.attendancePeriod === "past" ? eventEndDate(b) - eventEndDate(a) : eventEndDate(a) - eventEndDate(b));
+    state.selectedEventId = options[0]?.id || "";
+    saveState();
+    render();
+    return;
+  }
+
+  if (action === "set-awards-tab") {
+    state.awardsTab = target.dataset.tab === "tally" ? "tally" : "weekly";
+    saveState();
+    render();
+    return;
+  }
+
+  if (action === "adjust-award-tally") {
+    if (!requireCoach()) return;
+    const playerId = target.dataset.playerId;
+    const delta = Number(target.dataset.delta || 0);
+    if (!playerId || !delta) return;
+    state.awardTallies = state.awardTallies || {};
+    state.awardTallies[playerId] = Math.max(0, Number(state.awardTallies[playerId] || 0) + delta);
+    if (!state.awardTallies[playerId]) delete state.awardTallies[playerId];
+    render();
+    return;
+  }
+
+  if (action === "clear-award-tallies") {
+    if (!requireCoach()) return;
+    const confirmed = await confirmAction({
+      title: "Clear vote tallies?",
+      message: "This resets the temporary Player of the Week tally tool.",
+      confirmLabel: "Clear tallies",
+      danger: true,
+    });
+    if (!confirmed) return;
+    state.awardTallies = {};
+    render();
+    toast("Vote tallies cleared");
+    return;
+  }
+
+  if (action === "set-availability-tab") {
+    state.availabilityTab = target.dataset.tab || "responses";
+    saveState();
+    render();
+    return;
+  }
+
+  if (action === "set-coach-section-tab") {
+    state.coachSectionTab = target.dataset.tab || "contacts";
+    saveState();
+    render();
+    return;
+  }
+
+  if (action === "focus-event") {
+    state.selectedEventId = target.dataset.eventId;
+    state.route = "availability";
+    saveState();
+    render();
+    return;
+  }
+
+  if (action === "delete-event") {
+    await deleteEvent(target.dataset.eventId);
+    return;
+  }
+
+  if (action === "delete-award") {
+    await deletePlayerAward(target.dataset.awardId);
+    return;
+  }
+
+  if (action === "download-document") {
+    await downloadPlayerDocument(target.dataset.documentId);
+    return;
+  }
+
+  if (action === "delete-document") {
+    await deletePlayerDocument(target.dataset.documentId);
+    return;
+  }
+
+  if (action === "download-coach-document") {
+    await downloadCoachDocument(target.dataset.documentId);
+    return;
+  }
+
+  if (action === "delete-coach-document") {
+    await deleteCoachDocument(target.dataset.documentId);
+    return;
+  }
+
+  if (action === "set-availability") {
+    const child = currentPlayer();
+    if (child) {
+      const selectedEvent = state.events.find((item) => item.id === state.selectedEventId) || state.events[0];
+      const availabilityKey = availabilityKeyForEvent(selectedEvent);
+      const previous = state.availability[availabilityKey]?.[child.id] || state.availability[state.selectedEventId]?.[child.id] || { status: "unknown", note: "" };
+      state.availability[availabilityKey] = state.availability[availabilityKey] || {};
+      state.availability[availabilityKey][child.id] = {
+        ...defaultAvailabilityEntry(previous),
+        status: target.dataset.status,
+      };
+      if (target.dataset.status === "unavailable") {
+        state.availability[availabilityKey][child.id].liftOffer = false;
+        state.availability[availabilityKey][child.id].liftSeats = 0;
+        state.availability[availabilityKey][child.id].liftFrom = "";
+      }
+      try {
+        await saveAvailability(child.id);
+      } catch {
+        state.availability[availabilityKey][child.id] = previous;
+        render();
+        return;
+      }
+      saveState();
+      render();
+      toast("Availability saved");
+    }
+    return;
+  }
+
+  if (action === "set-attendance") {
+    await setAttendance(target.dataset.playerId, target.dataset.status);
+    return;
+  }
+
+  if (action === "review-request") {
+    await reviewRequest(target.dataset.requestId, target.dataset.status);
+    saveState();
+    render();
+    return;
+  }
+
+  if (action === "toggle-dual-user") {
+    await toggleDualUser(target.dataset.userId, target.dataset.enabled === "true");
+    return;
+  }
+
+  if (action === "resolve-data-request") {
+    await resolveDataRequest(target.dataset.requestId);
+    return;
+  }
+
+  if (action === "delete-access-request") {
+    await deleteAccessRequest(target.dataset.requestId);
+    return;
+  }
+
+  if (action === "delete-data-request") {
+    await deleteDataRequest(target.dataset.requestId);
+    return;
+  }
+
+  if (action === "resolve-coach-query") {
+    await resolveCoachQuery(target.dataset.queryId);
+    return;
+  }
+
+  if (action === "delete-coach-query") {
+    await deleteCoachQuery(target.dataset.queryId);
+    return;
+  }
+
+  if (action === "revoke-parent-link") {
+    await revokeParentLink(target.dataset.linkId); return;
+  }
+  if (action === "revoke-user-access") {
+    await revokeUserAccess(target.dataset.userId); return;
+  }
+  if (action === "start-live-whiteboard") {
+    await startLiveWhiteboard();
+    return;
+  }
+
+  if (action === "join-live-whiteboard") {
+    joinLiveWhiteboard();
+    return;
+  }
+
+  if (action === "leave-live-whiteboard") {
+    leaveLiveWhiteboard();
+    return;
+  }
+
+  if (action === "end-live-whiteboard") {
+    await endLiveWhiteboard();
+    return;
+  }
+
+  if (action === "set-builder-format") {
+    if (!requireWhiteboardControl()) return;
+    state.squadBuilder.format = target.dataset.format || "7";
+    state.squadBuilder.selectedPlayerId = "";
+    saveState();
+    scheduleLiveWhiteboardPublish();
+    render();
+    return;
+  }
+
+  if (action === "set-builder-team") {
+    if (!requireWhiteboardControl()) return;
+    state.squadBuilder.teamFilter = target.dataset.teamId || "all";
+    saveState();
+    scheduleLiveWhiteboardPublish();
+    render();
+    return;
+  }
+
+  if (action === "set-builder-level") {
+    if (!requireWhiteboardControl()) return;
+    state.squadBuilder.levelFilter = target.dataset.level || "all";
+    saveState();
+    scheduleLiveWhiteboardPublish();
+    render();
+    return;
+  }
+
+  if (action === "select-builder-player") {
+    if (!requireWhiteboardControl()) return;
+    state.squadBuilder.selectedPlayerId = target.dataset.playerId || "";
+    saveState();
+    scheduleLiveWhiteboardPublish();
+    render();
+    return;
+  }
+
+  if (action === "assign-builder-slot") {
+    if (!requireWhiteboardControl()) return;
+    if (Date.now() < suppressBuilderClickUntil) return;
+    if (!state.squadBuilder.selectedPlayerId && target.dataset.slotPlayerId) {
+      state.squadBuilder.selectedPlayerId = target.dataset.slotPlayerId;
+      saveState();
+      scheduleLiveWhiteboardPublish();
+      render();
+      return;
+    }
+    assignBuilderSlot(target.dataset.builderSlot, state.squadBuilder.selectedPlayerId);
+    return;
+  }
+
+  if (action === "edit-builder-slot") {
+    if (!requireWhiteboardControl()) return;
+    state.modal = {
+      type: "edit-builder-slot",
+      slotId: target.dataset.slotId,
+    };
+    render();
+    return;
+  }
+
+  if (action === "reset-builder-layout") {
+    await resetBuilderLayout();
+    return;
+  }
+
+  if (action === "clear-builder-slot") {
+    delete state.modal;
+    clearBuilderSlot(target.dataset.slotId);
+    return;
+  }
+
+  if (action === "reset-builder") {
+    await resetBuilder();
+    return;
+  }
+
+  if (action === "auto-fill-builder") {
+    autoFillBuilder();
+    return;
+  }
+
+  if (action === "toggle-whiteboard-arrows") {
+    if (!requireWhiteboardControl()) return;
+    state.squadBuilder.arrowMode = !state.squadBuilder.arrowMode;
+    state.squadBuilder.selectedPlayerId = "";
+    saveState();
+    scheduleLiveWhiteboardPublish();
+    render();
+    return;
+  }
+
+  if (action === "toggle-whiteboard-ratings") {
+    if (!requireWhiteboardControl()) return;
+    state.squadBuilder.showDevelopmentLabels = state.squadBuilder.showDevelopmentLabels === false;
+    if (!state.squadBuilder.showDevelopmentLabels) state.squadBuilder.levelFilter = "all";
+    saveState();
+    scheduleLiveWhiteboardPublish();
+    render();
+    return;
+  }
+
+  if (action === "undo-whiteboard-arrow") {
+    undoBuilderArrow();
+    return;
+  }
+
+  if (action === "clear-whiteboard-arrows") {
+    await clearBuilderArrows();
+    return;
+  }
+
+  if (action === "copy-link") {
+    copyText(target.dataset.copy);
+    return;
+  }
+
+  if (action === "enable-push") {
+    enablePushNotifications();
+    return;
+  }
+});
+
+document.addEventListener("pointerdown", (event) => {
+  if (event.pointerType === "mouse" || !event.target.closest("form[data-form]")) return;
+  formScrollGesture = {
+    x: event.clientX,
+    y: event.clientY,
+    moved: false,
+  };
+}, true);
+
+document.addEventListener("pointermove", (event) => {
+  if (!formScrollGesture) return;
+  const distance = Math.hypot(event.clientX - formScrollGesture.x, event.clientY - formScrollGesture.y);
+  if (distance > 8) formScrollGesture.moved = true;
+}, true);
+
+document.addEventListener("click", (event) => {
+  if (!formScrollGesture?.moved) return;
+  const accidentalTapTarget = event.target.closest("form[data-form] label, form[data-form] input, form[data-form] select, form[data-form] textarea, form[data-form] button, form[data-form] summary");
+  if (!accidentalTapTarget) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  formScrollGesture = null;
+}, true);
+
+document.addEventListener("pointerup", () => {
+  window.setTimeout(() => {
+    formScrollGesture = null;
+  }, 0);
+}, true);
+
+document.addEventListener("pointercancel", () => {
+  formScrollGesture = null;
+}, true);
+
+document.addEventListener("pointerdown", (event) => {
+  if (state.route !== "availability" || event.pointerType === "mouse") return;
+  if (event.target.closest("[data-action='set-player-fixture'], [data-action='set-coach-availability-status'], .response-list, .availability-row-actions")) {
+    pauseReactiveRenders(1800);
+  }
+}, true);
+
+window.addEventListener("scroll", () => {
+  if (state.route === "availability") pauseReactiveRenders(700);
+}, { passive: true });
+
+document.addEventListener("pointerdown", (event) => {
+  if (event.pointerType === "mouse" || !touchScrollGuardForTarget(event.target)) return;
+  listScrollGesture = {
+    x: event.clientX,
+    y: event.clientY,
+    moved: false,
+  };
+}, true);
+
+document.addEventListener("pointermove", (event) => {
+  if (!listScrollGesture) return;
+  const distance = Math.hypot(event.clientX - listScrollGesture.x, event.clientY - listScrollGesture.y);
+  if (distance > 8) listScrollGesture.moved = true;
+}, true);
+
+document.addEventListener("click", (event) => {
+  if (!listScrollGesture?.moved) return;
+  const accidentalTapTarget = event.target.closest("[data-scroll-key] button, [data-scroll-key] a, [data-scroll-key] select, [data-scroll-key] input, [data-scroll-key] textarea");
+  if (!accidentalTapTarget) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  listScrollGesture = null;
+}, true);
+
+document.addEventListener("pointerup", () => {
+  window.setTimeout(() => {
+    listScrollGesture = null;
+  }, 0);
+}, true);
+
+document.addEventListener("pointercancel", () => {
+  listScrollGesture = null;
+}, true);
+
+document.addEventListener("dragstart", (event) => {
+  const target = event.target.closest("[data-player-drag]");
+  if (!target || !hasCoachAccess() || !hasWhiteboardControl()) return;
+  const playerId = target.dataset.playerDrag;
+  state.squadBuilder.selectedPlayerId = playerId;
+  scheduleLiveWhiteboardPublish();
+  event.dataTransfer?.setData("text/plain", playerId);
+  event.dataTransfer?.setData("playerId", playerId);
+});
+
+document.addEventListener("dragover", (event) => {
+  if (event.target.closest("[data-builder-slot]")) {
+    event.preventDefault();
+  }
+});
+
+document.addEventListener("drop", (event) => {
+  const slot = event.target.closest("[data-builder-slot]");
+  if (!slot || !hasCoachAccess() || !hasWhiteboardControl()) return;
+  event.preventDefault();
+  const playerId = event.dataTransfer?.getData("playerId") || event.dataTransfer?.getData("text/plain") || state.squadBuilder.selectedPlayerId;
+  assignBuilderSlot(slot.dataset.builderSlot, playerId);
+});
+
+document.addEventListener("pointerdown", (event) => {
+  const pitchForArrow = event.target.closest("[data-builder-pitch]");
+  if (pitchForArrow && state.squadBuilder.arrowMode && hasCoachAccess() && hasWhiteboardControl() && !event.target.closest("button")) {
+    startBuilderArrow(event, pitchForArrow);
+    return;
+  }
+
+  const marker = event.target.closest("[data-formation-drag]");
+  const slot = event.target.closest("[data-builder-slot]");
+  const dragElement = marker || (slot?.dataset.slotPlayerId ? slot : null);
+  if (!dragElement || !hasCoachAccess() || !hasWhiteboardControl() || event.target.closest("button")) return;
+  const pitch = marker?.closest("[data-builder-pitch]") || null;
+  builderPointerDrag = {
+    marker: dragElement,
+    pitch,
+    pointerId: event.pointerId,
+    slotId: slot?.dataset.builderSlot || marker?.dataset.formationDrag,
+    canMoveMarker: Boolean(marker && pitch),
+    startX: event.clientX,
+    startY: event.clientY,
+    moved: false,
+  };
+  dragElement.setPointerCapture?.(event.pointerId);
+});
+
+document.addEventListener("pointermove", (event) => {
+  if (builderArrowDraft) {
+    updateBuilderArrowDraft(event);
+    event.preventDefault();
+    return;
+  }
+
+  if (!builderPointerDrag) return;
+  const distance = Math.hypot(event.clientX - builderPointerDrag.startX, event.clientY - builderPointerDrag.startY);
+  if (!builderPointerDrag.moved && distance < 6) return;
+  builderPointerDrag.moved = true;
+  builderPointerDrag.marker.classList.add("dragging");
+  if (!builderPointerDrag.canMoveMarker) {
+    builderPointerDrag.marker.classList.add("dragging-player-only");
+    builderPointerDrag.marker.style.setProperty("--drag-x", `${event.clientX - builderPointerDrag.startX}px`);
+    builderPointerDrag.marker.style.setProperty("--drag-y", `${event.clientY - builderPointerDrag.startY}px`);
+    event.preventDefault();
+    return;
+  }
+  const point = pitchPointFromEvent(event, builderPointerDrag.pitch);
+  builderPointerDrag.marker.style.left = `${point.x}%`;
+  builderPointerDrag.marker.style.top = `${point.y}%`;
+  event.preventDefault();
+});
+
+document.addEventListener("pointerup", (event) => {
+  if (builderArrowDraft) {
+    finishBuilderArrow(event);
+    return;
+  }
+
+  if (!builderPointerDrag) return;
+  builderPointerDrag.marker.releasePointerCapture?.(builderPointerDrag.pointerId);
+  if (builderPointerDrag.moved) {
+    const targetSlot = builderSlotAtPoint(event, builderPointerDrag.marker);
+    if (targetSlot && moveOrSwapBuilderSelection(builderPointerDrag.slotId, targetSlot.dataset.builderSlot)) {
+      builderPointerDrag = null;
+      return;
+    }
+    if (builderPointerDrag.canMoveMarker) {
+      const point = pitchPointFromEvent(event, builderPointerDrag.pitch);
+      suppressBuilderClickUntil = Date.now() + 500;
+      moveBuilderSlot(builderPointerDrag.slotId, point.x, point.y);
+    } else {
+      builderPointerDrag.marker.classList.remove("dragging", "dragging-player-only");
+      builderPointerDrag.marker.style.removeProperty("--drag-x");
+      builderPointerDrag.marker.style.removeProperty("--drag-y");
+    }
+  }
+  builderPointerDrag = null;
+});
+
+document.addEventListener("pointercancel", () => {
+  // Native scrolling cancels pointer input. Keep its scrolling DOM alive.
+  if (!builderArrowDraft && !builderPointerDrag) return;
+  builderArrowDraft = null;
+  builderPointerDrag = null;
+  render();
+});
+
+document.addEventListener("change", async (event) => {
+  const target = event.target;
+  if (target.form?.dataset?.form) rememberFormDraft(target.form);
+  if (target.dataset.action === "set-schedule-block") {
+    state.scheduleBlock = ["A", "B", "all"].includes(target.value) ? target.value : "B";
+    state.schedulePeriod = state.scheduleBlock === "A" ? "past" : "upcoming";
+    render();
+    return;
+  }
+  if (target.dataset.action === "set-statistics-scope") {
+    state.statisticsScope = ["season", "A", "B"].includes(target.value) ? target.value : "season";
+    state.seasonStatsOpen = true;
+    render();
+    return;
+  }
+  if (target.dataset.action === "select-child") {
+    state.session.selectedPlayerId = target.value;
+    saveState();
+    render();
+    return;
+  }
+  if (target.dataset.action === 'select-marker-actions') {
+    state.markerActionSlot = target.value;
+    render();
+    return;
+  }
+  if (target.dataset.action === "select-event") {
+    state.selectedEventId = target.value;
+    saveState();
+    render();
+    return;
+  }
+  if (target.dataset.action === "select-result-event") {
+    state.selectedResultEventId = target.value;
+    saveState();
+    render();
+    return;
+  }
+  if (target.dataset.action === "venue-choice") {
+    toggleResultFields();
+    return;
+  }
+  if (target.dataset.action === "event-type-choice") {
+    toggleResultFields();
+    return;
+  }
+  if (target.dataset.action === "document-audience-choice") {
+    toggleDocumentAudienceFields();
+    return;
+  }
+  if (target.dataset.action === "set-document-filter") {
+    state.documentFilter = target.value || "all";
+    saveState();
+    render();
+    return;
+  }
+  if (target.dataset.action === "set-document-sort") {
+    state.documentSort = target.value || "newest";
+    saveState();
+    render();
+    return;
+  }
+  if (target.dataset.action === "set-coach-document-category") {
+    state.coachDocumentCategory = target.value || "handbooks";
+    saveState();
+    render();
+    return;
+  }
+  if (target.dataset.action === "set-squad-position-filter") {
+    state.squadListPositionFilter = target.value || "all";
+    saveState();
+    render();
+    return;
+  }
+  if (target.dataset.action === "set-squad-list-sort") {
+    state.squadListSort = target.value || "name";
+    saveState();
+    render();
+    return;
+  }
+  if (target.dataset.action === "set-squad-availability-date") {
+    state.squadAvailabilityDateKey = target.value || "";
+    saveState();
+    render();
+    return;
+  }
+  if (target.dataset.action === "set-squad-player-filter") {
+    state.squadPlayerFilter = target.value || "all";
+    saveState();
+    render();
+    return;
+  }
+  if (target.dataset.action === "set-squad-player-sort") {
+    state.squadPlayerSort = target.value || "selection-priority";
+    saveState();
+    render();
+    return;
+  }
+  if (target.dataset.action === "set-availability-response-filter") {
+    state.availabilityResponseFilter = target.value || "all";
+    saveState();
+    render();
+    return;
+  }
+  if (target.dataset.action === "set-attendance-filter") {
+    state.attendanceStatusFilter = target.value || "all";
+    saveState();
+    render();
+    return;
+  }
+  if (target.dataset.action === "set-player-fixture") {
+    pauseReactiveRenders(2600);
+    target.blur();
+    target.disabled = true;
+    try {
+      await assignPlayerToFixture(target.dataset.playerId, target.value || "", { render: false });
+      requestRender();
+    } finally {
+      if (target.isConnected) target.disabled = false;
+    }
+    return;
+  }
+  if (target.dataset.action === "set-coach-availability-status") {
+    pauseReactiveRenders(2600);
+    target.blur();
+    target.disabled = true;
+    try {
+      await saveCoachAvailability(target.dataset.playerId, target.value || "unknown", { render: false });
+      requestRender();
+    } finally {
+      if (target.isConnected) target.disabled = false;
+    }
+    return;
+  }
+  if (["lift-offer", "lift-seats"].includes(target.dataset.action)) {
+    const child = currentPlayer();
+    if (!child) return;
+    const selectedEvent = state.events.find((item) => item.id === state.selectedEventId) || state.events[0];
+    const availabilityKey = availabilityKeyForEvent(selectedEvent);
+    state.availability[availabilityKey] = state.availability[availabilityKey] || {};
+    const entry = availabilityEntry(selectedEvent, child.id);
+
+    if (target.dataset.action === "lift-offer") {
+      entry.liftOffer = target.checked;
+      entry.liftSeats = target.checked ? Number(entry.liftSeats || 1) : 0;
+      if (!target.checked) entry.liftFrom = "";
+    }
+    if (target.dataset.action === "lift-seats") {
+      entry.liftSeats = Number(target.value || 1);
+      entry.liftOffer = true;
+    }
+
+    state.availability[availabilityKey][child.id] = entry;
+    try {
+      await saveAvailability(child.id);
+    } catch {
+      return;
+    }
+    saveState();
+    render();
+    toast("Availability saved");
+  }
+});
+
+document.addEventListener("input", (event) => {
+  const target = event.target;
+  if (target.form?.dataset?.form) rememberFormDraft(target.form);
+  const matchStatsForm = target.closest?.('[data-form="match-stats"]');
+  if (matchStatsForm && target.name) {
+    const eventId = matchStatsForm.elements.eventId?.value || state.selectedResultEventId;
+    if (!eventId) return;
+    state.resultDrafts = state.resultDrafts || {};
+    state.resultDrafts[eventId] = {
+      ...(state.resultDrafts[eventId] || {}),
+      [target.name]: target.value,
+    };
+    return;
+  }
+  if (target.dataset.action === "availability-note") {
+    const child = currentPlayer();
+    if (!child) return;
+    const selectedEvent = state.events.find((item) => item.id === state.selectedEventId) || state.events[0];
+    const availabilityKey = availabilityKeyForEvent(selectedEvent);
+    state.availability[availabilityKey] = state.availability[availabilityKey] || {};
+    state.availability[availabilityKey][child.id] = {
+      ...availabilityEntry(selectedEvent, child.id),
+      note: target.value,
+    };
+    scheduleAvailabilitySave(child.id);
+    saveState();
+    return;
+  }
+  if (target.dataset.action === "lift-from") {
+    const child = currentPlayer();
+    if (!child) return;
+    const selectedEvent = state.events.find((item) => item.id === state.selectedEventId) || state.events[0];
+    const availabilityKey = availabilityKeyForEvent(selectedEvent);
+    const existing = availabilityEntry(selectedEvent, child.id);
+    state.availability[availabilityKey] = state.availability[availabilityKey] || {};
+    state.availability[availabilityKey][child.id] = {
+      ...existing,
+      liftOffer: true,
+      liftSeats: Number(existing.liftSeats || 1),
+      liftFrom: target.value,
+    };
+    scheduleAvailabilitySave(child.id);
+    saveState();
+  }
+});
+
+document.addEventListener("toggle", (event) => {
+  if (!event.target.isConnected) return;
+  if (event.target.matches?.('.whiteboard-tools')) state.whiteboardToolsOpen = event.target.open;
+  if (event.target.matches?.('.whiteboard-options')) state.whiteboardOptionsOpen = event.target.open;
+  if (event.target.matches?.('.season-report-panel')) state.seasonStatsOpen = event.target.open;
+}, true);
+
+document.addEventListener("keydown", (event) => {
+  if (!state.modal || event.defaultPrevented) return;
+  const dialog = document.querySelector('.modal[role="dialog"]');
+  if (!dialog) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    delete state.modal;
+    render();
+    return;
+  }
+  if (event.key !== "Tab") return;
+  const controls = [...dialog.querySelectorAll('button, a[href], input, select, textarea, [tabindex="0"]')].filter((control) => !control.disabled && control.getClientRects().length);
+  const first = controls[0];
+  const last = controls.at(-1);
+  if (!first) return;
+  if (event.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && (document.activeElement === last || !dialog.contains(document.activeElement))) {
+    event.preventDefault();
+    first.focus();
+  }
+});
+
+document.addEventListener("submit", async (event) => {
+  const form = event.target.closest("[data-form]");
+  if (!form) return;
+  event.preventDefault();
+  rememberFormDraft(form);
+  const draftKey = formDraftKey(form);
+  const data = new FormData(form);
+  state.error = "";
+  const submitButtons = [...form.querySelectorAll("button[type='submit'], button:not([type])")];
+  submitButtons.forEach((button) => {
+    button.dataset.idleLabel = button.textContent;
+    button.textContent = form.dataset.form.includes("document") ? "Uploading…" : form.dataset.form.includes("login") ? "Signing in…" : "Saving…";
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+  });
+
+  try {
+    if (form.dataset.form === "parent-login") await handleParentLogin(data);
+    if (form.dataset.form === "coach-login") await handleCoachLogin(data);
+    if (form.dataset.form === "request-access") await requestAccess(data);
+    if (form.dataset.form === "parent-profile") await updateParentProfile(data);
+    if (form.dataset.form === "data-request") await submitDataRequest(data);
+    if (form.dataset.form === "account-deletion") await submitAccountDeletionRequest(data);
+    if (form.dataset.form === "coach-query") await submitCoachQuery(data);
+    if (form.dataset.form === "change-password") await changePassword(data);
+    if (form.dataset.form === "event") await addEvent(data);
+    if (form.dataset.form === "edit-event") await editEvent(data);
+    if (form.dataset.form === "message") await addMessage(data);
+    if (form.dataset.form === "player-document") await uploadPlayerDocument(data);
+    if (form.dataset.form === "coach-document") await uploadCoachDocument(data);
+    if (form.dataset.form === "player") await addPlayer(data);
+    if (form.dataset.form === "move-player") await movePlayer(data);
+    if (form.dataset.form === "edit-player") await editPlayer(data);
+    if (form.dataset.form === "edit-coach") await editCoach(data);
+    if (form.dataset.form === "edit-venue") await editVenue(data);
+    if (form.dataset.form === "development-player") await savePlayerDevelopment(data);
+    if (form.dataset.form === "player-award") await savePlayerAward(data);
+    if (form.dataset.form === "match-stats") await saveMatchStats(data);
+    if (form.dataset.form === "edit-builder-slot") saveBuilderSlotEdit(data);
+    if (!["parent-login", "coach-login"].includes(form.dataset.form) || state.session.loggedIn) {
+      clearFormDraft(draftKey);
+    }
+    saveState();
+    render();
+  } catch (error) {
+    console.error(error);
+    showError(actionErrorMessage(error));
+  } finally {
+    submitButtons.forEach((button) => {
+      if (!button.isConnected) return;
+      button.disabled = false;
+      button.textContent = button.dataset.idleLabel;
+      button.removeAttribute("aria-busy");
+    });
+  }
+});
+
+async function sendPasswordReset(target) {
+  if (!backendConfig.enabled) {
+    showError("Firebase is not enabled yet. Add the Firebase config before password reset can work.");
+    return;
+  }
+  const form = target.closest("form");
+  const email = String(form?.elements?.email?.value || "").trim();
+  if (!email) {
+    toast("Type your email first, then tap Forgot password");
+    return;
+  }
+  try {
+    const runtime = await ensureFirebase();
+    await runtime.modules.sendPasswordResetEmail(runtime.auth, email);
+    toast("Password reset email sent");
+  } catch (error) {
+    console.error(error);
+    showError(authErrorMessage(error));
+  }
+}
+
+async function handleParentLogin(data) {
+  const password = String(data.get("passcode") || "");
+  const email = String(data.get("email") || "").trim();
+  const rememberMe = data.get("rememberMe") === "on";
+
+  if (!backendConfig.enabled) {
+    showError("Firebase is not enabled yet. Add the Firebase config before parents can sign in.");
+    return;
+  }
+
+  updateParentRememberPreference(rememberMe, email);
+  await handleFirebaseParentLogin({ email, password, rememberMe });
+}
+
+async function handleCoachLogin(data) {
+  const password = String(data.get("passcode") || "");
+  const email = String(data.get("email") || "").trim();
+
+  if (!backendConfig.enabled) {
+    showError("Firebase is not enabled yet. Add the Firebase config before coaches can sign in.");
+    return;
+  }
+
+  await handleFirebaseCoachLogin(email, password);
+}
+
+async function handleFirebaseCoachLogin(email, password) {
+  const requestedRoute = requestedRouteFromHash();
+  authAttemptInProgress = true;
+  try {
+    await finishPendingDeviceDisconnect();
+    setBusy("Signing coach in...");
+    const runtime = await ensureFirebase();
+    await applyAuthPersistence(runtime, true);
+    const credential = await runtime.modules.signInWithEmailAndPassword(runtime.auth, email, password);
+    const profileSnap = await runtime.modules.getDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "users", credential.user.uid));
+    const profile = profileSnap.exists() ? profileSnap.data() : {};
+    if (!activeAccount(profile) || !["coach", "admin"].includes(profile.role)) {
+      await runtime.modules.signOut(runtime.auth);
+      showError("This Firebase account is not approved as a coach.");
+      return;
+    }
+    state.session = {
+      loggedIn: true,
+      role: "coach",
+      userId: credential.user.uid,
+      email,
+      phone: profile.phone || "",
+      parentName: "",
+      coachName: profile.name || "Coach",
+      selectedPlayerId: "",
+      canSwitchPortal: Boolean(profile.canSwitchPortal),
+      isAdmin: profile.role === "admin",
+    };
+    state.messageReadAt = profile.messageReadAt || "";
+    await loadLiveStateFromFirebase();
+    await startLiveSubscriptions();
+    state.route = loginDestination(requestedRoute);
+    state.error = "";
+    toast("Coach signed in with Firebase");
+  } catch (error) {
+    console.error(error);
+    showError(authErrorMessage(error));
+  } finally {
+    authAttemptInProgress = false;
+    state.loading = false;
+    render();
+  }
+}
+
+async function handleFirebaseParentLogin({ email, password, rememberMe }) {
+  const requestedRoute = requestedRouteFromHash();
+  authAttemptInProgress = true;
+  try {
+    await finishPendingDeviceDisconnect();
+    setBusy("Signing parent in...");
+    const runtime = await ensureFirebase();
+    const credential = await signInOrCreateParent(runtime, email, password, rememberMe);
+    const profileSnap = await runtime.modules.getDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "users", credential.user.uid));
+    const profile = profileSnap.exists() ? profileSnap.data() : {};
+    if (!profileSnap.exists()) {
+      await runtime.modules.setDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "users", credential.user.uid), {
+        role: "parent",
+        name: "",
+        email,
+        consentAcceptedAt: runtime.modules.serverTimestamp(),
+        createdAt: runtime.modules.serverTimestamp(),
+        updatedAt: runtime.modules.serverTimestamp(),
+      }, { merge: true });
+      profile.role = "parent";
+      profile.name = "";
+    }
+    if (!activeAccount(profile) || (profile.role && profile.role !== "parent")) {
+      await runtime.modules.signOut(runtime.auth);
+      showError("This account is not set up as a parent account.");
+      return;
+    }
+
+    state.session = {
+      loggedIn: true,
+      role: "parent",
+      userId: credential.user.uid,
+      email,
+      phone: profile.phone || "",
+      parentName: profile.name || "",
+      coachName: "",
+      selectedPlayerId: "",
+      canSwitchPortal: Boolean(profile.canSwitchPortal),
+      isAdmin: profile.role === "admin",
+    };
+    state.messageReadAt = profile.messageReadAt || "";
+    await loadLiveStateFromFirebase();
+
+    await startLiveSubscriptions();
+    state.route = approvedPlayers().length ? loginDestination(requestedRoute) : "access";
+    state.error = "";
+    toast("Parent signed in with Firebase");
+  } catch (error) {
+    console.error(error);
+    showError(authErrorMessage(error));
+  } finally {
+    authAttemptInProgress = false;
+    state.loading = false;
+    render();
+  }
+}
+
+async function applyAuthPersistence(runtime, remember = true) {
+  if (!runtime?.modules?.setPersistence) return;
+  const persistence = remember ? runtime.modules.browserLocalPersistence : runtime.modules.browserSessionPersistence;
+  if (!persistence) return;
+  await runtime.modules.setPersistence(runtime.auth, persistence);
+}
+
+async function signInOrCreateParent(runtime, email, password, rememberMe) {
+  await applyAuthPersistence(runtime, rememberMe);
+  try {
+    return await runtime.modules.signInWithEmailAndPassword(runtime.auth, email, password);
+  } catch (error) {
+    if (!["auth/user-not-found", "auth/invalid-credential"].includes(error.code)) throw error;
+    const credential = await runtime.modules.createUserWithEmailAndPassword(runtime.auth, email, password);
+    await runtime.modules.setDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "users", credential.user.uid), {
+      role: "parent",
+      name: "",
+      email,
+      consentAcceptedAt: runtime.modules.serverTimestamp(),
+      createdAt: runtime.modules.serverTimestamp(),
+      updatedAt: runtime.modules.serverTimestamp(),
+    }, { merge: true });
+    return credential;
+  }
+}
+
+async function requestAccess(data) {
+  const parentName = state.session.parentName || state.session.email || "Parent";
+  await createAccessRequest({
+    childName: String(data.get("childName") || "").trim(),
+    relation: String(data.get("relation") || "Parent"),
+    parentName,
+    email: state.session.email,
+  });
+  await loadLiveStateFromFirebase();
+  toast("Access request sent");
+}
+
+async function updateParentProfile(data) {
+  if (!state.session.loggedIn || hasCoachAccess()) return;
+  const runtime = await ensureFirebase();
+  const parentName = String(data.get("parentName") || "").trim();
+  const phone = String(data.get("phone") || "").replace(/\D/g, "");
+  if (!parentName) {
+    toast("Add your name before saving");
+    return;
+  }
+  await runtime.modules.setDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "users", runtime.user.uid), {
+    name: parentName,
+    phone,
+    email: state.session.email || runtime.user.email || "",
+    updatedAt: runtime.modules.serverTimestamp(),
+  }, { merge: true });
+  state.session.parentName = parentName;
+  state.session.phone = phone;
+  toast("Contact details saved");
+}
+
+async function submitDataRequest(data) {
+  if (!state.session.loggedIn || hasCoachAccess()) return;
+  const runtime = await ensureFirebase();
+  const playerId = String(data.get("playerId") || "");
+  const player = approvedPlayers().find((item) => item.id === playerId);
+  const childName = player?.name || String(data.get("childName") || "").trim();
+  const requestType = String(data.get("requestType") || "delete");
+  const details = String(data.get("details") || "").trim();
+
+  if (!childName) {
+    toast("Add the child name for the data request");
+    return;
+  }
+
+  const requestId = `${runtime.user.uid}_${requestType}_${Date.now()}`;
+  await runtime.modules.setDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "dataRequests", requestId), {
+    parentUid: runtime.user.uid,
+    parentName: state.session.parentName || "",
+    email: state.session.email || "",
+    playerId: player?.id || "",
+    playerTeamId: player?.teamId || "",
+    childName,
+    requestType,
+    details,
+    status: "pending",
+    createdAt: runtime.modules.serverTimestamp(),
+    updatedAt: runtime.modules.serverTimestamp(),
+  }, { merge: true });
+  await loadLiveStateFromFirebase();
+  toast("Data request sent");
+}
+
+async function submitAccountDeletionRequest(data) {
+  if (!state.session.loggedIn || hasCoachAccess()) return;
+  const confirmText = String(data.get("confirmText") || "").trim().toUpperCase();
+  if (confirmText !== "DELETE") {
+    toast("Type DELETE to confirm the deletion request");
+    return;
+  }
+
+  const confirmed = await confirmAction({
+    title: "Send account deletion request?",
+    message: "The club will review and remove login access. Historical player records may be retained under club policy.",
+    confirmLabel: "Send request",
+    danger: true,
+  });
+  if (!confirmed) return;
+
+  const runtime = await ensureFirebase();
+  const requestId = `${runtime.user.uid}_account_delete_${Date.now()}`;
+  await runtime.modules.setDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "dataRequests", requestId), {
+    parentUid: runtime.user.uid,
+    parentName: state.session.parentName || "",
+    email: state.session.email || runtime.user.email || "",
+    playerId: "",
+    playerTeamId: "",
+    childName: "Login account",
+    requestType: "delete",
+    details: `Account deletion request. ${String(data.get("details") || "").trim()}`.trim(),
+    status: "pending",
+    createdAt: runtime.modules.serverTimestamp(),
+    updatedAt: runtime.modules.serverTimestamp(),
+  }, { merge: true });
+  delete state.modal;
+  toast("Account deletion request sent");
+  await loadLiveStateFromFirebase();
+}
+
+async function submitCoachQuery(data) {
+  if (!state.session.loggedIn || hasCoachAccess()) return;
+  const runtime = await ensureFirebase();
+  const subject = String(data.get("subject") || "").trim();
+  const body = String(data.get("body") || "").trim();
+
+  if (!subject || !body) {
+    toast("Add a subject and message before sending");
+    return;
+  }
+
+  const queryId = `${runtime.user.uid}_query_${Date.now()}`;
+  await runtime.modules.setDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "coachQueries", queryId), {
+    parentUid: runtime.user.uid,
+    parentName: state.session.parentName || "",
+    email: state.session.email || runtime.user.email || "",
+    subject,
+    body,
+    status: "open",
+    createdAt: runtime.modules.serverTimestamp(),
+    updatedAt: runtime.modules.serverTimestamp(),
+  }, { merge: true });
+  await loadLiveStateFromFirebase();
+  toast("Message sent to coaches");
+}
+
+async function createAccessRequest({ childName, relation, parentName, email }) {
+  if (!childName) {
+    toast("Add the child name for the request");
+    return;
+  }
+  const runtime = await ensureFirebase();
+  const normalizedChild = childName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+  const requestId = `${runtime.user.uid}_${normalizedChild || "child"}_${Date.now()}`;
+  await runtime.modules.setDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "accessRequests", requestId), {
+    parentUid: runtime.user.uid,
+    parentName,
+    email,
+    childName,
+    relation,
+    status: "pending",
+    consent: true,
+    createdAt: runtime.modules.serverTimestamp(),
+    updatedAt: runtime.modules.serverTimestamp(),
+  }, { merge: true });
+}
+
+async function resolveDataRequest(requestId) {
+  if (!requireCoach() || !requestId) return;
+  const runtime = await ensureFirebase();
+  await runtime.modules.setDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "dataRequests", requestId), {
+    status: "resolved",
+    reviewedBy: state.session.userId,
+    reviewedAt: runtime.modules.serverTimestamp(),
+    updatedAt: runtime.modules.serverTimestamp(),
+  }, { merge: true });
+  state.dataRequests = state.dataRequests.map((request) => request.id === requestId ? { ...request, status: "resolved" } : request);
+  render();
+  toast("Data request marked resolved");
+}
+
+async function deleteAccessRequest(requestId) {
+  if (!requireCoach() || !requestId) return;
+  const confirmed = await confirmAction({
+    title: "Delete access request?",
+    message: "Use this only for old test requests or duplicates.",
+    confirmLabel: "Delete request",
+    danger: true,
+  });
+  if (!confirmed) return;
+  await deleteLiveDocument("accessRequests", requestId);
+  state.accessRequests = state.accessRequests.filter((request) => request.id !== requestId);
+  render();
+  toast("Access request deleted");
+}
+
+async function deleteDataRequest(requestId) {
+  if (!requireCoach() || !requestId) return;
+  const confirmed = await confirmAction({
+    title: "Delete data request?",
+    message: "Only remove it after it has been dealt with or if it was test data.",
+    confirmLabel: "Delete request",
+    danger: true,
+  });
+  if (!confirmed) return;
+  await deleteLiveDocument("dataRequests", requestId);
+  state.dataRequests = state.dataRequests.filter((request) => request.id !== requestId);
+  render();
+  toast("Data request deleted");
+}
+
+async function resolveCoachQuery(queryId) {
+  if (!requireCoach() || !queryId) return;
+  const runtime = await ensureFirebase();
+  await runtime.modules.setDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "coachQueries", queryId), {
+    status: "handled",
+    handledBy: state.session.userId,
+    handledByName: state.session.coachName || "Coach",
+    handledAt: runtime.modules.serverTimestamp(),
+    updatedAt: runtime.modules.serverTimestamp(),
+  }, { merge: true });
+  state.coachQueries = state.coachQueries.map((query) => query.id === queryId ? { ...query, status: "handled" } : query);
+  render();
+  toast("Coach message marked handled");
+}
+
+async function deleteCoachQuery(queryId) {
+  if (!requireCoach() || !queryId) return;
+  const confirmed = await confirmAction({
+    title: "Delete parent message?",
+    message: "This removes the message from the coach inbox.",
+    confirmLabel: "Delete message",
+    danger: true,
+  });
+  if (!confirmed) return;
+  await deleteLiveDocument("coachQueries", queryId);
+  state.coachQueries = state.coachQueries.filter((query) => query.id !== queryId);
+  render();
+  toast("Coach message deleted");
+}
+
+async function changePassword(data) {
+  const password = data.get("newPassword");
+  const confirm = data.get("confirmPassword");
+  if (password !== confirm) {
+    toast("Passwords do not match");
+    return;
+  }
+  const runtime = await ensureFirebase();
+  await runtime.modules.updatePassword(runtime.auth.currentUser, password);
+  await runtime.modules.setDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "users", runtime.auth.currentUser.uid), {
+    updatedAt: runtime.modules.serverTimestamp(),
+  }, { merge: true });
+  toast("Password changed");
+}
+
+async function reviewRequest(requestId, status) {
+  if (!requireCoach()) return;
+  const request = state.accessRequests.find((item) => item.id === requestId);
+  if (!request) return;
+  const runtime = await ensureFirebase();
+  request.status = status;
+  if (status === "approved") {
+    const selectedPlayerId = $(`[data-request-player="${CSS.escape(requestId)}"]`)?.value || request.playerId;
+    const player = activePlayers().find((item) => item.id === selectedPlayerId);
+    if (!player) {
+      toast("Choose the matching child before approving");
+      return;
+    }
+    const linkId = `${request.parentUid}_${player.id}`;
+    const batch = runtime.modules.writeBatch(runtime.db);
+    batch.set(runtime.modules.doc(runtime.db, "clubs", clubId, "parentLinks", linkId), {
+      parentUid: request.parentUid,
+      parentName: request.parentName,
+      email: request.email || "",
+      playerId: player.id,
+      playerTeamId: normalizeTeamId(player.teamId),
+      relation: request.relation,
+      status: "approved",
+      consent: true,
+      createdAt: runtime.modules.serverTimestamp(),
+      updatedAt: runtime.modules.serverTimestamp(),
+    }, { merge: true });
+    batch.set(runtime.modules.doc(runtime.db, "clubs", clubId, "accessRequests", requestId), {
+      status: "approved",
+      playerId: player.id,
+      playerTeamId: normalizeTeamId(player.teamId),
+      reviewedBy: state.session.userId,
+      reviewedAt: runtime.modules.serverTimestamp(),
+      updatedAt: runtime.modules.serverTimestamp(),
+    }, { merge: true });
+    await batch.commit();
+  } else {
+    const batch = runtime.modules.writeBatch(runtime.db);
+    batch.set(runtime.modules.doc(runtime.db, "clubs", clubId, "accessRequests", requestId), {
+      status: "rejected",
+      reviewedBy: state.session.userId,
+      reviewedAt: runtime.modules.serverTimestamp(),
+      updatedAt: runtime.modules.serverTimestamp(),
+    }, { merge: true });
+    if (request.playerId && state.parentLinks.some(link => link.parentUid === request.parentUid && link.playerId === request.playerId)) {
+      batch.set(await liveDoc("parentLinks", request.parentUid + "_" + request.playerId), {status:"rejected",updatedAt:runtime.modules.serverTimestamp()}, {merge:true});
+    }
+    await batch.commit();
+  }
+  await loadLiveStateFromFirebase();
+  toast(`Request ${status}`);
+}
+
+async function toggleDualUser(userId, enabled) {
+  if (!state.session.isAdmin || !userId) { toast("Administrator access required"); return; }
+  const runtime = await ensureFirebase();
+  await runtime.modules.setDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "users", userId), {
+    canSwitchPortal: enabled,
+    updatedAt: runtime.modules.serverTimestamp(),
+  }, { merge: true });
+  state.users = state.users.map((user) => user.id === userId ? { ...user, canSwitchPortal: enabled } : user);
+  if (state.session.userId === userId) state.session.canSwitchPortal = enabled;
+  render();
+  toast(enabled ? "Dual switch enabled" : "Dual switch disabled");
+}
+
+async function revokeParentLink(linkId) {
+  if (!requireCoach()) return;
+  const link = state.parentLinks.find(item => item.id === linkId);
+  if (!link || !await confirmAction({title:"Revoke this child link?",message:"Access to this child's private records will end. Historical records and other approved child links are retained.",confirmLabel:"Revoke access",danger:true})) return;
+  await saveLiveDocument("parentLinks", linkId, {status:"revoked",revokedBy:state.session.userId});
+  await loadLiveStateFromFirebase(); render(); toast("Child access revoked");
+}
+
+async function revokeUserAccess(userId) {
+  if (!state.session.isAdmin || userId === state.session.userId) return;
+  const user = state.users.find(item => item.id === userId);
+  if (!user || !await confirmAction({title:"Revoke this account?",message:"Sign-in and club access will be withdrawn. The account UID and all historical club records are retained.",confirmLabel:"Revoke access",danger:true})) return;
+  await saveLiveDocument("users", userId, {status:"revoked",revokedBy:state.session.userId});
+  await loadLiveStateFromFirebase(); render(); toast("Account access revoked");
+}
+
+function scheduleAvailabilitySave(playerId) {
+  clearTimeout(scheduleAvailabilitySave.timer);
+  scheduleAvailabilitySave.timer = setTimeout(() => {
+    saveAvailability(playerId).catch((error) => {
+      console.error(error);
+      toast("Availability note could not be saved");
+    });
+  }, 650);
+}
+
+async function saveAvailability(playerId) {
+  const event = state.events.find((item) => item.id === state.selectedEventId) || state.events[0];
+  const availabilityKey = availabilityKeyForEvent(event);
+  if (!event || !availabilityKey) return;
+  const entry = defaultAvailabilityEntry(state.availability[availabilityKey]?.[playerId] || state.availability[event?.id]?.[playerId]);
+  if (!entry) return;
+  await saveLiveDocument(`availability/${availabilityKey}/players`, playerId, {
+    playerId,
+    eventId: availabilityKey,
+    status: entry.status || "unknown",
+    note: entry.note || "",
+    liftOffer: Boolean(entry.liftOffer),
+    liftSeats: Number(entry.liftSeats || 0),
+    liftFrom: entry.liftFrom || "",
+    updatedBy: state.session.userId,
+  });
+  if (event.type === "Fixture") await saveLiftOfferForAvailability(playerId, event, entry);
+}
+
+function liftOfferId(dateKey, playerId) {
+  return `${String(dateKey).replace(/[^a-zA-Z0-9-]/g, "-")}_${String(playerId).replace(/[^a-zA-Z0-9-]/g, "-")}`;
+}
+
+async function saveLiftOfferForAvailability(playerId, event, entry) {
+  if (!event || hasCoachAccess()) return;
+  const player = approvedPlayers().find((item) => item.id === playerId);
+  if (!player) return;
+  const dateKey = availabilityKeyForEvent(event);
+  if (!dateKey) return;
+  const active = entry.status === "available" && Boolean(entry.liftOffer) && Number(entry.liftSeats || 0) > 0;
+  const record = {
+    id: liftOfferId(dateKey, playerId),
+    dateKey,
+    playerId,
+    playerName: player.name,
+    playerTeamId: normalizeTeamId(player.teamId),
+    parentUid: state.session.userId,
+    parentName: state.session.parentName || state.session.email || "Parent",
+    liftSeats: active ? Number(entry.liftSeats || 0) : 0,
+    liftFrom: active ? String(entry.liftFrom || "").trim() : "",
+    status: active ? "active" : "inactive",
+  };
+  await saveLiveDocument("liftOffers", record.id, record);
+  state.liftOffers = [
+    record,
+    ...state.liftOffers.filter((item) => item.id !== record.id),
+  ];
+}
+
+async function assignPlayerToFixture(playerId, fixtureId, options = {}) {
+  if (!requireCoach() || !playerId) return;
+  const event = state.events.find((item) => item.id === state.selectedEventId) || state.events[0];
+  const fixtures = eventsForAvailabilityDate(event);
+  if (!fixtures.length) return;
+
+  const changed = fixtures.map((fixture) => {
+    const selected = new Set(fixture.selectedPlayerIds || []);
+    const hadPlayer = selected.delete(playerId);
+    if (fixture.id === fixtureId) selected.add(playerId);
+    const nextSelectedPlayerIds = [...selected];
+    const changedSelection = hadPlayer || fixture.id === fixtureId;
+    return changedSelection
+      ? { ...fixture, selectedPlayerIds: nextSelectedPlayerIds }
+      : fixture;
+  });
+
+  const changedFixtures = changed.filter((fixture, index) => fixture !== fixtures[index]);
+  if (!changedFixtures.length) return;
+
+  await Promise.all(changedFixtures.map((fixture) => saveLiveDocument("events", fixture.id, fixture)));
+  state.events = state.events.map((item) => changedFixtures.find((fixture) => fixture.id === item.id) || item);
+  saveState();
+  if (options.render !== false) render();
+  if (options.toast !== false) toast(fixtureId ? "Player picked for fixture" : "Player removed from fixture");
+}
+
+async function saveCoachAvailability(playerId, status, options = {}) {
+  if (!requireCoach() || !playerId) return;
+  const event = state.events.find((item) => item.id === state.selectedEventId) || state.events[0];
+  const availabilityKey = availabilityKeyForEvent(event);
+  if (!event || !availabilityKey) return;
+
+  state.availability[availabilityKey] = state.availability[availabilityKey] || {};
+  const previous = availabilityEntry(event, playerId);
+  const next = {
+    ...previous,
+    status: ["available", "unavailable", "unknown"].includes(status) ? status : "unknown",
+  };
+  if (next.status !== "available") {
+    next.liftOffer = false;
+    next.liftSeats = 0;
+    next.liftFrom = "";
+  }
+
+  state.availability[availabilityKey][playerId] = next;
+  try {
+    await saveAvailability(playerId);
+    if (next.status !== "available") {
+      await assignPlayerToFixture(playerId, "", { render: false, toast: false });
+      await deactivateLiftOfferForCoach(playerId, event);
+    }
+  } catch {
+    state.availability[availabilityKey][playerId] = previous;
+    render();
+    return;
+  }
+  saveState();
+  if (options.render !== false) render();
+  toast("Availability response saved");
+}
+
+async function deactivateLiftOfferForCoach(playerId, event) {
+  if (!hasCoachAccess() || !event) return;
+  const dateKey = availabilityKeyForEvent(event);
+  const existing = state.liftOffers.find((offer) => offer.dateKey === dateKey && offer.playerId === playerId);
+  if (!existing || existing.status !== "active") return;
+  const record = {
+    ...existing,
+    liftSeats: 0,
+    liftFrom: "",
+    status: "inactive",
+  };
+  await saveLiveDocument("liftOffers", record.id || liftOfferId(dateKey, playerId), record);
+  state.liftOffers = state.liftOffers.map((offer) => offer.id === record.id ? record : offer);
+}
+
+function eventTitle(type, teamId, opponent, venueId) {
+  if (type !== "Fixture") return opponent;
+  if (opponent.trim().toLowerCase() === "opposition tbc") return `${teamName(teamId)} home match`;
+  if (venueId === "away-custom") return `${teamName(teamId)} away to ${opponent}`;
+  return `${teamName(teamId)} vs ${opponent}`;
+}
+
+function eventVenueFromForm(data) {
+  const venueId = data.get("venueId");
+  if (venueId === "tbc") return { id: "away-custom", name: "Venue TBC", address: "Address to be confirmed" };
+  const selectedVenue = venueById(venueId);
+  const customVenue = String(data.get("customVenue") || "").trim();
+  const customAddress = String(data.get("customAddress") || "").trim();
+  return venueId === "away-custom"
+    ? {
+      id: "away-custom",
+      name: customVenue || "Away destination",
+      address: customAddress || "Address to be confirmed",
+    }
+    : selectedVenue;
+}
+
+function eventDataFromForm(data, id = uid("event")) {
+  const type = data.get("type");
+  const teamId = normalizeEventTeamId(data.get("teamId"));
+  const opponent = String(data.get("opponent") || "").trim();
+  const trainingTitle = String(data.get('trainingTitle') || '').trim() || 'Training';
+  if (type === 'Training' && (!data.get('date') || !data.get('startTime') || !data.get('venueId') || data.get('venueId') === 'tbc' || (data.get('venueId') === 'away-custom' && !String(data.get('customVenue') || '').trim()))) {
+    throw new Error('Training needs a date, start time and venue.');
+  }
+  const venue = eventVenueFromForm(data);
+  const homeAway = type === "Fixture" ? String(data.get("homeAway") || (venue.id === "away-custom" ? "away" : "home")) : type === "Free Week" ? "free-week" : "";
+  const record = {
+    id,
+    type,
+    teamId,
+    title: type === "Fixture" ? `${teamName(teamId)} ${homeAway === "away" ? "away to" : "vs"} ${opponent}` : type === 'Training' ? trainingTitle : eventTitle(type, teamId, opponent, venue.id),
+    opponent: type === "Fixture" ? opponent : "",
+    datetime: combineDateTime(data.get("date"), data.get("startTime") || "12:00"),
+    timeTbc: !data.get("startTime"),
+    venueTbc: data.get("venueId") === "tbc",
+    homeAway,
+    finishTime: type === "Training" ? state.events.find(event => event.id === id && event.type === "Training")?.finishTime || "" : data.get("finishTime") || "",
+    venue: venue.name,
+    venueId: venue.id,
+    address: venue.address,
+    parkingAddress: venue.parkingAddress || "",
+    meetTime: type === "Fixture" ? data.get("meetTime") || "" : "",
+    kit: type === "Fixture" ? data.get("kit") : "",
+    homeScore: type === "Fixture" ? String(data.get("homeScore") || "").trim() : "",
+    awayScore: type === "Fixture" ? String(data.get("awayScore") || "").trim() : "",
+    resultNotes: type === "Fixture" ? String(data.get("resultNotes") || "").trim() : "",
+    notes: data.get("notes"),
+  };
+  const blockId = seasonBlocks.blockForEvent(record);
+  if (blockId) {
+    Object.assign(record, { seasonId: seasonBlocks.seasonId, blockId, blockStatus: blockId === "A" ? "archived" : "active" });
+    if (blockId === "B" && ["team1", "team2"].includes(teamId) && type !== "Training") record.competition = teamId === "team1" ? "League 1" : "League 2";
+  }
+  return record;
+}
+
+function shouldNotifyParents(data) {
+  return data.get("notifyParents") === "on";
+}
+
+function plainScheduleLine(event) {
+  const venue = eventVenue(event);
+  if (event.type === "Free Week") return `${formatDateOnly(event.datetime)} - no match scheduled.`;
+  return `${event.timeTbc ? `${formatDateOnly(event.datetime)} · Kick-off TBC` : formatDate(event.datetime)}${event.finishTime ? ` to ${event.finishTime}` : ""} at ${venue.name}.`;
+}
+
+function scheduleNotificationTitle(event, action) {
+  if (action === "created") return `New ${event.type.toLowerCase()}: ${event.title}`;
+  if (action === "deleted") return `${event.type} removed: ${event.title}`;
+  return `${event.type} updated: ${event.title}`;
+}
+
+function scheduleNotificationBody(event, action) {
+  const team = teamName(normalizeEventTeamId(event.teamId));
+  const line = plainScheduleLine(event);
+  if (action === "deleted") return `${team}: ${line} This item has been removed from the schedule.`;
+  if (action === "created") return `${team}: ${line} Please check the Schedule tab for details.`;
+  return `${team}: ${line} Please check the Schedule tab for the latest details.`;
+}
+
+async function queueScheduleNotification(event, action) {
+  const request = {
+    id: uid("notify"),
+    audience: "schedule",
+    action,
+    eventId: event.id,
+    teamId: normalizeEventTeamId(event.teamId),
+    title: scheduleNotificationTitle(event, action),
+    body: scheduleNotificationBody(event, action),
+    createdBy: state.session.userId,
+    createdByName: state.session.coachName || "Coach",
+  };
+  await saveLiveDocument("notificationRequests", request.id, request);
+}
+
+function syncEventRoster(event) {
+  const availabilityKey = availabilityKeyForEvent(event);
+  state.availability[availabilityKey] = state.availability[availabilityKey] || {};
+  state.attendance[event.id] = state.attendance[event.id] || {};
+  availabilityPlayersForEvent(event).forEach((player) => {
+    state.availability[availabilityKey][player.id] = defaultAvailabilityEntry(state.availability[availabilityKey][player.id]);
+    state.attendance[event.id][player.id] = state.attendance[event.id][player.id] || "unknown";
+  });
+}
+
+async function addEvent(data) {
+  if (!requireCoach()) return;
+  const event = eventDataFromForm(data);
+  await saveLiveDocument("events", event.id, event);
+  if (shouldNotifyParents(data)) await queueScheduleNotification(event, "created");
+  state.events.push(event);
+  syncEventRoster(event);
+  state.selectedEventId = event.id;
+  delete state.modal;
+  toast(shouldNotifyParents(data) ? "Event added and parent push queued" : "Event added");
+}
+
+async function editEvent(data) {
+  if (!requireCoach()) return;
+  const eventId = data.get("eventId");
+  const index = state.events.findIndex((event) => event.id === eventId);
+  if (index === -1) return;
+  const nextEvent = {
+    ...state.events[index],
+    ...eventDataFromForm(data, eventId),
+    selectedPlayerIds: state.events[index].selectedPlayerIds || [],
+  };
+  await saveLiveDocument("events", eventId, nextEvent);
+  if (shouldNotifyParents(data)) await queueScheduleNotification(nextEvent, "updated");
+  state.events[index] = nextEvent;
+  syncEventRoster(nextEvent);
+  state.selectedEventId = eventId;
+  delete state.modal;
+  toast(shouldNotifyParents(data) ? "Event updated and parent push queued" : "Event updated");
+}
+
+async function setAttendance(playerId, status) {
+  if (!requireCoach()) return;
+  state.attendance[state.selectedEventId] = state.attendance[state.selectedEventId] || {};
+  await saveLiveDocument(`attendance/${state.selectedEventId}/players`, playerId, {
+    playerId,
+    eventId: state.selectedEventId,
+    status,
+    markedBy: state.session.coachName || "Coach",
+    markedByUid: state.session.userId,
+  });
+  state.attendance[state.selectedEventId][playerId] = status;
+  saveState();
+  render();
+  toast(["present", "collected"].includes(status) ? "Register updated and parent push queued" : "Register updated");
+}
+
+async function savePlayerAward(data) {
+  if (!requireCoach()) return;
+  const date = String(data.get("date") || "").trim();
+  const playerId = String(data.get("playerId") || "").trim();
+  const player = activePlayers().find((item) => item.id === playerId);
+  if (!date || !player) {
+    showError("Choose the Wednesday date and player before saving.");
+    return;
+  }
+  const trophyWithPlayerId = String(data.get("trophyWithPlayerId") || playerId).trim() || playerId;
+  const trophyPlayer = activePlayers().find((item) => item.id === trophyWithPlayerId) || player;
+  const award = {
+    id: `potw-${date}`,
+    date,
+    playerId,
+    playerName: player.name,
+    teamId: player.teamId,
+    trophyWithPlayerId: trophyPlayer.id,
+    trophyWithName: trophyPlayer.name,
+    notes: String(data.get("notes") || "").trim(),
+    status: "active",
+    createdBy: state.session.userId,
+    createdByName: state.session.coachName || "Coach",
+  };
+  await saveLiveDocument("playerAwards", award.id, award);
+  state.playerAwards = sortPlayerAwards([award, ...state.playerAwards.filter((item) => item.id !== award.id)]);
+  const day = new Date(`${date}T12:00`).getDay();
+  toast(day === 3 ? "Player of the Week saved" : "Winner saved. Note: that date is not a Wednesday.");
+}
+
+async function deletePlayerAward(awardId) {
+  if (!requireCoach() || !awardId) return;
+  const award = state.playerAwards.find((item) => item.id === awardId);
+  const confirmed = await confirmAction({
+    title: "Remove weekly winner?",
+    message: `Remove ${award?.playerName || "this weekly winner"} from the trophy history?`,
+    confirmLabel: "Remove winner",
+    danger: true,
+  });
+  if (!confirmed) return;
+  await deleteLiveDocument("playerAwards", awardId);
+  state.playerAwards = state.playerAwards.filter((item) => item.id !== awardId);
+  saveState();
+  render();
+  toast("Weekly winner removed");
+}
+
+async function saveMatchStats(data) {
+  if (!requireCoach()) return;
+  const eventId = String(data.get("eventId") || "").trim();
+  const eventIndex = state.events.findIndex((item) => item.id === eventId);
+  if (eventIndex === -1) {
+    showError("Pick a valid fixture before saving stats.");
+    return;
+  }
+
+  const event = state.events[eventIndex];
+  const updatedEvent = {
+    ...event,
+    homeScore: String(data.get("homeScore") || "").trim(),
+    awayScore: String(data.get("awayScore") || "").trim(),
+    resultNotes: String(data.get("resultNotes") || "").trim(),
+  };
+  await saveLiveDocument("events", eventId, updatedEvent);
+
+  const players = resultPlayersForEvent(event);
+  const playerIds = new Set(players.map((player) => player.id));
+  const nextStats = [...state.matchStats.filter((stat) => stat.eventId !== eventId || !playerIds.has(stat.playerId))];
+  await Promise.all(players.map(async (player) => {
+    const goals = Math.max(0, Number(data.get(`goals:${player.id}`) || 0));
+    const assists = Math.max(0, Number(data.get(`assists:${player.id}`) || 0));
+    const statId = `${eventId}_${player.id}`;
+    const existing = state.matchStats.find((stat) => stat.id === statId);
+    if (!goals && !assists) {
+      if (existing) await deleteLiveDocument("matchStats", statId);
+      return;
+    }
+    const stat = {
+      id: statId,
+      eventId,
+      playerId: player.id,
+      playerName: player.name,
+      teamId: player.teamId,
+      goals,
+      assists,
+      status: "active",
+      createdBy: state.session.userId,
+      createdByName: state.session.coachName || "Coach",
+    };
+    await saveLiveDocument("matchStats", statId, stat);
+    nextStats.push(stat);
+  }));
+
+  state.events[eventIndex] = updatedEvent;
+  state.matchStats = sortMatchStats(nextStats);
+  state.selectedResultEventId = eventId;
+  if (state.resultDrafts) delete state.resultDrafts[eventId];
+  saveState();
+  render();
+  toast("Result and player stats saved");
+}
+
+async function deleteEvent(eventId) {
+  if (!requireCoach()) return;
+  const event = state.events.find((item) => item.id === eventId);
+  if (!event) return;
+
+  const confirmed = await confirmAction({
+    title: "Remove event?",
+    message: `Cancel "${event.title}"? Its historical records will be retained.`,
+    confirmLabel: "Remove event",
+    danger: true,
+  });
+  if (!confirmed) return;
+
+  await deleteEventLive(eventId, event);
+  await queueScheduleNotification(event, "deleted");
+  state.events = state.events.filter((item) => item.id !== eventId);
+  // Availability and attendance remain intact after cancellation.
+
+  if (state.selectedEventId === eventId) {
+    state.selectedEventId = state.events[0]?.id || "";
+  }
+
+  saveState();
+  render();
+  toast("Event removed and parent push queued");
+}
+
+async function addMessage(data) {
+  if (!requireCoach()) return;
+  const message = {
+    id: uid("msg"),
+    title: data.get("title"),
+    body: data.get("body"),
+    teamId: normalizeEventTeamId(data.get("teamId")),
+    createdBy: state.session.userId,
+  };
+  await saveLiveDocument("announcements", message.id, message);
+  state.messages.unshift(message);
+  delete state.modal;
+  toast("Message sent");
+}
+
+function isAllowedDocumentFile(file) {
+  if (!file?.name) return false;
+  const lowerName = file.name.toLowerCase();
+  return allowedDocumentTypes.has(file.type) || allowedDocumentExtensions.some((extension) => lowerName.endsWith(extension));
+}
+
+function documentContentType(file) {
+  if (allowedDocumentTypes.has(file?.type)) return file.type;
+  const lowerName = String(file?.name || "").toLowerCase();
+  if (lowerName.endsWith(".pdf")) return "application/pdf";
+  if (lowerName.endsWith(".docx")) return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  if (lowerName.endsWith(".doc")) return "application/msword";
+  return file?.type || "";
+}
+
+function safeStorageFileName(name = "document") {
+  const parts = String(name).split(".");
+  const extension = parts.length > 1 ? `.${parts.pop().toLowerCase().replace(/[^a-z0-9]/g, "")}` : "";
+  const base = parts.join(".").replace(/[^a-zA-Z0-9-]+/g, "-").replace(/(^-|-$)/g, "").slice(0, 70) || "document";
+  return `${base}${extension}`;
+}
+
+function normalizeStoragePath(path = "") {
+  const value = String(path || "").trim();
+  if (!value) return "";
+  const gsMatch = value.match(/^gs:\/\/[^/]+\/(.+)$/i);
+  if (gsMatch) return gsMatch[1].replace(/^\/+/, "");
+  if (/^https?:\/\//i.test(value)) {
+    try {
+      const parsed = new URL(value);
+      const encodedPath = parsed.pathname.split("/o/")[1];
+      if (encodedPath) return decodeURIComponent(encodedPath).replace(/^\/+/, "");
+    } catch {
+      return value.replace(/^\/+/, "");
+    }
+  }
+  return value.replace(/^\/+/, "");
+}
+
+function addUniqueStoragePath(paths, path) {
+  const normalized = normalizeStoragePath(path);
+  if (normalized && !paths.includes(normalized)) paths.push(normalized);
+}
+
+function storageFileNameFromPath(path = "") {
+  const normalized = normalizeStoragePath(path);
+  if (!normalized) return "";
+  try {
+    return decodeURIComponent(normalized.split("/").pop() || "");
+  } catch {
+    return normalized.split("/").pop() || "";
+  }
+}
+
+function documentFileNameCandidates(doc = {}) {
+  const names = [
+    storageFileNameFromPath(doc.storagePath),
+    safeStorageFileName(doc.originalFileName || documentTitle(doc)),
+    safeStorageFileName(documentTitle(doc)),
+  ];
+  return [...new Set(names.filter(Boolean))];
+}
+
+function storageTargetFromPath(path = "", collectionName = "") {
+  const segments = normalizeStoragePath(path).split("/");
+  const index = segments.indexOf(collectionName);
+  return index >= 0 ? segments[index + 1] || "" : "";
+}
+
+function playerDocumentStorageCandidates(doc = {}) {
+  const paths = [];
+  const documentId = doc.id || "";
+  const targetIds = [
+    storageTargetFromPath(doc.storagePath, "playerDocuments"),
+    doc.audience === "all" ? "all" : "",
+    doc.audience === "team" ? normalizeEventTeamId(doc.teamId || doc.playerTeamId) : "",
+    doc.playerId,
+    doc.teamId,
+    doc.playerTeamId,
+  ].filter(Boolean);
+  addUniqueStoragePath(paths, doc.storagePath);
+  [...new Set(targetIds)].forEach((targetId) => {
+    documentFileNameCandidates(doc).forEach((fileName) => {
+      addUniqueStoragePath(paths, `clubs/${clubId}/playerDocuments/${targetId}/${documentId}/${fileName}`);
+    });
+  });
+  return paths;
+}
+
+function coachDocumentStorageCandidates(doc = {}) {
+  const paths = [];
+  const documentId = doc.id || "";
+  const categoryFromPath = storageTargetFromPath(doc.storagePath, "coachDocuments");
+  const categories = [categoryFromPath, doc.category].filter(Boolean);
+  addUniqueStoragePath(paths, doc.storagePath);
+  [...new Set(categories)].forEach((category) => {
+    documentFileNameCandidates(doc).forEach((fileName) => {
+      addUniqueStoragePath(paths, `clubs/${clubId}/coachDocuments/${category}/${documentId}/${fileName}`);
+    });
+  });
+  return paths;
+}
+
+function compactStorageError(error = {}) {
+  const serverResponse = String(error.customData?.serverResponse || error.serverResponse || "");
+  let serverMessage = "";
+  try {
+    serverMessage = JSON.parse(serverResponse)?.error?.message || "";
+  } catch {
+    serverMessage = serverResponse;
+  }
+  const rawMessage = [error.message, serverMessage].filter(Boolean).join(" ");
+  const billingBlocked = /billing account|state delinquent|(^|\D)402(\D|$)/i.test(rawMessage);
+  return {
+    code: error.code || "unknown",
+    message: String(rawMessage || "Unknown Firebase Storage error").replace(/https?:\/\/\S+/g, "[url]"),
+    status: billingBlocked ? 402 : error.status_ || error.status || "",
+    reason: billingBlocked ? "billing-disabled" : "",
+  };
+}
+
+function storagePathSummary(path = "") {
+  const segments = normalizeStoragePath(path).split("/");
+  const fileName = segments.at(-1) || "";
+  const extension = fileName.includes(".") ? fileName.split(".").pop() : "";
+  return {
+    area: segments[2] || "",
+    documentId: segments[4] || "",
+    extension: extension || "none",
+  };
+}
+
+function documentDiagnosticsEnabled() {
+  let debugFlag = false;
+  try {
+    debugFlag = window.localStorage?.getItem("largs-colts-debug") === "1";
+  } catch {
+    debugFlag = false;
+  }
+  return ["localhost", "127.0.0.1"].includes(window.location.hostname)
+    || window.location.search.includes("debugDocs=1")
+    || debugFlag;
+}
+
+async function resolveDocumentDownloadUrl(runtime, doc, candidatePaths, kind) {
+  const epoch = privateSessionEpoch, uid = runtime.user?.uid;
+  const endpoint = backendConfig.documentsEndpoint || `https://europe-west2-${backendConfig.firebaseConfig.projectId}.cloudfunctions.net/downloadPrivateDocument`;
+  const url = new URL(endpoint, window.location.origin);
+  url.searchParams.set("kind", kind);url.searchParams.set("id", doc.id);
+  const token = await runtime.modules.getIdToken(runtime.user);
+  const response = await fetch(url, {headers:{Authorization:`Bearer ${token}`},cache:"no-store",credentials:"omit"});
+  if (!response.ok) {
+    const error = new Error("Authenticated document download failed");
+    error.code = response.status === 401 ? "storage/unauthenticated" : response.status === 403 ? "storage/unauthorized" : response.status === 404 ? "storage/object-not-found" : "storage/unknown";
+    error.documentDiagnostics = {attempted:[{code:error.code,status:response.status}]};throw error;
+  }
+  const blob = await response.blob();
+  if (epoch !== privateSessionEpoch || uid !== firebaseRuntime.user?.uid) throw new Error("Session changed during download");
+  const contentType = response.headers.get("Content-Type")?.split(";")[0];
+  if (blob.size > maxDocumentBytes || !allowedDocumentTypes.has(contentType)) throw new Error("Unsupported document format");
+  if (contentType === "application/pdf" && !(await blob.slice(0,1024).text()).trimStart().startsWith("%PDF-")) throw new Error("Invalid PDF header");
+  if (epoch !== privateSessionEpoch || uid !== firebaseRuntime.user?.uid) throw new Error("Session changed during download");
+  const privateUrl = URL.createObjectURL(new Blob([blob], {type:contentType}));privateDocumentUrls.add(privateUrl);
+  return {url:privateUrl,storagePath:doc.storagePath || "",contentType};
+}
+
+function documentDownloadMessage(error = {}, kind = "document") {
+  const attempts = error.documentDiagnostics?.attempted || [];
+  const codes = new Set(attempts.map((item) => item.code).filter(Boolean));
+  const label = kind === "coach" ? "Coach document" : "Document";
+  if (attempts.some((item) => item.reason === "billing-disabled" || Number(item.status) === 402 || /billing account|state delinquent/i.test(item.message || ""))) {
+    return "Document downloads are blocked because Firebase Storage billing is disabled. A club admin needs to restore the Firebase billing account.";
+  }
+  if (codes.has("storage/unauthenticated")) return "Please sign in again before downloading this document.";
+  if (codes.has("storage/unauthorized")) return `${label} download was blocked by Firebase Storage permissions. Check the user role/link and deployed Storage rules.`;
+  if (attempts.length && attempts.every((item) => item.code === "storage/object-not-found")) {
+    return `${label} file was not found in Firebase Storage. The saved file path needs checked.`;
+  }
+  if (codes.has("storage/retry-limit-exceeded")) return "Firebase Storage timed out. Check the connection and try again.";
+  return `${label} download failed. Please try again, or ask a coach/admin to run the document diagnostic check.`;
+}
+
+function logDocumentDownloadFailure(kind, doc, error, candidatePaths) {
+  const compact = {
+    kind,
+    documentId: doc?.id || "",
+    bucket: backendConfig.firebaseConfig?.storageBucket || "",
+    signedIn: Boolean(firebaseRuntime.user),
+    role: state.session.role || "",
+    code: error?.code || "unknown",
+    candidates: candidatePaths.map(storagePathSummary),
+    attempts: error?.documentDiagnostics?.attempted?.map((item) => ({
+      code: item.code,
+      status: item.status,
+      path: storagePathSummary(item.path),
+    })) || [],
+  };
+  console.warn("Document download failed", compact);
+  if (documentDiagnosticsEnabled()) {
+    console.info("Document download diagnostics", {
+      ...compact,
+      fullCandidatePaths: candidatePaths,
+      attemptedErrors: error?.documentDiagnostics?.attempted || [],
+    });
+  }
+}
+
+function approvedParentUidsForPlayers(players = []) {
+  const playerIds = new Set(players.map((player) => player.id).filter(Boolean));
+  return [...new Set((state.parentLinks || [])
+    .filter((link) => link.status === "approved" && playerIds.has(link.playerId) && link.parentUid)
+    .map((link) => link.parentUid))];
+}
+
+async function uploadPlayerDocument(data) {
+  if (!requireCoach()) return;
+  const runtime = await ensureFirebase();
+  const audience = ["all", "team", "player"].includes(String(data.get("audience"))) ? String(data.get("audience")) : "player";
+  const selectedTeamId = normalizeEventTeamId(data.get("teamId"));
+  const selectedPlayerId = String(data.get("playerId") || "").trim();
+  const player = activePlayers().find((item) => item.id === selectedPlayerId);
+  const title = String(data.get("title") || "").trim();
+  const file = data.get("documentFile");
+
+  if (!title || !(file instanceof File) || !file.name) {
+    toast("Choose a title and document before uploading");
+    return;
+  }
+
+  let targetPlayers = [];
+  let targetLabel = "All players";
+  let targetTeamId = "all";
+  let storageTargetId = "all";
+
+  if (audience === "player") {
+    if (!player) {
+      toast("Choose the child this document is for");
+      return;
+    }
+    targetPlayers = [player];
+    targetLabel = player.name;
+    targetTeamId = normalizeTeamId(player.teamId);
+    storageTargetId = player.id;
+  }
+
+  if (audience === "team") {
+    targetPlayers = activePlayers().filter((item) => normalizeTeamId(item.teamId) === normalizeTeamId(selectedTeamId));
+    targetLabel = teamName(selectedTeamId);
+    targetTeamId = selectedTeamId;
+    storageTargetId = selectedTeamId;
+    if (!targetPlayers.length) {
+      toast(`No active players are currently assigned to ${targetLabel}`);
+      return;
+    }
+  }
+
+  if (audience === "all") {
+    targetPlayers = activePlayers();
+    if (!targetPlayers.length) {
+      toast("No active players found to share this with");
+      return;
+    }
+  }
+
+  const contentType = documentContentType(file);
+  if (!contentType) {
+    toast("Only PDF, DOC and DOCX files can be uploaded");
+    return;
+  }
+  if (!isAllowedDocumentFile(file)) {
+    toast("Only PDF, DOC and DOCX files can be uploaded");
+    return;
+  }
+  if (file.size > maxDocumentBytes) {
+    toast("Document is too large. Keep uploads under 15 MB.");
+    return;
+  }
+
+  const documentId = uid("doc");
+  const fileName = safeStorageFileName(file.name);
+  const storagePath = `clubs/${clubId}/playerDocuments/${storageTargetId}/${documentId}/${fileName}`;
+  const storageRef = runtime.modules.ref(runtime.storage, storagePath);
+  const recipientPlayerIds = [...new Set(targetPlayers.map((item) => item.id).filter(Boolean))];
+  const recipientParentUids = approvedParentUidsForPlayers(targetPlayers);
+
+  toast("Uploading document...");
+  await runtime.modules.uploadBytes(storageRef, file, {
+    contentType,
+    customMetadata: {
+      clubId,
+      playerId: audience === "player" ? player.id : "",
+      audience,
+      teamId: targetTeamId,
+      uploadedBy: state.session.userId || "",
+    },
+  });
+
+  const record = {
+    id: documentId,
+    audience,
+    teamId: targetTeamId,
+    teamName: audience === "all" ? "All players" : teamName(targetTeamId),
+    playerId: audience === "player" ? player.id : "",
+    playerName: targetLabel,
+    playerTeamId: targetTeamId,
+    recipientPlayerIds,
+    recipientParentUids,
+    title,
+    originalFileName: file.name,
+    storagePath,
+    contentType,
+    size: file.size,
+    uploadedBy: state.session.userId,
+    uploadedByName: state.session.coachName || "Coach",
+    status: "active",
+  };
+
+  await saveLiveDocument("playerDocuments", documentId, record);
+  state.playerDocuments = sortPlayerDocuments([record, ...state.playerDocuments.filter((item) => item.id !== documentId)]);
+  delete state.modal;
+  toast(recipientParentUids.length ? `Document uploaded and shared with ${targetLabel}` : "Document uploaded. No approved parents matched this audience yet.");
+}
+
+async function openExternalUrl(url, fileName = "document", contentType = "") {
+  const Browser = nativePlugin("Browser");
+  if (!url.startsWith("blob:") && isNativeCapacitor() && Browser?.open) {
+    await Browser.open({
+      url,
+      presentationStyle: "fullscreen",
+      toolbarColor: "#850008",
+    });
+    return;
+  }
+
+  if (url.startsWith("blob:")) {
+    const dialog = document.createElement("dialog");
+    dialog.dataset.privateDocument = "true";
+    dialog.className = "panel";
+    dialog.style.cssText = "width:min(95vw,900px);max-height:85dvh;padding:12px;";
+    const close = document.createElement("button"); close.className = "primary-button";
+    close.textContent = "Close"; close.setAttribute("aria-label", "Close document"); close.onclick = () => { dialog.close(); dialog.remove(); URL.revokeObjectURL(url); privateDocumentUrls.delete(url); };
+    const download = document.createElement("a"); download.href = url; download.download = fileName; download.textContent = "Download";
+    download.className = "secondary-button";
+    const open = document.createElement("a"); open.href = url; open.target = "_blank"; open.rel = "noopener noreferrer"; open.textContent = "Open"; open.className = "secondary-button";
+    const actions = document.createElement("div"); actions.className = "private-document-actions";
+    actions.append(close, open, download); dialog.append(actions);
+    if (contentType === "application/pdf") {
+      const preview = document.createElement("section"); preview.setAttribute("aria-label", "Document preview"); preview.textContent = "Loading document preview…"; dialog.append(preview);
+      const disposePreview = () => preview.dispatchEvent(new Event("private-preview-close"));
+      dialog.addEventListener("close", disposePreview, { once: true });
+      const observer = new MutationObserver(() => { if (!dialog.isConnected) { disposePreview(); observer.disconnect(); } });
+      observer.observe(document.body, { childList: true });
+      import("./document-preview.js?v=live-64").then(({ showPdfPreview }) => showPdfPreview(preview, url, () => dialog.isConnected && privateDocumentUrls.has(url)))
+        .catch(() => { if (dialog.isConnected) preview.textContent = "Preview unavailable. Use Open or Download above."; });
+    } else {
+      const note = document.createElement("p"); note.textContent = contentType === "application/pdf"
+        ? "Your browser opens PDFs separately. Choose Open to view it, or Download to save a copy."
+        : "Download this document to open it in your document app."; dialog.append(note);
+    }
+    dialog.addEventListener("cancel", () => { URL.revokeObjectURL(url); privateDocumentUrls.delete(url); dialog.remove(); });
+    document.body.append(dialog); dialog.showModal(); return;
+  }
+  const link = document.createElement("a");
+  link.href = url;
+  link.target = "_blank";
+  link.rel = "noopener";
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+async function downloadPlayerDocument(documentId) {
+  const doc = state.playerDocuments.find((item) => item.id === documentId);
+  if (!doc?.storagePath) {
+    toast("Document could not be found");
+    return;
+  }
+  if (!hasCoachAccess() && !parentCanOpenDocument(doc)) {
+    toast("This document is not linked to your child");
+    return;
+  }
+
+  try {
+    const runtime = await ensureFirebase();
+    const candidatePaths = playerDocumentStorageCandidates(doc);
+    const { url, contentType } = await resolveDocumentDownloadUrl(runtime, doc, candidatePaths, "player");
+    await openExternalUrl(url, doc.originalFileName || documentTitle(doc), contentType);
+  } catch (error) {
+    const candidatePaths = playerDocumentStorageCandidates(doc);
+    logDocumentDownloadFailure("player", doc, error, candidatePaths);
+    toast(documentDownloadMessage(error, "player"));
+  }
+}
+
+async function deletePlayerDocument(documentId) {
+  if (!requireCoach() || !documentId) return;
+  const doc = state.playerDocuments.find((item) => item.id === documentId);
+  if (!doc) return;
+  const confirmed = await confirmAction({
+    title: "Remove document?",
+    message: `Remove "${documentTitle(doc)}" from ${documentPlayerName(doc)}?`,
+    confirmLabel: "Remove document",
+    danger: true,
+  });
+  if (!confirmed) return;
+
+  const runtime = await ensureFirebase();
+  if (doc.storagePath) {
+    try {
+      await runtime.modules.deleteObject(runtime.modules.ref(runtime.storage, doc.storagePath));
+    } catch (error) {
+      console.warn("Stored file could not be deleted; removing Firestore record anyway", error);
+    }
+  }
+  await deleteLiveDocument("playerDocuments", documentId);
+  state.playerDocuments = state.playerDocuments.filter((item) => item.id !== documentId);
+  render();
+  toast("Document removed");
+}
+
+async function uploadCoachDocument(data) {
+  if (!requireCoach()) return;
+  const runtime = await ensureFirebase();
+  const category = String(data.get("category") || state.coachDocumentCategory || "handbooks").trim();
+  const title = String(data.get("title") || "").trim();
+  const file = data.get("documentFile");
+
+  if (!coachDocumentCategories.some((item) => item.id === category)) {
+    toast("Choose a valid coach library section");
+    return;
+  }
+  if (!title || !(file instanceof File) || !file.name) {
+    toast("Choose a title and document before uploading");
+    return;
+  }
+  if (!isAllowedDocumentFile(file)) {
+    toast("Only PDF, DOC and DOCX files can be uploaded");
+    return;
+  }
+  if (file.size > maxDocumentBytes) {
+    toast("Document is too large. Keep uploads under 15 MB.");
+    return;
+  }
+
+  const documentId = uid("coachdoc");
+  const fileName = safeStorageFileName(file.name);
+  const storagePath = `clubs/${clubId}/coachDocuments/${category}/${documentId}/${fileName}`;
+  const storageRef = runtime.modules.ref(runtime.storage, storagePath);
+  const contentType = documentContentType(file);
+
+  toast("Uploading coach document...");
+  await runtime.modules.uploadBytes(storageRef, file, {
+    contentType,
+    customMetadata: {
+      clubId,
+      category,
+      uploadedBy: state.session.userId || "",
+    },
+  });
+
+  const record = {
+    id: documentId,
+    category,
+    title,
+    originalFileName: file.name,
+    storagePath,
+    contentType,
+    size: file.size,
+    uploadedBy: state.session.userId,
+    uploadedByName: state.session.coachName || "Coach",
+    status: "active",
+  };
+
+  await saveLiveDocument("coachDocuments", documentId, record);
+  state.coachDocuments = sortCoachDocuments([record, ...state.coachDocuments.filter((item) => item.id !== documentId)]);
+  state.coachDocumentCategory = category;
+  delete state.modal;
+  toast("Coach document uploaded");
+}
+
+async function downloadCoachDocument(documentId) {
+  if (!requireCoach() || !documentId) return;
+  const doc = state.coachDocuments.find((item) => item.id === documentId);
+  if (!doc?.storagePath) {
+    toast("Document could not be found");
+    return;
+  }
+
+  try {
+    const runtime = await ensureFirebase();
+    const candidatePaths = coachDocumentStorageCandidates(doc);
+    const { url, contentType } = await resolveDocumentDownloadUrl(runtime, doc, candidatePaths, "coach");
+    await openExternalUrl(url, doc.originalFileName || documentTitle(doc), contentType);
+  } catch (error) {
+    const candidatePaths = coachDocumentStorageCandidates(doc);
+    logDocumentDownloadFailure("coach", doc, error, candidatePaths);
+    toast(documentDownloadMessage(error, "coach"));
+  }
+}
+
+async function deleteCoachDocument(documentId) {
+  if (!requireCoach() || !documentId) return;
+  const doc = state.coachDocuments.find((item) => item.id === documentId);
+  if (!doc) return;
+  const confirmed = await confirmAction({
+    title: "Remove coach document?",
+    message: `Remove "${documentTitle(doc)}" from the coach library?`,
+    confirmLabel: "Remove document",
+    danger: true,
+  });
+  if (!confirmed) return;
+
+  const runtime = await ensureFirebase();
+  if (doc.storagePath) {
+    try {
+      await runtime.modules.deleteObject(runtime.modules.ref(runtime.storage, doc.storagePath));
+    } catch (error) {
+      console.warn("Stored coach document could not be deleted; removing Firestore record anyway", error);
+    }
+  }
+  await deleteLiveDocument("coachDocuments", documentId);
+  state.coachDocuments = state.coachDocuments.filter((item) => item.id !== documentId);
+  render();
+  toast("Coach document removed");
+}
+
+async function addPlayer(data) {
+  if (!requireCoach()) return;
+  const playerId = uid("player");
+  const playerName = String(data.get("name") || "").trim();
+  const teamId = normalizeTeamId(data.get("teamId"));
+  const player = {
+    id: playerId,
+    name: playerName,
+    teamId,
+    role: String(data.get("role") || "").trim() || "Unassigned",
+    parentName: String(data.get("parentName") || "").trim() || placeholderParent,
+    parentPhone: String(data.get("parentPhone") || "").trim() || placeholderPhone,
+    status: "active",
+  };
+  await saveLiveDocument("players", player.id, player);
+  const development = {
+    ...defaultDevelopmentRecord(player.id, {}),
+    playerName,
+    teamId,
+    reviewedBy: "",
+    reviewedByName: "",
+  };
+  await saveLiveDocument("playerDevelopment", player.id, development);
+  state.players.push(player);
+  state.playerDevelopment[player.id] = development;
+  state.events.forEach((event) => {
+    if (event.teamId === "all" || normalizeTeamId(event.teamId) === normalizeTeamId(player.teamId)) {
+      state.availability[event.id] = state.availability[event.id] || {};
+      state.attendance[event.id] = state.attendance[event.id] || {};
+      state.availability[event.id][player.id] = defaultAvailabilityEntry();
+      state.attendance[event.id][player.id] = "unknown";
+    }
+  });
+  delete state.modal;
+  toast("Player added");
+}
+
+async function movePlayer(data) {
+  if (!requireCoach()) return;
+  const player = activePlayers().find((item) => item.id === data.get("playerId"));
+  if (!player) return;
+  const updated = { ...player, teamId: normalizeTeamId(data.get("teamId")) };
+  await saveLiveDocument("players", player.id, updated);
+  Object.assign(player, updated);
+  delete state.modal;
+  toast("Player moved");
+}
+
+async function editPlayer(data) {
+  if (!requireCoach()) return;
+  const player = activePlayers().find((item) => item.id === data.get("playerId"));
+  if (!player) return;
+  const updated = {
+    ...player,
+    name: String(data.get("name") || "").trim(),
+    teamId: normalizeTeamId(data.get("teamId")),
+    role: String(data.get("role") || "").trim() || "Unassigned",
+    parentName: String(data.get("parentName") || "").trim() || placeholderParent,
+    parentPhone: String(data.get("parentPhone") || "").trim() || placeholderPhone,
+  };
+  await saveLiveDocument("players", player.id, updated);
+  Object.assign(player, updated);
+  delete state.modal;
+  toast("Player updated");
+}
+
+async function editCoach(data) {
+  if (!requireCoach()) return;
+  const coachId = String(data.get("coachId") || "").trim();
+  if (!coachId) return;
+  const updated = {
+    id: coachId,
+    name: String(data.get("name") || "").trim(),
+    teamId: normalizeEventTeamId(String(data.get("teamId") || "all")),
+    role: String(data.get("role") || "Coach").trim(),
+    phone: String(data.get("phone") || "").replace(/\D/g, ""),
+    email: String(data.get("email") || "").trim(),
+  };
+  await saveLiveDocument("coachContacts", coachId, updated);
+  state.coachContacts = [
+    ...state.coachContacts.filter((coach) => coach.id !== coachId),
+    updated,
+  ];
+  delete state.modal;
+  toast("Coach contact saved");
+}
+
+async function editVenue(data) {
+  if (!requireCoach()) return;
+  const venueId = String(data.get("venueId") || "").trim();
+  if (!venueId) return;
+  const updated = {
+    id: venueId,
+    name: String(data.get("name") || "").trim(),
+    address: String(data.get("address") || "").trim(),
+    parkingAddress: String(data.get("parkingAddress") || "").trim(),
+    surface: String(data.get("surface") || "").trim(),
+    notes: String(data.get("notes") || "").trim(),
+    pitchImage: String(data.get("pitchImage") || "").trim(),
+    parkingImage: String(data.get("parkingImage") || "").trim(),
+  };
+  await saveLiveDocument("venues", venueId, updated);
+  state.venues = [
+    ...state.venues.filter((venue) => venue.id !== venueId),
+    updated,
+  ];
+  delete state.modal;
+  toast("Venue saved");
+}
+
+async function savePlayerDevelopment(data) {
+  if (!requireCoach()) return;
+  const playerId = String(data.get("playerId") || "").trim();
+  const player = activePlayers().find((item) => item.id === playerId);
+  if (!player) return;
+  const record = defaultDevelopmentRecord(playerId, {
+    level: String(data.get("level") || "Not assessed"),
+    band: String(data.get("band") || "Not set"),
+    foot: String(data.get("foot") || "Not set"),
+    positions: data.getAll("positions").map(String),
+    notes: String(data.get("notes") || "").trim(),
+  });
+  const payload = {
+    ...record,
+    playerName: player.name,
+    teamId: player.teamId,
+    reviewedBy: state.session.userId,
+    reviewedByName: state.session.coachName || "Coach",
+  };
+  await saveLiveDocument("playerDevelopment", playerId, payload);
+  state.playerDevelopment[playerId] = payload;
+  toast("Development record saved");
+}
+
+function pitchPointFromEvent(event, pitch) {
+  const rect = pitch.getBoundingClientRect();
+  const rawX = ((event.clientX - rect.left) / rect.width) * 100;
+  const rawY = ((event.clientY - rect.top) / rect.height) * 100;
+  return {
+    x: Math.round(Math.min(92, Math.max(8, rawX)) * 10) / 10,
+    y: Math.round(Math.min(92, Math.max(8, rawY)) * 10) / 10,
+  };
+}
+
+function draftArrowLine() {
+  return builderArrowDraft?.pitch?.querySelector("[data-draft-arrow]");
+}
+
+function setDraftArrowLine(start, end) {
+  const line = draftArrowLine();
+  if (!line) return;
+  line.hidden = false;
+  line.setAttribute("x1", start.x);
+  line.setAttribute("y1", start.y);
+  line.setAttribute("x2", end.x);
+  line.setAttribute("y2", end.y);
+}
+
+function startBuilderArrow(event, pitch) {
+  const start = pitchPointFromEvent(event, pitch);
+  builderArrowDraft = {
+    pitch,
+    pointerId: event.pointerId,
+    start,
+  };
+  pitch.setPointerCapture?.(event.pointerId);
+  setDraftArrowLine(start, start);
+  event.preventDefault();
+}
+
+function updateBuilderArrowDraft(event) {
+  if (!builderArrowDraft) return;
+  const end = pitchPointFromEvent(event, builderArrowDraft.pitch);
+  setDraftArrowLine(builderArrowDraft.start, end);
+}
+
+function finishBuilderArrow(event) {
+  if (!builderArrowDraft) return;
+  const end = pitchPointFromEvent(event, builderArrowDraft.pitch);
+  const distance = Math.hypot(end.x - builderArrowDraft.start.x, end.y - builderArrowDraft.start.y);
+  builderArrowDraft.pitch.releasePointerCapture?.(builderArrowDraft.pointerId);
+  if (distance >= 4) {
+    builderArrows().push({
+      id: uid("arrow"),
+      x1: builderArrowDraft.start.x,
+      y1: builderArrowDraft.start.y,
+      x2: end.x,
+      y2: end.y,
+    });
+    saveState();
+    scheduleLiveWhiteboardPublish();
+  }
+  builderArrowDraft = null;
+  render();
+}
+
+function builderSlotAtPoint(event, ignoredElement) {
+  if (!document.elementFromPoint) return null;
+  const previousPointerEvents = ignoredElement?.style.pointerEvents || "";
+  if (ignoredElement) ignoredElement.style.pointerEvents = "none";
+  const target = document.elementFromPoint(event.clientX, event.clientY);
+  if (ignoredElement) ignoredElement.style.pointerEvents = previousPointerEvents;
+  return target?.closest?.("[data-builder-slot]") || null;
+}
+
+function moveOrSwapBuilderSelection(sourceSlotId, targetSlotId) {
+  if (!requireWhiteboardControl() || !sourceSlotId || !targetSlotId || sourceSlotId === targetSlotId) return false;
+  const selections = builderSelections();
+  const sourcePlayerId = selections[sourceSlotId];
+  if (!sourcePlayerId) return false;
+  const targetPlayerId = selections[targetSlotId];
+  selections[targetSlotId] = sourcePlayerId;
+  if (targetPlayerId) {
+    selections[sourceSlotId] = targetPlayerId;
+  } else {
+    delete selections[sourceSlotId];
+  }
+  state.squadBuilder.selectedPlayerId = "";
+  saveState();
+  scheduleLiveWhiteboardPublish();
+  render();
+  toast(targetPlayerId ? "Players swapped" : "Player moved");
+  return true;
+}
+
+function moveBuilderSlot(slotId, x, y) {
+  if (!hasCoachAccess() || !hasWhiteboardControl() || !slotId) return;
+  const baseSlot = formationDefinition().slots.find((slot) => slot.id === slotId);
+  if (!baseSlot) return;
+  const overrides = formationSlotOverrides();
+  const previous = overrides[slotId] || {};
+  const previousPosition = playerPositions.includes(previous.position) ? previous.position : baseSlot.position;
+  const nextPosition = pitchPositionFromPoint(x, y);
+  overrides[slotId] = {
+    ...previous,
+    x,
+    y,
+    position: nextPosition,
+    label: nextPosition === previousPosition && previous.label ? previous.label : shortLabelForPosition(nextPosition),
+  };
+  saveState();
+  scheduleLiveWhiteboardPublish();
+  render();
+}
+
+function saveBuilderSlotEdit(data) {
+  if (!requireWhiteboardControl()) return;
+  const slotId = String(data.get("slotId") || "");
+  const position = String(data.get("position") || "");
+  const baseSlot = formationDefinition().slots.find((slot) => slot.id === slotId);
+  if (!baseSlot || !playerPositions.includes(position)) return;
+  const label = String(data.get("label") || shortLabelForPosition(position)).trim().toUpperCase().slice(0, 8);
+  const overrides = formationSlotOverrides();
+  overrides[slotId] = {
+    ...(overrides[slotId] || {}),
+    position,
+    label: label || shortLabelForPosition(position),
+  };
+  delete state.modal;
+  saveState();
+  scheduleLiveWhiteboardPublish();
+  render();
+  toast("Formation position updated");
+}
+
+function assignBuilderSlot(slotId, playerId) {
+  if (!requireWhiteboardControl() || !slotId || !playerId) return;
+  const player = activePlayers().find((item) => item.id === playerId);
+  if (!player) return;
+  const selections = builderSelections();
+  const sourceSlotId = Object.keys(selections).find((key) => selections[key] === playerId);
+  const targetPlayerId = selections[slotId];
+  if (sourceSlotId && sourceSlotId !== slotId && targetPlayerId) {
+    selections[sourceSlotId] = targetPlayerId;
+    selections[slotId] = playerId;
+  } else {
+    Object.keys(selections).forEach((key) => {
+      if (selections[key] === playerId) delete selections[key];
+    });
+    selections[slotId] = playerId;
+  }
+  state.squadBuilder.selectedPlayerId = "";
+  saveState();
+  scheduleLiveWhiteboardPublish();
+  render();
+}
+
+function clearBuilderSlot(slotId) {
+  if (!requireWhiteboardControl() || !slotId) return;
+  delete builderSelections()[slotId];
+  saveState();
+  scheduleLiveWhiteboardPublish();
+  render();
+}
+
+async function resetBuilder() {
+  if (!requireWhiteboardControl()) return;
+  const confirmed = await confirmAction({
+    title: "Clear formation board?",
+    message: "This removes the players from the current board.",
+    confirmLabel: "Clear board",
+    danger: true,
+  });
+  if (!confirmed) return;
+  state.squadBuilder.selections[state.squadBuilder.format] = {};
+  state.squadBuilder.selectedPlayerId = "";
+  saveState();
+  scheduleLiveWhiteboardPublish();
+  render();
+}
+
+async function resetBuilderLayout() {
+  if (!requireWhiteboardControl()) return;
+  const confirmed = await confirmAction({
+    title: "Reset formation shape?",
+    message: "This resets marker positions and role labels for this formation.",
+    confirmLabel: "Reset shape",
+    danger: true,
+  });
+  if (!confirmed) return;
+  state.squadBuilder.customSlots[state.squadBuilder.format] = {};
+  saveState();
+  scheduleLiveWhiteboardPublish();
+  render();
+  toast("Formation shape reset");
+}
+
+function undoBuilderArrow() {
+  if (!requireWhiteboardControl()) return;
+  const arrows = builderArrows();
+  if (!arrows.length) return;
+  arrows.pop();
+  saveState();
+  scheduleLiveWhiteboardPublish();
+  render();
+  toast("Arrow removed");
+}
+
+async function clearBuilderArrows() {
+  if (!requireWhiteboardControl()) return;
+  const arrows = builderArrows();
+  if (!arrows.length) return;
+  const confirmed = await confirmAction({
+    title: "Clear arrows?",
+    message: "This removes all arrows from the current formation.",
+    confirmLabel: "Clear arrows",
+    danger: true,
+  });
+  if (!confirmed) return;
+  state.squadBuilder.arrows[state.squadBuilder.format] = [];
+  saveState();
+  scheduleLiveWhiteboardPublish();
+  render();
+  toast("Arrows cleared");
+}
+
+function autoFillBuilder() {
+  if (!requireWhiteboardControl()) return;
+  const selections = {};
+  const used = new Set();
+  const players = activePlayers()
+    .filter((player) => state.squadBuilder.teamFilter === "all" || normalizeTeamId(player.teamId) === normalizeTeamId(state.squadBuilder.teamFilter))
+    .filter((player) => {
+      const record = developmentFor(player.id);
+      return state.squadBuilder.levelFilter === "all" || record.level === state.squadBuilder.levelFilter;
+    });
+
+  allBuilderSlots().forEach((slot) => {
+    const candidate = players
+      .filter((player) => !used.has(player.id))
+      .map((player) => {
+        const record = developmentFor(player.id);
+        const positionMatch = slot.isSub || record.positions.includes(slot.position);
+        return {
+          player,
+          score: developmentScore(record) + (positionMatch ? 100 : 0) + (record.positions.length ? 5 : 0),
+        };
+      })
+      .sort((a, b) => b.score - a.score || a.player.name.localeCompare(b.player.name))[0]?.player;
+    if (candidate) {
+      selections[slot.id] = candidate.id;
+      used.add(candidate.id);
+    }
+  });
+
+  state.squadBuilder.selections[state.squadBuilder.format] = selections;
+  state.squadBuilder.selectedPlayerId = "";
+  saveState();
+  scheduleLiveWhiteboardPublish();
+  render();
+  toast("Formation filled");
+}
+
+function coachDisplayName() {
+  return state.session.coachName || state.session.parentName || state.session.email || "Coach";
+}
+
+async function writeWhiteboardSession(data, options = {}) {
+  if (!isFirebaseSignedIn()) return;
+  const runtime = await ensureFirebase();
+  const payload = {
+    id: "current",
+    ...data,
+    updatedAt: runtime.modules.serverTimestamp(),
+  };
+  if (options.createdAt) payload.createdAt = runtime.modules.serverTimestamp();
+  if (options.endedAt) payload.endedAt = runtime.modules.serverTimestamp();
+  await runtime.modules.setDoc(await liveDoc("whiteboardSessions", "current"), payload, { merge: true });
+}
+
+async function startLiveWhiteboard() {
+  if (!requireCoach()) return;
+  const live = liveWhiteboardState();
+  if (live.active && live.hostUid && live.hostUid !== state.session.userId) {
+    toast(`${live.hostName || "A coach"} already has a live whiteboard running`);
+    return;
+  }
+
+  const snapshot = sanitizedSquadBuilderSnapshot();
+  state.liveWhiteboard = {
+    active: true,
+    joined: true,
+    hostUid: state.session.userId,
+    hostName: coachDisplayName(),
+    remoteState: snapshot,
+  };
+
+  try {
+    await writeWhiteboardSession({
+      active: true,
+      hostUid: state.session.userId,
+      hostName: coachDisplayName(),
+      state: snapshot,
+    }, { createdAt: true });
+    render();
+    toast("Live whiteboard started");
+  } catch (error) {
+    console.error(error);
+    state.liveWhiteboard = { ...defaultState.liveWhiteboard };
+    showError("Live whiteboard could not be started. Check Firestore rules are deployed.");
+    render();
+  }
+}
+
+function joinLiveWhiteboard() {
+  if (!requireCoach()) return;
+  const live = liveWhiteboardState();
+  if (!live.active) {
+    toast("There is no live whiteboard to join");
+    return;
+  }
+  state.liveWhiteboard = {
+    ...live,
+    joined: true,
+  };
+  if (live.remoteState) applyLiveWhiteboardState(live.remoteState);
+  render();
+  toast("Joined live whiteboard");
+}
+
+function leaveLiveWhiteboard() {
+  if (!requireCoach()) return;
+  const live = liveWhiteboardState();
+  if (live.hostUid === state.session.userId) {
+    toast("End the live session when you are finished presenting");
+    return;
+  }
+  state.liveWhiteboard = {
+    ...live,
+    joined: false,
+  };
+  render();
+  toast("Left live whiteboard");
+}
+
+async function endLiveWhiteboard() {
+  if (!requireCoach()) return;
+  const live = liveWhiteboardState();
+  if (!live.active) return;
+  if (live.hostUid !== state.session.userId) {
+    toast("Only the presenter can end this live session");
+    return;
+  }
+
+  try {
+    await writeWhiteboardSession({
+      active: false,
+      hostUid: state.session.userId,
+      hostName: coachDisplayName(),
+      state: sanitizedSquadBuilderSnapshot(),
+    }, { endedAt: true });
+  } catch (error) {
+    console.error(error);
+    showError("Live whiteboard could not be ended. Check Firestore rules are deployed.");
+    return;
+  }
+
+  state.liveWhiteboard = {
+    ...defaultState.liveWhiteboard,
+    active: false,
+    joined: false,
+  };
+  render();
+  toast("Live whiteboard ended");
+}
+
+function applyLiveWhiteboardSnapshot(session) {
+  const previous = liveWhiteboardState();
+  if (!session || !session.active) {
+    state.liveWhiteboard = {
+      ...defaultState.liveWhiteboard,
+      active: false,
+      joined: false,
+      remoteState: session?.state || null,
+    };
+    return;
+  }
+
+  const isHost = session.hostUid === state.session.userId;
+  const joined = isHost || previous.joined;
+  state.liveWhiteboard = {
+    active: true,
+    joined,
+    hostUid: session.hostUid || "",
+    hostName: session.hostName || "Coach",
+    remoteState: session.state || null,
+  };
+
+  if (joined && session.state) {
+    applyLiveWhiteboardState(session.state);
+  }
+}
+
+function scheduleLiveWhiteboardPublish() {
+  if (applyingLiveWhiteboard || !isLiveWhiteboardPresenter()) return;
+  if (whiteboardSyncTimer) clearTimeout(whiteboardSyncTimer);
+  whiteboardSyncTimer = setTimeout(() => {
+    publishLiveWhiteboardState().catch((error) => {
+      console.error("Live whiteboard sync failed", error);
+    });
+  }, 250);
+}
+
+async function publishLiveWhiteboardState() {
+  if (applyingLiveWhiteboard || !isLiveWhiteboardPresenter()) return;
+  const snapshot = sanitizedSquadBuilderSnapshot();
+  state.liveWhiteboard.remoteState = snapshot;
+  await writeWhiteboardSession({
+    active: true,
+    hostUid: state.session.userId,
+    hostName: coachDisplayName(),
+    state: snapshot,
+  });
+}
+
+async function ensureFirebase() {
+  if (!backendConfig.enabled) {
+    throw new Error("Firebase config is not enabled yet.");
+  }
+  await verifyPublicCachePolicy();
+  if (firebaseRuntime.ready) return firebaseRuntime;
+
+  const [
+    appModule,
+    authModule,
+    firestoreModule,
+    messagingModule,
+    storageModule,
+  ] = await Promise.all([
+    import("https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js"),
+    import("https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js"),
+    import("https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js"),
+    import("https://www.gstatic.com/firebasejs/10.12.5/firebase-messaging.js"),
+    import("https://www.gstatic.com/firebasejs/10.12.5/firebase-storage.js"),
+  ]);
+
+  firebaseRuntime.modules = {
+    ...appModule,
+    ...authModule,
+    ...firestoreModule,
+    ...messagingModule,
+    ...storageModule,
+  };
+  firebaseRuntime.app = appModule.initializeApp(backendConfig.firebaseConfig);
+  firebaseRuntime.auth = authModule.getAuth(firebaseRuntime.app);
+  // Local emulator streams can be buffered by WebKit on Windows. Production keeps the SDK defaults.
+  firebaseRuntime.db = backendConfig.emulators
+    ? firestoreModule.initializeFirestore(firebaseRuntime.app, {experimentalForceLongPolling:true})
+    : firestoreModule.getFirestore(firebaseRuntime.app);
+  firebaseRuntime.storage = storageModule.getStorage(firebaseRuntime.app);
+  if (backendConfig.emulators) {
+    if (!backendConfig.firebaseConfig.projectId?.startsWith("demo-") || !["localhost", "127.0.0.1"].includes(location.hostname)) {
+      throw new Error("Emulator mode requires a demo project on localhost.");
+    }
+    authModule.connectAuthEmulator(firebaseRuntime.auth, "http://127.0.0.1:9099", {disableWarnings:true});
+    firestoreModule.connectFirestoreEmulator(firebaseRuntime.db, "127.0.0.1", 8188);
+    storageModule.connectStorageEmulator(firebaseRuntime.storage, "127.0.0.1", 9298);
+  }
+  firebaseRuntime.messaging = !backendConfig.emulators && messagingModule.isSupported && await messagingModule.isSupported()
+    ? messagingModule.getMessaging(firebaseRuntime.app)
+    : null;
+  if (firebaseRuntime.messaging && !webMessageListenerReady) {
+    webMessageListenerReady = true;
+    messagingModule.onMessage(firebaseRuntime.messaging, (payload) => {
+      if (loggingOut || !state.session.loggedIn || localStorage.getItem("largs-colts-push-disconnect-pending") === "true") return;
+      // A push already in transit may arrive after an account switch. It is only
+      // a generic wake-up hint; the current user's scoped Firestore inbox owns
+      // all private content and notification targets. Never relabel push data
+      // from a preceding account as belonging to the new session.
+      toast("Largs Colts update — open Messages to view your updates");
+    });
+  }
+  firebaseRuntime.user = firebaseRuntime.auth.currentUser;
+  authModule.onAuthStateChanged(firebaseRuntime.auth, (user) => {
+    firebaseRuntime.user = user;
+  });
+  firebaseRuntime.ready = true;
+  return firebaseRuntime;
+}
+
+function isFirebaseSignedIn() {
+  return backendConfig.enabled && firebaseRuntime.ready && Boolean(firebaseRuntime.user);
+}
+
+function routeForNotificationData(data = {}) {
+  const type = String(data.type || "");
+  if (type === "message") return { route: "messages" };
+  if (type === "document") return { route: "documents" };
+  if (type === "attendance") return { route: "attendance", eventId: data.eventId || "" };
+  if (type === "availability") return { route: "availability", eventId: data.eventId || "" };
+  if (type === "schedule") return { route: "schedule", eventId: data.eventId || "" };
+  return { route: "home" };
+}
+
+function openNotificationTarget(data = {}) {
+  const target = routeForNotificationData(data);
+  if (target.eventId && state.events.some((event) => event.id === target.eventId)) {
+    state.selectedEventId = target.eventId;
+  }
+  navigateToRoute(target.route);
+  saveState();
+  render();
+}
+
+function dismissTopLayer() {
+  const privateDialog = document.querySelector('dialog[data-private-document]');
+  if (privateDialog) { privateDialog.querySelector('button')?.click(); return true; }
+  if (state.modal) {
+    delete state.modal;
+    render();
+    return true;
+  }
+  if (state.coachGuide?.active) {
+    state.coachGuide.active = false;
+    saveState();
+    render();
+    return true;
+  }
+  return false;
+}
+
+function navigateBackInApp() {
+  if (dismissTopLayer()) return true;
+  const previous = routeHistory.pop();
+  if (previous) {
+    state.route = previous;
+    saveState();
+    render();
+    return true;
+  }
+  if (state.session.loggedIn && state.route !== "home") {
+    navigateToRoute("home", { track: false });
+    saveState();
+    render();
+    return true;
+  }
+  return false;
+}
+
+async function initNativeShell() {
+  if (nativeShellReady) return;
+  nativeShellReady = true;
+  setAppShellClasses();
+
+  const StatusBar = nativePlugin("StatusBar");
+  const SplashScreen = nativePlugin("SplashScreen");
+  const Keyboard = nativePlugin("Keyboard");
+  const App = nativePlugin("App");
+  const Network = nativePlugin("Network");
+
+  try {
+    await StatusBar?.setBackgroundColor?.({ color: "#850008" });
+    await StatusBar?.setStyle?.({ style: "LIGHT" });
+  } catch (error) {
+    console.warn("Native status bar setup skipped", error);
+  }
+
+  try {
+    await Keyboard?.setResizeMode?.({ mode: "body" });
+    await Keyboard?.addListener?.("keyboardWillShow", () => {
+      keyboardVisible = true;
+      setAppShellClasses();
+    });
+    await Keyboard?.addListener?.("keyboardWillHide", () => {
+      keyboardVisible = false;
+      setAppShellClasses();
+    });
+  } catch (error) {
+    console.warn("Native keyboard setup skipped", error);
+  }
+
+  try {
+    await App?.addListener?.("backButton", ({ canGoBack }) => {
+      if (navigateBackInApp()) return;
+      if (canGoBack && window.history.length > 1) {
+        window.history.back();
+        return;
+      }
+      App.exitApp?.();
+    });
+  } catch (error) {
+    console.warn("Native back button setup skipped", error);
+  }
+
+  try {
+    const status = await Network?.getStatus?.();
+    if (status) {
+      state.isOffline = !status.connected;
+      setAppShellClasses();
+    }
+    await Network?.addListener?.("networkStatusChange", (statusUpdate) => {
+      state.isOffline = !statusUpdate.connected;
+      render();
+      toast(statusUpdate.connected ? "Back online" : "You are offline");
+    });
+  } catch (error) {
+    console.warn("Native network setup skipped", error);
+  }
+
+  setTimeout(() => {
+    SplashScreen?.hide?.().catch?.(() => {});
+  }, 250);
+}
+
+function initNetworkListeners() {
+  window.addEventListener("online", () => {
+    state.isOffline = false;
+    render();
+    toast("Back online");
+  });
+  window.addEventListener("offline", () => {
+    state.isOffline = true;
+    render();
+    toast("You are offline");
+  });
+}
+
+async function liveCollection(name) {
+  const runtime = await ensureFirebase();
+  return runtime.modules.collection(runtime.db, "clubs", clubId, name);
+}
+
+async function liveDoc(collectionName, id) {
+  const runtime = await ensureFirebase();
+  return runtime.modules.doc(runtime.db, "clubs", clubId, collectionName, id);
+}
+
+async function loadDocs(collectionName) {
+  const runtime = await ensureFirebase();
+  const snapshot = await runtime.modules.getDocs(scopedCollection(runtime, collectionName));
+  return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+}
+
+async function loadOptionalDocs(collectionName) {
+  try {
+    return await loadDocs(collectionName);
+  } catch (error) {
+    console.warn(`${collectionName} could not be loaded yet`, error);
+    return [];
+  }
+}
+
+async function loadLiveStateFromFirebase() {
+  const epoch = privateSessionEpoch;
+  if (!isFirebaseSignedIn()) return;
+  try {
+    const runtime = await ensureFirebase();
+    const uidAtStart = runtime.user?.uid;
+    const stillCurrent = () => epoch === privateSessionEpoch && runtime.user?.uid === uidAtStart;
+    if (!stillCurrent()) return;
+    const role = state.session.role;
+    const profileSnapshot = await runtime.modules.getDoc(await liveDoc("users", runtime.user.uid));
+    if (!stillCurrent()) return;
+    currentProfile = profileSnapshot.exists() ? profileSnapshot.data() : null;
+    if (!activeAccount(currentProfile)) { await signOutLive("parent", true); return; }
+    if (!hasCoachAccess()) {
+      const membership = await runtime.modules.getDoc(await liveDoc("memberships", runtime.user.uid));
+      currentMembership = membership.exists() ? membership.data() : null;
+      state.parentLinks = await loadDocsWhere("parentLinks", "parentUid", "==", runtime.user.uid);
+      if (!stillCurrent()) return;
+      if (!isApprovedMember()) {
+        const session = state.session, links = state.parentLinks;
+        clearPrivateViewState();
+        state = loadState(); state.session = session; state.parentLinks = links; state.loading = true;
+        state.accessRequests = await loadDocsWhere("accessRequests", "parentUid", "==", runtime.user.uid);
+        state.players = await loadApprovedPlayerDocs(state.parentLinks);
+        state.route = "access";
+        return;
+      }
+    }
+    const [squadDocs, teamDocs, events, announcements, venueDocs, coachContactDocs, liftOfferDocs] = await Promise.all([
+      loadDocs("squads"),
+      loadDocs("teams"),
+      loadDocs("events"),
+      loadDocs("announcements"),
+      loadDocs("venues"),
+      loadDocs("coachContacts"),
+      loadOptionalDocs("liftOffers"),
+    ]);
+
+    const squadSource = squadDocs.length ? squadDocs : teamDocs;
+    if (!stillCurrent()) return;
+    state.teams = normalizeLiveTeams(squadSource.length ? squadSource.sort((a, b) => (a.order || 0) - (b.order || 0)) : teams);
+    liveTeams = state.teams;
+    state.events = mergeParentHistoryEvents(events);
+    state.messages = announcements.sort(sortByCreatedAtDesc);
+    state.venues = venueDocs;
+    state.coachContacts = coachContactDocs;
+    state.liftOffers = liftOfferDocs;
+
+    if (hasCoachAccess(role)) {
+      const [players, parentLinks, accessRequests, notifications, users, dataRequests, coachQueries, playerDevelopment, playerDocuments, coachDocuments, playerAwards, matchStats, seasonReports] = await Promise.all([
+        loadDocs("players"),
+        loadDocs("parentLinks"),
+        loadDocs("accessRequests"),
+        loadDocs("notifications"),
+        loadDocs("users"),
+        loadDocs("dataRequests"),
+        loadOptionalDocs("coachQueries"),
+        loadDocs("playerDevelopment"),
+        loadOptionalDocs("playerDocuments"),
+        loadOptionalDocs("coachDocuments"),
+        loadOptionalDocs("playerAwards"),
+        loadOptionalDocs("matchStats"),
+        loadOptionalDocs("seasonReports"),
+      ]);
+      if (!stillCurrent()) return;
+      state.players = players.map(normalizePlayerRecord).sort((a, b) => a.name.localeCompare(b.name));
+      if (!stillCurrent()) return;
+      state.parentLinks = parentLinks;
+      state.accessRequests = accessRequests.sort(sortByCreatedAtDesc);
+      state.notifications = notifications.sort(sortByCreatedAtDesc);
+      state.users = users;
+      state.dataRequests = dataRequests.sort(sortByCreatedAtDesc);
+      state.coachQueries = coachQueries.sort(sortByCreatedAtDesc);
+      state.playerDevelopment = Object.fromEntries(playerDevelopment.map((record) => [record.playerId || record.id, defaultDevelopmentRecord(record.playerId || record.id, record)]));
+      state.playerDocuments = sortPlayerDocuments(playerDocuments);
+      state.coachDocuments = sortCoachDocuments(coachDocuments);
+      state.playerAwards = sortPlayerAwards(playerAwards);
+      state.matchStats = sortMatchStats(matchStats);
+      state.seasonReports = seasonReports;
+    } else {
+      const uid = runtime.user.uid;
+      const [parentLinks, accessRequests, notifications, dataRequests, coachQueries] = await Promise.all([
+        loadDocsWhere("parentLinks", "parentUid", "==", uid),
+        loadDocsWhere("accessRequests", "parentUid", "==", uid),
+        loadDocsWhere("notifications", "userId", "==", uid),
+        loadDocsWhere("dataRequests", "parentUid", "==", uid),
+        loadOptionalDocsWhere("coachQueries", "parentUid", "==", uid),
+      ]);
+      if (!stillCurrent()) return;
+      state.parentLinks = parentLinks;
+      state.accessRequests = accessRequests.sort(sortByCreatedAtDesc);
+      state.notifications = notifications.sort(sortByCreatedAtDesc);
+      state.dataRequests = dataRequests.sort(sortByCreatedAtDesc);
+      state.coachQueries = coachQueries.sort(sortByCreatedAtDesc);
+      const playerRecords = await loadApprovedPlayerDocs(parentLinks);
+      if (!stillCurrent()) return;
+      state.players = playerRecords;
+      const history = await loadParentAttendanceHistory(runtime);
+      if (!stillCurrent()) return;
+      parentHistoricalEvents = history;
+      state.events = mergeParentHistoryEvents(events);
+      const documentRecords = await loadPlayerDocumentsForParent(parentLinks);
+      if (!stillCurrent()) return;
+      state.playerDocuments = documentRecords;
+      state.playerDevelopment = {};
+      state.playerAwards = [];
+      state.matchStats = [];
+      state.seasonReports = [];
+    }
+
+    await loadEventSubcollections();
+    if (!stillCurrent()) return;
+    if (!state.selectedEventId || !state.events.some((event) => event.id === state.selectedEventId)) {
+      state.selectedEventId = state.events[0]?.id || "";
+    }
+    const resultEvents = resultFixtureEvents();
+    if (!state.selectedResultEventId || !resultEvents.some((event) => event.id === state.selectedResultEventId)) {
+      state.selectedResultEventId = resultEvents[0]?.id || "";
+    }
+    if (state.session.role === "parent" && !state.session.selectedPlayerId) {
+      state.session.selectedPlayerId = approvedPlayers()[0]?.id || "";
+    }
+  } catch (error) {
+    console.error(error);
+    showError("Live Firestore data could not be loaded. Check the rules, seed data and account role.");
+  }
+}
+
+function sortByCreatedAtDesc(a, b) {
+  const left = a.createdAt?.seconds || Date.parse(a.createdAt || "") / 1000 || 0;
+  const right = b.createdAt?.seconds || Date.parse(b.createdAt || "") / 1000 || 0;
+  return right - left;
+}
+
+async function loadParentAttendanceHistory(runtime) {
+  const epoch = privateSessionEpoch, userId = runtime.user?.uid;
+  const ids = approvedPlayers().map(player => player.id);
+  const rows = await Promise.all(ids.map(async id => [id, await loadDocsWhere("parentEventSummaries", "playerId", "==", id)]));
+  if (epoch !== privateSessionEpoch || runtime.user?.uid !== userId) return [];
+  parentHistoryRowsByPlayer = new Map(rows);
+  return parentHistoryEventsFromRows();
+}
+
+async function loadDocsWhere(collectionName, field, operator, value) {
+  const runtime = await ensureFirebase();
+  const queryRef = runtime.modules.query(await liveCollection(collectionName), runtime.modules.where(field, operator, value));
+  const snapshot = await runtime.modules.getDocs(queryRef);
+  return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+}
+
+async function loadOptionalDocsWhere(collectionName, field, operator, value) {
+  try {
+    return await loadDocsWhere(collectionName, field, operator, value);
+  } catch (error) {
+    console.warn(`${collectionName} could not be loaded yet`, error);
+    return [];
+  }
+}
+
+async function loadApprovedPlayerDocs(parentLinks) {
+  const runtime = await ensureFirebase();
+  const approved = parentLinks.filter((link) => link.status === "approved");
+  const docs = await Promise.all(approved.map((link) => runtime.modules.getDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "players", link.playerId))));
+  return docs.filter((snap) => snap.exists()).map((snap) => normalizePlayerRecord({ id: snap.id, ...snap.data() })).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function sortPlayerDocuments(items = []) {
+  return items
+    .filter((item) => item.status !== "deleted")
+    .sort((a, b) => createdTime(b) - createdTime(a) || documentTitle(a).localeCompare(documentTitle(b)));
+}
+
+function sortCoachDocuments(items = []) {
+  return items
+    .filter((item) => item.status !== "deleted")
+    .sort((a, b) => createdTime(b) - createdTime(a) || documentTitle(a).localeCompare(documentTitle(b)));
+}
+
+async function loadPlayerDocumentsForParent(parentLinks) {
+  if (!isApprovedMember()) return [];
+  const runtime = await ensureFirebase(), collection = await liveCollection("playerDocuments");
+  const ids = parentLinks.filter(link => link.status === "approved").map(link => link.playerId);
+  const snapshots = [];
+  for (const id of ids) snapshots.push(await runtime.modules.getDocs(runtime.modules.query(collection,
+    runtime.modules.where("playerId", "==", id), runtime.modules.where("status", "in", ["active", "archived"]))));
+  snapshots.push(await runtime.modules.getDocs(runtime.modules.query(collection,
+    runtime.modules.where("audience", "==", "all"), runtime.modules.where("status", "in", ["active", "archived"]))));
+  for (const teamId of memberTeams().filter(id => id !== "all")) snapshots.push(await runtime.modules.getDocs(runtime.modules.query(collection,
+    runtime.modules.where("audience", "==", "team"), runtime.modules.where("teamId", "==", teamId), runtime.modules.where("status", "in", ["active", "archived"]))));
+  const docs = new Map();
+  snapshots.forEach(snapshot => snapshot.docs.forEach(item => docs.set(item.id, {id:item.id, ...item.data()})));
+  return sortPlayerDocuments([...docs.values()].filter(doc => parentCanOpenDocument(doc)));
+}
+
+async function loadEventSubcollections() {
+  const epoch = privateSessionEpoch;
+  const runtime = await ensureFirebase();
+  if (epoch !== privateSessionEpoch) return;
+  const approvedIds = approvedPlayers().map((player) => player.id);
+  const availability = {}, attendance = {};
+
+  const availabilityKeys = [...new Set(state.events.map(availabilityKeyForEvent).filter(Boolean))];
+  await Promise.all(availabilityKeys.map(async (availabilityKey) => {
+    const availabilityCollection = runtime.modules.collection(runtime.db, "clubs", clubId, "availability", availabilityKey, "players");
+    const approvedChunks = chunkArray(approvedIds, 10);
+    const availabilitySnap = await getEventPlayerDocs(runtime, availabilityCollection, approvedChunks);
+
+    availability[availabilityKey] = {};
+    availabilitySnap.forEach((docSnap) => {
+      const data = docSnap.data();
+      availability[availabilityKey][data.playerId || docSnap.id] = data;
+    });
+  }));
+
+  await Promise.all(state.events.map(async (event) => {
+    const attendanceCollection = runtime.modules.collection(runtime.db, "clubs", clubId, "attendance", event.id, "players");
+    const approvedChunks = chunkArray(approvedIds, 10);
+    const attendanceSnap = await getEventPlayerDocs(runtime, attendanceCollection, approvedChunks);
+
+    attendance[event.id] = {};
+    attendanceSnap.forEach((docSnap) => {
+      const data = docSnap.data();
+      attendance[event.id][data.playerId || docSnap.id] = data.status || "unknown";
+    });
+  }));
+  if (epoch !== privateSessionEpoch) return;
+  state.availability = availability; state.attendance = attendance;
+}
+
+function chunkArray(items, size) {
+  const chunks = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+}
+
+async function getEventPlayerDocs(runtime, collectionRef, approvedChunks) {
+  if (hasCoachAccess()) {
+    const snapshot = await runtime.modules.getDocs(collectionRef);
+    return snapshot.docs;
+  }
+  const playerIds = approvedChunks.flat();
+  if (!playerIds.length) return [];
+  const docs = await Promise.all(playerIds.map((playerId) => runtime.modules.getDoc(
+    runtime.modules.doc(collectionRef, playerId),
+  )));
+  return docs.filter((docSnap) => docSnap.exists());
+}
+
+function clearLiveSubscriptions() {
+  if (whiteboardSyncTimer) {
+    clearTimeout(whiteboardSyncTimer);
+    whiteboardSyncTimer = null;
+  }
+  liveUnsubscribers.forEach((unsubscribe) => {
+    try {
+      unsubscribe();
+    } catch {}
+  });
+  eventDataUnsubscribers.forEach((unsubscribe) => {
+    try {
+      unsubscribe();
+    } catch {}
+  });
+  liveUnsubscribers = [];
+  eventDataUnsubscribers = [];
+}
+
+function clearEventDataSubscriptions() {
+  eventDataUnsubscribers.forEach((unsubscribe) => {
+    try {
+      unsubscribe();
+    } catch {}
+  });
+  eventDataUnsubscribers = [];
+}
+
+async function startLiveSubscriptions() {
+  const epoch = privateSessionEpoch;
+  if (!isFirebaseSignedIn()) return;
+  clearLiveSubscriptions();
+  const runtime = await ensureFirebase();
+  if (epoch !== privateSessionEpoch || !runtime.user || !state.session.loggedIn) return;
+  const watchCollection = (collectionName, apply) => {
+    const unsubscribe = runtime.modules.onSnapshot(
+      scopedCollection(runtime, collectionName),
+      (snapshot) => {
+        if (epoch !== privateSessionEpoch) return;
+        Promise.resolve(apply(snapshot.docs.map((item) => ({ id: item.id, ...item.data() })))).then(() => { if (epoch === privateSessionEpoch) requestRender(); }).catch(console.error);
+      },
+      (error) => console.error(error),
+    );
+    liveUnsubscribers.push(unsubscribe);
+  };
+  const watchQuery = (queryRef, apply) => {
+    const unsubscribe = runtime.modules.onSnapshot(
+      queryRef,
+      (snapshot) => {
+        if (epoch !== privateSessionEpoch) return;
+        Promise.resolve(apply(snapshot.docs.map((item) => ({ id: item.id, ...item.data() })))).then(() => { if (epoch === privateSessionEpoch) requestRender(); }).catch(console.error);
+      },
+      (error) => console.error(error),
+    );
+    liveUnsubscribers.push(unsubscribe);
+  };
+
+  const profileRef = await liveDoc("users", runtime.user.uid);
+  liveUnsubscribers.push(runtime.modules.onSnapshot(profileRef, snapshot => {
+    if (epoch !== privateSessionEpoch) return;
+    const profile = snapshot.exists() ? snapshot.data() : null;
+    if (!activeAccount(profile) || (currentProfile && profile.role !== currentProfile.role)) {
+      void signOutLive("parent", true); return;
+    }
+    currentProfile = profile;
+  }, () => { void signOutLive("parent", true); }));
+  if (!hasCoachAccess() && !isApprovedMember()) {
+    const pendingLinks = runtime.modules.query(await liveCollection("parentLinks"), runtime.modules.where("parentUid", "==", runtime.user.uid));
+    liveUnsubscribers.push(runtime.modules.onSnapshot(pendingLinks, async snapshot => {
+      const links = snapshot.docs.map(item => ({id:item.id, ...item.data()}));
+      if (JSON.stringify(links) !== JSON.stringify(state.parentLinks)) {
+        await loadLiveStateFromFirebase(); await startLiveSubscriptions(); requestRender();
+      }
+    }));
+    // The trusted membership projection may arrive after the link approval.
+    liveUnsubscribers.push(runtime.modules.onSnapshot(await liveDoc("memberships", runtime.user.uid), async snapshot => {
+      if (snapshot.exists() && JSON.stringify(snapshot.data()) !== JSON.stringify(currentMembership)) {
+        await loadLiveStateFromFirebase(); await startLiveSubscriptions(); requestRender();
+      }
+    }));
+    return;
+  }
+  watchCollection("announcements", (items) => {
+    state.messages = items.sort(sortByCreatedAtDesc);
+  });
+  watchCollection("squads", (items) => {
+    if (!items.length) return;
+    state.teams = normalizeLiveTeams(items.sort((a, b) => (a.order || 0) - (b.order || 0)));
+    liveTeams = state.teams;
+  });
+  watchCollection("events", async (items) => {
+    state.events = mergeParentHistoryEvents(items);
+    if (!state.selectedEventId || !state.events.some((event) => event.id === state.selectedEventId)) {
+      state.selectedEventId = state.events[0]?.id || "";
+    }
+    const resultEvents = resultFixtureEvents();
+    if (!state.selectedResultEventId || !resultEvents.some((event) => event.id === state.selectedResultEventId)) {
+      state.selectedResultEventId = resultEvents[0]?.id || "";
+    }
+    await loadEventSubcollections();
+    startEventDataSubscriptions(runtime);
+  });
+  watchCollection("venues", (items) => {
+    state.venues = items;
+  });
+  watchCollection("coachContacts", (items) => {
+    state.coachContacts = items;
+  });
+  watchCollection("liftOffers", (items) => {
+    state.liftOffers = items;
+  });
+
+  if (hasCoachAccess()) {
+    watchCollection("players", (items) => {
+      state.players = items.map(normalizePlayerRecord).sort((a, b) => a.name.localeCompare(b.name));
+    });
+    watchCollection("accessRequests", (items) => {
+      state.accessRequests = items.sort(sortByCreatedAtDesc);
+    });
+    watchCollection("parentLinks", (items) => {
+      state.parentLinks = items;
+    });
+    watchCollection("notifications", (items) => {
+      state.notifications = items.sort(sortByCreatedAtDesc);
+    });
+    watchCollection("users", (items) => {
+      state.users = items;
+      const current = items.find((item) => item.id === state.session.userId);
+      if (current) state.session.canSwitchPortal = Boolean(current.canSwitchPortal);
+    });
+    watchCollection("dataRequests", (items) => {
+      state.dataRequests = items.sort(sortByCreatedAtDesc);
+    });
+    watchCollection("coachQueries", (items) => {
+      state.coachQueries = items.sort(sortByCreatedAtDesc);
+    });
+    watchCollection("playerDevelopment", (items) => {
+      state.playerDevelopment = Object.fromEntries(items.map((record) => [record.playerId || record.id, defaultDevelopmentRecord(record.playerId || record.id, record)]));
+    });
+    watchCollection("playerDocuments", (items) => {
+      state.playerDocuments = sortPlayerDocuments(items);
+    });
+    watchCollection("coachDocuments", (items) => {
+      state.coachDocuments = sortCoachDocuments(items);
+    });
+    watchCollection("playerAwards", (items) => {
+      state.playerAwards = sortPlayerAwards(items);
+    });
+    watchCollection("matchStats", (items) => {
+      state.matchStats = sortMatchStats(items);
+    });
+    watchLiveWhiteboardSession(runtime);
+  } else {
+    const uid = state.session.userId;
+    liveUnsubscribers.push(runtime.modules.onSnapshot(await liveDoc("memberships", uid), async snapshot => {
+      const membership = snapshot.exists() ? snapshot.data() : null;
+      if (JSON.stringify(membership) !== JSON.stringify(currentMembership)) {
+        clearPrivateViewState();
+        await loadLiveStateFromFirebase(); await startLiveSubscriptions(); requestRender();
+      }
+    }));
+    const approvedIds = approvedPlayers().map((player) => player.id).filter(Boolean);
+    watchQuery(runtime.modules.query(
+      runtime.modules.collection(runtime.db, "clubs", clubId, "notifications"),
+      runtime.modules.where("userId", "==", uid),
+    ), (items) => {
+      state.notifications = items.sort(sortByCreatedAtDesc);
+    });
+    watchQuery(runtime.modules.query(
+      runtime.modules.collection(runtime.db, "clubs", clubId, "accessRequests"),
+      runtime.modules.where("parentUid", "==", uid),
+    ), (items) => {
+      state.accessRequests = items.sort(sortByCreatedAtDesc);
+    });
+    watchQuery(runtime.modules.query(
+      runtime.modules.collection(runtime.db, "clubs", clubId, "dataRequests"),
+      runtime.modules.where("parentUid", "==", uid),
+    ), (items) => {
+      state.dataRequests = items.sort(sortByCreatedAtDesc);
+    });
+    watchQuery(runtime.modules.query(
+      runtime.modules.collection(runtime.db, "clubs", clubId, "coachQueries"),
+      runtime.modules.where("parentUid", "==", uid),
+    ), (items) => {
+      state.coachQueries = items.sort(sortByCreatedAtDesc);
+    });
+    watchQuery(runtime.modules.query(
+      runtime.modules.collection(runtime.db, "clubs", clubId, "parentLinks"),
+      runtime.modules.where("parentUid", "==", uid),
+    ), async (items) => {
+      const previous = JSON.stringify(state.parentLinks);
+      state.parentLinks = items;
+      if (previous !== JSON.stringify(items)) clearPrivateViewState();
+      if (!isApprovedMember()) {
+        if (items.some(link => link.status === "approved")) {
+          // Keep other children's direct permissions while the trusted membership index refreshes.
+          state.players = await loadApprovedPlayerDocs(items); state.events = []; state.playerDocuments = [];
+          state.route = "access"; requestRender(); return;
+        }
+        await signOutLive("parent", true); return;
+      }
+      if (previous !== JSON.stringify(items)) {
+        await loadLiveStateFromFirebase(); await startLiveSubscriptions(); requestRender(); return;
+      }
+      const children = await loadApprovedPlayerDocs(items);
+      if (epoch !== privateSessionEpoch) return;
+      state.players = children;
+      const documents = await loadPlayerDocumentsForParent(items);
+      if (epoch !== privateSessionEpoch) return;
+      state.playerDocuments = documents;
+      if (!state.session.selectedPlayerId) state.session.selectedPlayerId = approvedPlayers()[0]?.id || "";
+    });
+    const documentRef = await liveCollection("playerDocuments");
+    const summaryRef = await liveCollection("parentEventSummaries");
+    for (const playerId of approvedIds) watchQuery(runtime.modules.query(summaryRef, runtime.modules.where("playerId", "==", playerId)), async items => {
+      if (!approvedPlayers().some(player => player.id === playerId)) return;
+      parentHistoryRowsByPlayer.set(playerId, items);
+      const history = parentHistoryEventsFromRows();
+      if (JSON.stringify(history) === JSON.stringify(parentHistoricalEvents)) return;
+      parentHistoricalEvents = history;
+      state.events = mergeParentHistoryEvents(state.events.filter(event => !event.parentParticipationOnly));
+      await loadEventSubcollections();
+      if (epoch !== privateSessionEpoch) return;
+      startEventDataSubscriptions(runtime); requestRender();
+    });
+    const refreshDocuments = async () => { clearPrivateDocuments(); const documents = await loadPlayerDocumentsForParent(state.parentLinks); if (epoch === privateSessionEpoch) state.playerDocuments = documents; };
+    for (const id of approvedIds) watchQuery(runtime.modules.query(documentRef, runtime.modules.where("playerId", "==", id),
+      runtime.modules.where("status", "in", ["active", "archived"])), refreshDocuments);
+    watchQuery(runtime.modules.query(documentRef, runtime.modules.where("audience", "==", "all"),
+      runtime.modules.where("status", "in", ["active", "archived"])), refreshDocuments);
+    for (const teamId of memberTeams().filter(id => id !== "all")) watchQuery(runtime.modules.query(documentRef,
+      runtime.modules.where("audience", "==", "team"), runtime.modules.where("teamId", "==", teamId),
+      runtime.modules.where("status", "in", ["active", "archived"])), refreshDocuments);
+  }
+
+  startEventDataSubscriptions(runtime);
+}
+
+function watchLiveWhiteboardSession(runtime) {
+  const sessionRef = runtime.modules.doc(runtime.db, "clubs", clubId, "whiteboardSessions", "current");
+  const unsubscribe = runtime.modules.onSnapshot(
+    sessionRef,
+    (snapshot) => {
+      applyLiveWhiteboardSnapshot(snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null);
+      requestRender();
+    },
+    (error) => console.error(error),
+  );
+  liveUnsubscribers.push(unsubscribe);
+}
+
+function startEventDataSubscriptions(runtime) {
+  clearEventDataSubscriptions();
+  const approvedIds = approvedPlayers().map((player) => player.id);
+  const approvedChunks = chunkArray(approvedIds, 10);
+  const canReadAll = hasCoachAccess();
+
+  const watchPlayerCollection = (collectionRef, applyDocs) => {
+    if (canReadAll) {
+      const unsubscribe = runtime.modules.onSnapshot(
+        collectionRef,
+        (snapshot) => applyDocs(snapshot.docs),
+        (error) => console.error(error),
+      );
+      eventDataUnsubscribers.push(unsubscribe);
+      return;
+    }
+    // Each parent listener emits one child, not a complete collection snapshot.
+    // Merge those snapshots so a sibling update cannot erase another child's marks.
+    const childDocs = new Map();
+    approvedChunks.flat().forEach((playerId) => {
+      const unsubscribe = runtime.modules.onSnapshot(
+        runtime.modules.doc(collectionRef, playerId),
+        (docSnap) => {
+          if (docSnap.exists()) childDocs.set(playerId, docSnap);
+          else childDocs.delete(playerId);
+          applyDocs([...childDocs.values()]);
+        },
+        (error) => console.error(error),
+      );
+      eventDataUnsubscribers.push(unsubscribe);
+    });
+  };
+
+  const availabilityKeys = [...new Set(state.events.map(availabilityKeyForEvent).filter(Boolean))];
+  availabilityKeys.forEach((availabilityKey) => {
+    const availabilityRef = runtime.modules.collection(runtime.db, "clubs", clubId, "availability", availabilityKey, "players");
+    watchPlayerCollection(
+      availabilityRef,
+      (snapshot) => {
+        state.availability[availabilityKey] = {};
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data();
+          state.availability[availabilityKey][data.playerId || docSnap.id] = data;
+        });
+        requestRender();
+      },
+    );
+  });
+
+  state.events.forEach((event) => {
+    const attendanceRef = runtime.modules.collection(runtime.db, "clubs", clubId, "attendance", event.id, "players");
+    watchPlayerCollection(
+      attendanceRef,
+      (snapshot) => {
+        state.attendance[event.id] = {};
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data();
+          state.attendance[event.id][data.playerId || docSnap.id] = data.status || "unknown";
+        });
+        requestRender();
+      },
+    );
+  });
+}
+
+async function saveLiveDocument(collectionName, id, data) {
+  if (!isFirebaseSignedIn()) return;
+  if (state.isOffline) {
+    showError("This save needs an internet connection. Reconnect and try again.");
+    throw new Error("offline");
+  }
+  try {
+    const runtime = await ensureFirebase();
+    const payload = {
+      ...data,
+      updatedAt: runtime.modules.serverTimestamp(),
+    };
+    if (!data.createdAt) payload.createdAt = runtime.modules.serverTimestamp();
+    await runtime.modules.setDoc(await liveDoc(collectionName, id), payload, { merge: true });
+  } catch (error) {
+    console.error(error);
+    showError("Firestore save failed. Check this user has permission for that action.");
+    throw error;
+  }
+}
+
+async function deleteLiveDocument(collectionName, id) {
+  if (!isFirebaseSignedIn()) return;
+  if (state.isOffline) {
+    showError("Deleting needs an internet connection. Reconnect and try again.");
+    throw new Error("offline");
+  }
+  try {
+    const runtime = await ensureFirebase();
+    await runtime.modules.deleteDoc(await liveDoc(collectionName, id));
+  } catch (error) {
+    console.error(error);
+    showError("Firestore delete failed. Check this user has permission for that action.");
+    throw error;
+  }
+}
+
+async function deleteEventLive(eventId, event = null) {
+  const record = event || state.events.find(item => item.id === eventId);
+  if (!record || record.blockStatus === "archived" || new Date(record.datetime) < new Date()) {
+    throw new Error("Historical events must be retained. Ask an administrator for a reviewed correction.");
+  }
+  // Cancellation preserves registers, shared availability, stats and stable identifiers.
+  await saveLiveDocument("events", eventId, {cancelledAt:new Date().toISOString(), cancelledBy:state.session.userId});
+}
+
+async function enablePushNotifications() {
+  if (isNativeCapacitor()) {
+    await enableNativePushNotifications();
+    return;
+  }
+
+  if (!backendConfig.enabled) {
+    toast("Add Firebase config before push testing");
+    return;
+  }
+  if (!("Notification" in window)) {
+    toast("This browser does not support push notifications");
+    return;
+  }
+
+  try {
+    const runtime = await ensureFirebase();
+    if (!runtime.messaging) {
+      toast("Firebase messaging is not supported in this browser");
+      return;
+    }
+
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") {
+      toast("Push permission was not granted");
+      return;
+    }
+
+    const registration = await navigator.serviceWorker.ready;
+    const token = await runtime.modules.getToken(runtime.messaging, {
+      vapidKey: backendConfig.vapidKey,
+      serviceWorkerRegistration: registration,
+    });
+    if (!token) {
+      toast("No push token returned");
+      return;
+    }
+
+    await savePushToken(token, "web");
+    toast("Push enabled on this device");
+  } catch (error) {
+    console.error(error);
+    toast("Push setup needs Firebase details");
+  }
+}
+
+function isNativeCapacitor() {
+  return Boolean(window.Capacitor?.isNativePlatform?.());
+}
+
+async function enableNativePushNotifications() {
+  try {
+    const PushNotifications = nativePlugin("PushNotifications");
+    if (!PushNotifications) {
+      toast("Native push plugin is not installed yet");
+      return;
+    }
+    const permission = await PushNotifications.requestPermissions();
+    if (permission.receive !== "granted") {
+      toast("Push permission was not granted");
+      return;
+    }
+
+    if (!nativePushListenersReady) {
+      nativePushListenersReady = true;
+      await PushNotifications.addListener("registration", async (token) => {
+        const platform = nativePlatform();
+        const tokenPlatform = platform === "ios" ? "capacitor-ios-apns" : `capacitor-${platform}`;
+        await savePushToken(token.value, tokenPlatform);
+        toast(platform === "ios" ? "iOS push registered; APNs delivery needs TestFlight check" : "Push enabled on this phone");
+      });
+      await PushNotifications.addListener("registrationError", () => {
+        toast("Phone push registration failed");
+      });
+      await PushNotifications.addListener("pushNotificationReceived", (notification) => {
+        toast(notification.title || "Largs Colts update");
+      });
+      await PushNotifications.addListener("pushNotificationActionPerformed", (notification) => {
+        openNotificationTarget(notification.notification?.data || {});
+      });
+    }
+    await PushNotifications.register();
+  } catch (error) {
+    console.error(error);
+    toast("Native push setup needs the Capacitor push plugin");
+  }
+}
+
+async function savePushToken(token, platform) {
+  if (!token || loggingOut) return;
+  const runtime = await ensureFirebase();
+  if (!runtime.user || !isApprovedMember()) return;
+  if (currentDeviceToken && currentDeviceToken.userId !== runtime.user.uid) throw new Error("Previous device association must be removed first");
+  await runtime.modules.setDoc(
+    runtime.modules.doc(runtime.db, "clubs", clubId, "notificationTokens", `${runtime.user.uid}_${token.slice(-18)}`),
+    {
+      token,
+      platform,
+      userId: runtime.user.uid,
+      role: state.session.role || "unknown",
+      updatedAt: runtime.modules.serverTimestamp(),
+    },
+    { merge: true },
+  );
+  currentDeviceToken = {id: runtime.user.uid + "_" + token.slice(-18), userId:runtime.user.uid, token, platform};
+  // This browser-origin marker identifies only this device association; it is removed at logout.
+  localStorage.setItem("largs-colts-push-device", JSON.stringify({id:currentDeviceToken.id,userId:currentDeviceToken.userId,platform}));
+}
+
+function boundedDeviceCleanup(operation) {
+  let timer;
+  return Promise.race([Promise.resolve().then(operation), new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error("device-cleanup-timeout")), 5000);
+  })]).finally(() => clearTimeout(timer));
+}
+
+async function disconnectBrowserPush() {
+  // Inspect existing subscriptions only. Firebase deleteToken() registers its default
+  // worker when getToken() has not run in this page, even on a device without push.
+  if (!("serviceWorker" in navigator)) return true;
+  // Fresh/no-permission browsers have no deliverable push association to revoke.
+  // Do not enter optional push APIs merely to sign out. Still clean known/legacy
+  // associations and every previously granted or pending disconnection.
+  const knownAssociation = currentDeviceToken || localStorage.getItem("largs-colts-push-device") || localStorage.getItem("largs-colts-push-disconnect-pending") === "true";
+  if (!knownAssociation && (typeof Notification === "undefined" || Notification.permission !== "granted")) return true;
+  const registrations = await boundedDeviceCleanup(() => navigator.serviceWorker.getRegistrations());
+  const appScope = new URL("./", location.href).href;
+  for (const registration of registrations) {
+    if (registration.scope !== appScope && registration.scope !== new URL("/firebase-cloud-messaging-push-scope", location.origin).href) continue;
+    if (!registration.pushManager) continue;
+    const subscription = await boundedDeviceCleanup(() => registration.pushManager.getSubscription());
+    if (subscription) {
+      const removed = await boundedDeviceCleanup(() => subscription.unsubscribe());
+      if (!removed || await boundedDeviceCleanup(() => registration.pushManager.getSubscription())) throw new Error("device-push-still-active");
+    }
+    // Remove already displayed notifications from this shared device too.
+    if (registration.getNotifications) {
+      try { for (const notification of await boundedDeviceCleanup(() => registration.getNotifications())) notification.close(); } catch { /* Token revocation has already succeeded. */ }
+    }
+  }
+  return true;
+}
+
+async function finishPendingDeviceDisconnect() {
+  if (loggingOut) {
+    const error = new Error("Device sign-out is still finishing");
+    error.code = "device/disconnect-pending";
+    throw error;
+  }
+  if (localStorage.getItem("largs-colts-push-disconnect-pending") !== "true") return;
+  try {
+    await disconnectBrowserPush();
+    localStorage.removeItem("largs-colts-push-disconnect-pending");
+    localStorage.removeItem("largs-colts-push-device");
+  } catch {
+    const error = new Error("Previous device notifications remain connected");
+    error.code = "device/disconnect-pending";
+    throw error;
+  }
+}
+
+async function detachCurrentDevice(runtime) {
+  let device = currentDeviceToken;
+  try { device ||= JSON.parse(localStorage.getItem("largs-colts-push-device") || "null"); } catch {}
+  let browserDisconnected = false, associationRemoved = false;
+  try { browserDisconnected = isNativeCapacitor() ? false : await disconnectBrowserPush(); } catch { /* Server dissociation can independently make this device safe. */ }
+  if (device && runtime.user?.uid === device.userId) {
+    if (navigator.onLine !== false) {
+      try {
+        await boundedDeviceCleanup(async () => runtime.modules.deleteDoc(await liveDoc("notificationTokens", device.id)));
+        associationRemoved = true;
+      } catch { /* An invalidated browser subscription cannot receive the stale token. */ }
+    }
+  }
+  if (isNativeCapacitor()) {
+    try { await boundedDeviceCleanup(() => nativePlugin("PushNotifications").unregister()); browserDisconnected = true; } catch {}
+  }
+  if (!browserDisconnected && !associationRemoved) throw new Error("device-push-disconnect-pending");
+  currentDeviceToken = null;
+  localStorage.removeItem("largs-colts-push-device");
+  localStorage.removeItem("largs-colts-push-disconnect-pending");
+}
+
+async function signOutLive(nextAuthRole = "parent", accessWithdrawn = false) {
+  if (loggingOut) return;
+  loggingOut = true;
+  privateSessionEpoch++;
+  clearLiveSubscriptions(); clearPrivateViewState(); state = loadState(); state.loading = false;
+  state.authRole = nextAuthRole; render();
+  try {
+    const runtime = firebaseRuntime.ready ? firebaseRuntime : await ensureFirebase();
+    let disconnectPending = false;
+    try { await detachCurrentDevice(runtime); } catch {
+      disconnectPending = !accessWithdrawn;
+      if (disconnectPending) localStorage.setItem("largs-colts-push-disconnect-pending", "true");
+    }
+    clearLiveSubscriptions(); clearPrivateViewState();
+    try { await clearLegacyPrivateCaches(); } catch { /* Cache storage failure must not retain authentication. */ }
+    await runtime.modules.signOut(runtime.auth);
+    currentMembership = null; currentProfile = null;
+    state = loadState(); state.loading = false; state.route = "home"; state.authRole = nextAuthRole;
+    render(); toast(disconnectPending ? "Signed out. Reconnect and retry sign-in to disconnect this device's notifications safely." : nextAuthRole === "coach" ? "Ready for coach sign in" : "Ready for parent sign in");
+  } catch (error) {
+    clearPrivateViewState();
+    toast("Sign-out could not finish. Please retry.");
+  } finally { loggingOut = false; }
+}
+
+async function bootApp() {
+  render();
+  if (!backendConfig.enabled) {
+    state.loading = false;
+    state.error = "Firebase is not enabled. Add your config before testing real accounts.";
+    render();
+    return;
+  }
+
+  try {
+    await clearLegacyPrivateCaches();
+    const runtime = await ensureFirebase();
+    runtime.modules.onAuthStateChanged(runtime.auth, async (user) => {
+      if (user && localStorage.getItem("largs-colts-push-disconnect-pending") === "true") {
+        await signOutLive("parent");
+        return;
+      }
+      // Interactive sign-in owns its complete profile/setup sequence; do not race it with a second loader.
+      if (user && authAttemptInProgress) return;
+      if (!user) {
+        privateSessionEpoch++;
+        clearLiveSubscriptions();
+        clearPrivateViewState();
+        currentMembership = null; currentProfile = null;
+        state = loadState();
+        state.loading = false;
+        render();
+        return;
+      }
+
+      if (state.session.userId && state.session.userId !== user.uid) {
+        privateSessionEpoch++;
+        clearLiveSubscriptions(); clearPrivateViewState(); state = loadState();
+        currentMembership = null; currentProfile = null;
+      }
+      state.loading = true;
+      render();
+      try {
+        const profileSnap = await runtime.modules.getDoc(runtime.modules.doc(runtime.db, "clubs", clubId, "users", user.uid));
+        const profile = profileSnap.exists() ? profileSnap.data() : {};
+        const role = profile.role || "parent";
+        state.session = {
+          loggedIn: true,
+          role,
+          userId: user.uid,
+          email: user.email || "",
+          phone: profile.phone || "",
+          parentName: role === "parent" ? profile.name || "" : "",
+          coachName: ["coach", "admin"].includes(role) ? profile.name || "Coach" : "",
+          selectedPlayerId: state.session.selectedPlayerId || "",
+          canSwitchPortal: Boolean(profile.canSwitchPortal),
+      isAdmin: profile.role === "admin",
+        };
+        state.messageReadAt = profile.messageReadAt || "";
+        state.route = ["coach", "admin"].includes(role) ? state.route || "home" : state.route || "home";
+        if (role === "admin") state.session.role = "coach";
+        await loadLiveStateFromFirebase();
+        primeRouteDefaults(state.route);
+        await startLiveSubscriptions();
+        state.loading = false;
+        state.error = "";
+        render();
+      } catch (error) {
+        console.error(error);
+        showError("Could not load this Firebase account. Check the user role document.");
+      }
+    });
+  } catch (error) {
+    console.error(error);
+    showError("Firebase could not start. Check firebase-config.js and the enabled Firebase services.");
+  }
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast("Copied");
+  } catch {
+    toast("Copy failed. Select the link and copy it manually.");
+  }
+}
+
+initNetworkListeners();
+initNativeShell();
+
+if ("serviceWorker" in navigator && location.protocol !== "file:") {
+  if (isNativeCapacitor()) {
+    if (navigator.serviceWorker.getRegistrations) {
+      navigator.serviceWorker.getRegistrations().then((registrations) => {
+        registrations.forEach((registration) => registration.unregister());
+      }).catch(() => {});
+    }
+  } else {
+    navigator.serviceWorker.register("service-worker.js").catch(() => {});
+  }
+}
+
+bootApp();
